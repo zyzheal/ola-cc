@@ -1,0 +1,1239 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Claude Code — 架构参考</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Berkeley+Mono:ital,wght@0,400;0,700;1,400&family=Space+Mono:ital,wght@0,400;0,700;1,400&family=Noto+Sans+SC:wght@400;700&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg:        #0a0c0f;
+    --bg2:       #0f1318;
+    --bg3:       #141920;
+    --border:    #1e2730;
+    --border2:   #2a3540;
+    --green:     #3ddc84;
+    --green-dim: #1e6e42;
+    --green-glow:#3ddc8433;
+    --cyan:      #5de4e4;
+    --cyan-dim:  #1a6060;
+    --amber:     #f5b942;
+    --amber-dim: #6b4f1a;
+    --red:       #ff6b6b;
+    --red-dim:   #5a2020;
+    --blue:      #5b9cf6;
+    --blue-dim:  #1a2f5a;
+    --purple:    #c084fc;
+    --purple-dim:#3a1a5a;
+    --muted:     #4a5568;
+    --text:      #c8d4e0;
+    --text-dim:  #6b7a8a;
+    --font-mono: 'Berkeley Mono', 'Space Mono', monospace; --font-zh: 'Noto Sans SC', sans-serif;
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--font-mono);
+    font-size: 13px;
+    line-height: 1.6;
+    min-height: 100vh;
+    overflow-x: hidden;
+  }
+
+  /* Scanline overlay */
+  body::before {
+    content: '';
+    position: fixed;
+    inset: 0;
+    background: repeating-linear-gradient(
+      0deg,
+      transparent,
+      transparent 2px,
+      rgba(0,0,0,0.03) 2px,
+      rgba(0,0,0,0.03) 4px
+    );
+    pointer-events: none;
+    z-index: 1000;
+  }
+
+  /* ── HEADER ── */
+  header {
+    border-bottom: 1px solid var(--border);
+    padding: 24px 40px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    background: var(--bg2);
+    position: sticky;
+    top: 0;
+    z-index: 100;
+  }
+
+  .logo {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+  }
+
+  .logo-badge {
+    background: var(--green);
+    color: var(--bg);
+    padding: 4px 10px;
+    font-weight: 700;
+    font-size: 11px;
+    letter-spacing: 0.1em;
+  }
+
+  .logo-title {
+    color: var(--green);
+    font-size: 15px;
+    font-weight: 700;
+    letter-spacing: 0.05em;
+  }
+
+  .logo-subtitle {
+    color: var(--text-dim);
+    font-size: 11px;
+    letter-spacing: 0.08em;
+  }
+
+  .header-meta {
+    display: flex;
+    gap: 24px;
+    align-items: center;
+  }
+
+  .meta-item {
+    text-align: right;
+  }
+
+  .meta-label {
+    color: var(--text-dim);
+    font-size: 10px;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+  }
+
+  .meta-value {
+    color: var(--amber);
+    font-size: 12px;
+    font-weight: 700;
+  }
+
+  /* ── MAIN LAYOUT ── */
+  main {
+    max-width: 1400px;
+    margin: 0 auto;
+    padding: 40px;
+  }
+
+  section {
+    margin-bottom: 60px;
+  }
+
+  .section-header {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin-bottom: 24px;
+    padding-bottom: 12px;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .section-num {
+    color: var(--green);
+    font-size: 11px;
+    opacity: 0.6;
+  }
+
+  .section-title {
+    color: var(--green);
+    font-size: 14px;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+  }
+
+  .section-line {
+    flex: 1;
+    height: 1px;
+    background: linear-gradient(90deg, var(--green-dim), transparent);
+  }
+
+  /* ── SYSTEM OVERVIEW DIAGRAM ── */
+  .diagram-container {
+    background: var(--bg2);
+    border: 1px solid var(--border);
+    padding: 40px;
+    position: relative;
+    overflow: hidden;
+  }
+
+  .diagram-container::before {
+    content: '// 系统架构 — claude code v1.0.24';
+    position: absolute;
+    top: 12px;
+    left: 16px;
+    color: var(--text-dim);
+    font-size: 11px;
+    letter-spacing: 0.05em;
+  }
+
+  /* ── FLOW DIAGRAM (SVG-based) ── */
+  .flow-svg {
+    width: 100%;
+    height: auto;
+    display: block;
+  }
+
+  /* ── LAYER DIAGRAM ── */
+  .layers {
+    display: flex;
+    flex-direction: column;
+    gap: 0;
+    position: relative;
+  }
+
+  .layer {
+    display: flex;
+    align-items: stretch;
+    border: 1px solid var(--border);
+    border-bottom: none;
+    position: relative;
+    transition: background 0.15s;
+  }
+
+  .layer:last-child {
+    border-bottom: 1px solid var(--border);
+  }
+
+  .layer:hover {
+    background: rgba(61, 220, 132, 0.02);
+  }
+
+  .layer-label {
+    writing-mode: vertical-rl;
+    text-orientation: mixed;
+    transform: rotate(180deg);
+    padding: 16px 10px;
+    font-size: 10px;
+    letter-spacing: 0.15em;
+    text-transform: uppercase;
+    font-weight: 700;
+    min-width: 36px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-right: 1px solid var(--border);
+    flex-shrink: 0;
+  }
+
+  .layer-content {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    padding: 16px 20px;
+    flex: 1;
+    align-items: center;
+  }
+
+  .chip {
+    padding: 5px 12px;
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.05em;
+    cursor: default;
+    transition: all 0.15s;
+    position: relative;
+    white-space: nowrap;
+  }
+
+  .chip:hover {
+    transform: translateY(-1px);
+  }
+
+  .chip::after {
+    content: attr(data-desc);
+    position: absolute;
+    bottom: calc(100% + 8px);
+    left: 50%;
+    transform: translateX(-50%);
+    background: var(--bg3);
+    border: 1px solid var(--border2);
+    color: var(--text);
+    font-size: 10px;
+    font-weight: 400;
+    padding: 6px 10px;
+    white-space: nowrap;
+    pointer-events: none;
+    opacity: 0;
+    transition: opacity 0.15s;
+    z-index: 10;
+    letter-spacing: 0;
+    line-height: 1.4;
+  }
+
+  .chip:hover::after {
+    opacity: 1;
+  }
+
+  /* Color variants */
+  .c-green  { background: var(--green-glow); border: 1px solid var(--green-dim); color: var(--green); }
+  .c-cyan   { background: rgba(93,228,228,0.08); border: 1px solid var(--cyan-dim); color: var(--cyan); }
+  .c-amber  { background: rgba(245,185,66,0.08); border: 1px solid var(--amber-dim); color: var(--amber); }
+  .c-red    { background: rgba(255,107,107,0.08); border: 1px solid var(--red-dim); color: var(--red); }
+  .c-blue   { background: rgba(91,156,246,0.08); border: 1px solid var(--blue-dim); color: var(--blue); }
+  .c-purple { background: rgba(192,132,252,0.08); border: 1px solid var(--purple-dim); color: var(--purple); }
+  .c-muted  { background: rgba(74,85,104,0.15); border: 1px solid var(--muted); color: var(--text-dim); }
+
+  .l-user    { color: var(--cyan);   background: rgba(93,228,228,0.05); }
+  .l-ui      { color: var(--green);  background: rgba(61,220,132,0.05); }
+  .l-core    { color: var(--amber);  background: rgba(245,185,66,0.05); }
+  .l-tools   { color: var(--red);    background: rgba(255,107,107,0.05); }
+  .l-service { color: var(--blue);   background: rgba(91,156,246,0.05); }
+  .l-ext     { color: var(--purple); background: rgba(192,132,252,0.05); }
+
+  /* ── DATA FLOW DIAGRAM ── */
+  .flow-grid {
+    display: grid;
+    grid-template-columns: 1fr 48px 1fr 48px 1fr 48px 1fr;
+    gap: 0;
+    align-items: center;
+  }
+
+  .flow-box {
+    background: var(--bg2);
+    border: 1px solid var(--border);
+    padding: 16px;
+    text-align: center;
+  }
+
+  .flow-box-title {
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    margin-bottom: 8px;
+  }
+
+  .flow-box-items {
+    font-size: 10px;
+    color: var(--text-dim);
+    line-height: 2;
+  }
+
+  .flow-arrow {
+    text-align: center;
+    font-size: 20px;
+    color: var(--border2);
+  }
+
+  /* ── COMPONENT GRID ── */
+  .comp-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+    gap: 1px;
+    background: var(--border);
+    border: 1px solid var(--border);
+  }
+
+  .comp-card {
+    background: var(--bg2);
+    padding: 20px 24px;
+    cursor: default;
+    transition: background 0.15s;
+    position: relative;
+  }
+
+  .comp-card:hover {
+    background: var(--bg3);
+  }
+
+  .comp-card-header {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 10px;
+  }
+
+  .comp-icon {
+    width: 28px;
+    height: 28px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 14px;
+    flex-shrink: 0;
+  }
+
+  .comp-name {
+    font-size: 12px;
+    font-weight: 700;
+    letter-spacing: 0.05em;
+  }
+
+  .comp-path {
+    font-size: 10px;
+    color: var(--text-dim);
+    margin-bottom: 8px;
+    font-style: italic;
+  }
+
+  .comp-desc {
+    font-size: 11px;
+    color: var(--text-dim);
+    line-height: 1.7;
+  }
+
+  .comp-tags {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+    margin-top: 12px;
+  }
+
+  .tag {
+    font-size: 9px;
+    padding: 2px 6px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    font-weight: 700;
+    border: 1px solid currentColor;
+    opacity: 0.7;
+  }
+
+  /* ── TOOL TABLE ── */
+  .tool-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+    gap: 1px;
+    background: var(--border);
+    border: 1px solid var(--border);
+  }
+
+  .tool-item {
+    background: var(--bg2);
+    padding: 12px 16px;
+    transition: background 0.1s;
+  }
+
+  .tool-item:hover {
+    background: var(--bg3);
+  }
+
+  .tool-name {
+    font-size: 11px;
+    font-weight: 700;
+    margin-bottom: 4px;
+  }
+
+  .tool-desc {
+    font-size: 10px;
+    color: var(--text-dim);
+    line-height: 1.5;
+  }
+
+  /* ── BOOT SEQUENCE ── */
+  .boot-seq {
+    display: flex;
+    flex-direction: column;
+    gap: 0;
+    border: 1px solid var(--border);
+    overflow: hidden;
+  }
+
+  .boot-step {
+    display: grid;
+    grid-template-columns: 48px 180px 1fr;
+    border-bottom: 1px solid var(--border);
+    align-items: stretch;
+  }
+
+  .boot-step:last-child { border-bottom: none; }
+
+  .boot-num {
+    background: var(--bg3);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 11px;
+    font-weight: 700;
+    color: var(--text-dim);
+    border-right: 1px solid var(--border);
+    padding: 14px;
+  }
+
+  .boot-phase {
+    padding: 14px 16px;
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.05em;
+    border-right: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+  }
+
+  .boot-detail {
+    padding: 14px 16px;
+    font-size: 11px;
+    color: var(--text-dim);
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 6px;
+  }
+
+  .boot-code {
+    background: var(--bg3);
+    border: 1px solid var(--border);
+    padding: 1px 6px;
+    font-size: 10px;
+    color: var(--green);
+  }
+
+  /* ── PERMISSION FLOW ── */
+  .perm-flow {
+    display: grid;
+    grid-template-columns: 1fr;
+    gap: 0;
+    border: 1px solid var(--border);
+  }
+
+  .perm-row {
+    display: grid;
+    grid-template-columns: 160px 1fr;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .perm-row:last-child { border-bottom: none; }
+
+  .perm-mode {
+    padding: 12px 16px;
+    font-size: 11px;
+    font-weight: 700;
+    border-right: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+  }
+
+  .perm-desc {
+    padding: 12px 16px;
+    font-size: 11px;
+    color: var(--text-dim);
+    display: flex;
+    align-items: center;
+  }
+
+  /* ── TECH STACK TABLE ── */
+  .tech-table {
+    border: 1px solid var(--border);
+    width: 100%;
+    border-collapse: collapse;
+  }
+
+  .tech-table th {
+    background: var(--bg3);
+    padding: 10px 16px;
+    text-align: left;
+    font-size: 10px;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--text-dim);
+    border-bottom: 1px solid var(--border);
+    font-weight: 700;
+  }
+
+  .tech-table td {
+    padding: 11px 16px;
+    font-size: 11px;
+    border-bottom: 1px solid var(--border);
+    vertical-align: top;
+  }
+
+  .tech-table tr:last-child td { border-bottom: none; }
+  .tech-table tr:hover td { background: var(--bg3); }
+
+  .tech-cat { color: var(--text-dim); font-size: 10px; }
+  .tech-name { font-weight: 700; }
+  .tech-note { color: var(--text-dim); font-size: 10px; margin-top: 2px; }
+
+  /* ── SCROLLBAR ── */
+  ::-webkit-scrollbar { width: 6px; height: 6px; }
+  ::-webkit-scrollbar-track { background: var(--bg); }
+  ::-webkit-scrollbar-thumb { background: var(--border2); }
+
+  /* ── FOOTER ── */
+  footer {
+    border-top: 1px solid var(--border);
+    padding: 20px 40px;
+    display: flex;
+    justify-content: space-between;
+    color: var(--text-dim);
+    font-size: 10px;
+    letter-spacing: 0.06em;
+  }
+
+  /* ── INLINE CODE ── */
+  code {
+    background: var(--bg3);
+    border: 1px solid var(--border);
+    padding: 1px 5px;
+    font-size: 10px;
+    color: var(--green);
+    font-family: var(--font-mono);
+  }
+
+  /* ── ANIMATIONS ── */
+  @keyframes fadeIn {
+    from { opacity: 0; transform: translateY(8px); }
+    to   { opacity: 1; transform: translateY(0); }
+  }
+
+  section {
+    animation: fadeIn 0.4s ease both;
+  }
+
+  section:nth-child(1) { animation-delay: 0.05s; }
+  section:nth-child(2) { animation-delay: 0.1s; }
+  section:nth-child(3) { animation-delay: 0.15s; }
+  section:nth-child(4) { animation-delay: 0.2s; }
+  section:nth-child(5) { animation-delay: 0.25s; }
+  section:nth-child(6) { animation-delay: 0.3s; }
+  section:nth-child(7) { animation-delay: 0.35s; }
+
+  /* blinking cursor */
+  .cursor::after {
+    content: '█';
+    animation: blink 1s step-end infinite;
+    color: var(--green);
+    font-size: 0.9em;
+  }
+  @keyframes blink { 50% { opacity: 0; } }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="logo">
+    <div class="logo-badge">ARCH</div>
+    <div>
+      <div class="logo-title">Claude Code<span class="cursor"></span></div>
+      <div class="logo-subtitle">核心架构参考 — v1.0.24</div>
+    </div>
+  </div>
+  <div class="header-meta">
+    <div class="meta-item">
+      <div class="meta-label">文件数</div>
+      <div class="meta-value">~1,900</div>
+    </div>
+    <div class="meta-item">
+      <div class="meta-label">代码行数</div>
+      <div class="meta-value">512K+</div>
+    </div>
+    <div class="meta-item">
+      <div class="meta-label">运行时</div>
+      <div class="meta-value">Bun</div>
+    </div>
+    <div class="meta-item">
+      <div class="meta-label">语言</div>
+      <div class="meta-value">TypeScript</div>
+    </div>
+  </div>
+</header>
+
+<main>
+
+  <!-- ① SYSTEM LAYERS -->
+  <section>
+    <div class="section-header">
+      <span class="section-num">01</span>
+      <span class="section-title">系统分层模型</span>
+      <div class="section-line"></div>
+    </div>
+
+    <div class="layers">
+
+      <div class="layer">
+        <div class="layer-label l-user">用户层</div>
+        <div class="layer-content">
+          <span class="chip c-cyan" data-desc="终端 stdin/stdout — 人类操作界面">终端 / TTY</span>
+          <span class="chip c-cyan" data-desc="VS Code 与 JetBrains 扩展插件">IDE 扩展</span>
+          <span class="chip c-cyan" data-desc="基于深度链接的远程启动">Deep Link</span>
+          <span class="chip c-cyan" data-desc="语音输入子系统（功能开关控制）">语音输入</span>
+        </div>
+      </div>
+
+      <div class="layer">
+        <div class="layer-label l-ui">界面层</div>
+        <div class="layer-content">
+          <span class="chip c-green" data-desc="Commander.js 命令行解析器 — main.tsx">命令行解析</span>
+          <span class="chip c-green" data-desc="React + Ink 终端渲染引擎">Ink 渲染器</span>
+          <span class="chip c-green" data-desc="交互式 REPL 界面 — screens/REPL.tsx">REPL 界面</span>
+          <span class="chip c-green" data-desc="约 140 个 Ink UI 组件">UI 组件库</span>
+          <span class="chip c-green" data-desc="斜杠命令 (/commit /review …)">斜杠命令</span>
+          <span class="chip c-green" data-desc="快捷键绑定与 vim 模式">快捷键 / Vim</span>
+        </div>
+      </div>
+
+      <div class="layer">
+        <div class="layer-label l-core">核心引擎</div>
+        <div class="layer-content">
+          <span class="chip c-amber" data-desc="QueryEngine.ts 约4.6万行 — LLM流式调用、工具循环、重试">查询引擎</span>
+          <span class="chip c-amber" data-desc="context.ts — 系统提示词构建">上下文构建器</span>
+          <span class="chip c-amber" data-desc="cost-tracker.ts — Token 用量统计">费用追踪器</span>
+          <span class="chip c-amber" data-desc="每次工具调用前的权限检查">权限系统</span>
+          <span class="chip c-amber" data-desc="多智能体协调器">协调器</span>
+          <span class="chip c-amber" data-desc="Skill 执行引擎">Skill 引擎</span>
+          <span class="chip c-amber" data-desc="对话上下文压缩">上下文压缩</span>
+          <span class="chip c-amber" data-desc="跨会话持久记忆">记忆 / memdir</span>
+          <span class="chip c-amber" data-desc="任务调度器">任务管理器</span>
+        </div>
+      </div>
+
+      <div class="layer">
+        <div class="layer-label l-tools">工具层</div>
+        <div class="layer-content">
+          <span class="chip c-red" data-desc="Shell 命令执行 — BashTool">BashTool</span>
+          <span class="chip c-red" data-desc="文件读写编辑（图片、PDF、Notebook）">文件工具</span>
+          <span class="chip c-red" data-desc="ripgrep 内容搜索">GrepTool</span>
+          <span class="chip c-red" data-desc="Glob 文件匹配">GlobTool</span>
+          <span class="chip c-red" data-desc="子智能体派生">AgentTool</span>
+          <span class="chip c-red" data-desc="网页抓取与搜索">WebTools</span>
+          <span class="chip c-red" data-desc="MCP 服务器工具调用">MCPTool</span>
+          <span class="chip c-red" data-desc="语言服务器协议">LSPTool</span>
+          <span class="chip c-red" data-desc="Jupyter Notebook 编辑">NotebookTool</span>
+          <span class="chip c-red" data-desc="团队智能体管理">TeamTools</span>
+          <span class="chip c-red" data-desc="计划模式进入/退出">PlanTools</span>
+          <span class="chip c-red" data-desc="Git worktree 隔离">WorktreeTools</span>
+          <span class="chip c-red" data-desc="定时触发器创建">CronTool</span>
+        </div>
+      </div>
+
+      <div class="layer">
+        <div class="layer-label l-service">服务层</div>
+        <div class="layer-content">
+          <span class="chip c-blue" data-desc="Anthropic SDK — 流式 API 客户端">Anthropic API</span>
+          <span class="chip c-blue" data-desc="OAuth 2.0 + macOS Keychain">认证 / OAuth</span>
+          <span class="chip c-blue" data-desc="模型上下文协议服务器">MCP</span>
+          <span class="chip c-blue" data-desc="语言服务器连接管理">LSP 管理器</span>
+          <span class="chip c-blue" data-desc="GrowthBook 功能开关 + 数据分析">分析 / 开关</span>
+          <span class="chip c-blue" data-desc="插件加载器">插件系统</span>
+          <span class="chip c-blue" data-desc="团队记忆同步">团队记忆</span>
+          <span class="chip c-blue" data-desc="MDM / 远程托管配置">远程配置</span>
+          <span class="chip c-blue" data-desc="OpenTelemetry + gRPC 链路追踪">遥测系统</span>
+        </div>
+      </div>
+
+      <div class="layer">
+        <div class="layer-label l-ext">外部层</div>
+        <div class="layer-content">
+          <span class="chip c-purple" data-desc="claude.ai API — claude-sonnet-4-5 等模型">Claude API</span>
+          <span class="chip c-purple" data-desc="MCP 兼容的外部服务器">MCP 服务器</span>
+          <span class="chip c-purple" data-desc="语言服务器（tsserver、pylsp …）">语言服务器</span>
+          <span class="chip c-purple" data-desc="文件系统与 Shell">操作系统 / Shell</span>
+          <span class="chip c-purple" data-desc="GitHub 与 git 操作">Git / GitHub</span>
+          <span class="chip c-purple" data-desc="网络 URL 访问">互联网</span>
+        </div>
+      </div>
+
+    </div>
+    <p style="font-size:10px;color:var(--text-dim);margin-top:10px;">↑ 悬停各标签查看详细说明</p>
+  </section>
+
+  <!-- ② REQUEST FLOW -->
+  <section>
+    <div class="section-header">
+      <span class="section-num">02</span>
+      <span class="section-title">请求数据流</span>
+      <div class="section-line"></div>
+    </div>
+
+    <div style="overflow-x:auto;">
+      <div class="flow-grid" style="min-width:900px;">
+
+        <div class="flow-box" style="border-color:var(--cyan-dim);">
+          <div class="flow-box-title" style="color:var(--cyan);">① 用户输入</div>
+          <div class="flow-box-items">
+            终端按键<br>
+            REPL 提交<br>
+            斜杠命令<br>
+            <code>-p</code> 打印模式
+          </div>
+        </div>
+
+        <div class="flow-arrow">→</div>
+
+        <div class="flow-box" style="border-color:var(--green-dim);">
+          <div class="flow-box-title" style="color:var(--green);">② 上下文构建</div>
+          <div class="flow-box-items">
+            系统提示词<br>
+            CLAUDE.md 文件<br>
+            工具定义<br>
+            对话历史<br>
+            记忆注入
+          </div>
+        </div>
+
+        <div class="flow-arrow">→</div>
+
+        <div class="flow-box" style="border-color:var(--amber-dim);">
+          <div class="flow-box-title" style="color:var(--amber);">③ 查询引擎</div>
+          <div class="flow-box-items">
+            流式 API 调用<br>
+            思考模式<br>
+            Token 计数<br>
+            重试逻辑<br>
+            工具调用循环
+          </div>
+        </div>
+
+        <div class="flow-arrow">→</div>
+
+        <div class="flow-box" style="border-color:var(--red-dim);">
+          <div class="flow-box-title" style="color:var(--red);">④ 工具分发</div>
+          <div class="flow-box-items">
+            权限检查<br>
+            工具执行<br>
+            结果捕获<br>
+            错误处理<br>
+            子智能体派生
+          </div>
+        </div>
+
+      </div>
+
+      <!-- second row -->
+      <div style="display:flex;justify-content:flex-end;margin-top:1px;min-width:900px;">
+        <div style="width:calc(25% - 12px);"></div>
+        <div style="width:48px;"></div>
+        <div style="width:calc(25% - 12px);"></div>
+        <div style="width:48px;"></div>
+        <div style="width:calc(25% - 12px);"></div>
+        <div style="width:48px; display:flex; align-items:center; justify-content:center; font-size:20px; color:var(--border2);">↓</div>
+        <div style="width:calc(25% - 12px);"></div>
+      </div>
+
+      <div class="flow-grid" style="min-width:900px;margin-top:1px;">
+
+        <div class="flow-box" style="border-color:var(--cyan-dim);">
+          <div class="flow-box-title" style="color:var(--cyan);">⑧ 输出</div>
+          <div class="flow-box-items">
+            Ink 重新渲染<br>
+            流式输出到 stdout<br>
+            费用更新<br>
+            记忆提取<br>
+            会话持久化
+          </div>
+        </div>
+
+        <div class="flow-arrow" style="transform:scaleX(-1);">→</div>
+
+        <div class="flow-box" style="border-color:var(--green-dim);">
+          <div class="flow-box-title" style="color:var(--green);">⑦ 响应解析</div>
+          <div class="flow-box-items">
+            Markdown 渲染<br>
+            代码块处理<br>
+            工具结果合并<br>
+            思考过程展示
+          </div>
+        </div>
+
+        <div class="flow-arrow" style="transform:scaleX(-1);">→</div>
+
+        <div class="flow-box" style="border-color:var(--amber-dim);">
+          <div class="flow-box-title" style="color:var(--amber);">⑥ 循环/递归</div>
+          <div class="flow-box-items">
+            还有工具调用？<br>
+            重入引擎<br>
+            必要时压缩<br>
+            协调器同步
+          </div>
+        </div>
+
+        <div class="flow-arrow" style="transform:scaleX(-1);">→</div>
+
+        <div class="flow-box" style="border-color:var(--red-dim);">
+          <div class="flow-box-title" style="color:var(--red);">⑤ 工具结果</div>
+          <div class="flow-box-items">
+            标准输出/错误<br>
+            文件内容<br>
+            搜索命中<br>
+            API 响应
+          </div>
+        </div>
+
+      </div>
+    </div>
+  </section>
+
+  <!-- ③ KEY SUBSYSTEMS -->
+  <section>
+    <div class="section-header">
+      <span class="section-num">03</span>
+      <span class="section-title">核心子系统</span>
+      <div class="section-line"></div>
+    </div>
+
+    <div class="comp-grid">
+
+      <div class="comp-card">
+        <div class="comp-card-header">
+          <div class="comp-icon" style="color:var(--amber);">⚙</div>
+          <div class="comp-name" style="color:var(--amber);">QueryEngine</div>
+        </div>
+        <div class="comp-path">src/QueryEngine.ts · 约 4.6 万行</div>
+        <div class="comp-desc">系统核心。管理完整的 LLM 交互循环：向 Anthropic 发起流式 API 调用、工具调用分发与结果注入、思考模式 Token 处理、退避重试、Token 计数以及上下文窗口管理。所有工具调用均经过此处。</div>
+        <div class="comp-tags">
+          <span class="tag" style="color:var(--amber);">流式调用</span>
+          <span class="tag" style="color:var(--amber);">工具循环</span>
+          <span class="tag" style="color:var(--amber);">重试</span>
+          <span class="tag" style="color:var(--amber);">思考模式</span>
+        </div>
+      </div>
+
+      <div class="comp-card">
+        <div class="comp-card-header">
+          <div class="comp-icon" style="color:var(--green);">◈</div>
+          <div class="comp-name" style="color:var(--green);">REPL + Ink Renderer</div>
+        </div>
+        <div class="comp-path">src/screens/REPL.tsx · src/ink/</div>
+        <div class="comp-desc">基于 React + Ink 构建的全屏终端 UI。自定义 Yoga 布局引擎、备用屏幕管理、基于差异的终端补丁渲染，以及 patchStderr 防止 UI 被污染。REPL 是主要的交互界面——React 组件树渲染到终端字符格。</div>
+        <div class="comp-tags">
+          <span class="tag" style="color:var(--green);">React</span>
+          <span class="tag" style="color:var(--green);">Ink</span>
+          <span class="tag" style="color:var(--green);">Yoga</span>
+          <span class="tag" style="color:var(--green);">备用屏幕</span>
+        </div>
+      </div>
+
+      <div class="comp-card">
+        <div class="comp-card-header">
+          <div class="comp-icon" style="color:var(--red);">▣</div>
+          <div class="comp-name" style="color:var(--red);">Tool System</div>
+        </div>
+        <div class="comp-path">src/tools/ · 约 40 个工具 · src/Tool.ts 约 2.9 万行</div>
+        <div class="comp-desc">Claude Code 的每项能力都是独立的工具模块，包含 Zod 输入模式、权限模型和执行函数。工具注册到中央注册表，以 JSON 函数定义的形式暴露给 LLM。执行结果流式返回查询循环。</div>
+        <div class="comp-tags">
+          <span class="tag" style="color:var(--red);">Zod</span>
+          <span class="tag" style="color:var(--red);">注册表</span>
+          <span class="tag" style="color:var(--red);">权限控制</span>
+        </div>
+      </div>
+
+      <div class="comp-card">
+        <div class="comp-card-header">
+          <div class="comp-icon" style="color:var(--blue);">⬡</div>
+          <div class="comp-name" style="color:var(--blue);">MCP Integration</div>
+        </div>
+        <div class="comp-path">src/services/mcp/</div>
+        <div class="comp-desc">通过 stdio 或 SSE 连接模型上下文协议服务器。动态发现服务器工具并将其作为一等公民工具暴露给 Claude Code。支持多服务器配置、OAuth 认证服务器以及工具定义热重载。</div>
+        <div class="comp-tags">
+          <span class="tag" style="color:var(--blue);">stdio</span>
+          <span class="tag" style="color:var(--blue);">SSE</span>
+          <span class="tag" style="color:var(--blue);">动态发现</span>
+        </div>
+      </div>
+
+      <div class="comp-card">
+        <div class="comp-card-header">
+          <div class="comp-icon" style="color:var(--purple);">⇄</div>
+          <div class="comp-name" style="color:var(--purple);">Bridge System</div>
+        </div>
+        <div class="comp-path">src/bridge/</div>
+        <div class="comp-desc">连接 IDE 扩展（VS Code、JetBrains）与运行中 CLI 进程的双向 IPC 层。JWT 认证的消息协议，带权限回调、会话管理，以及供 IDE 面板嵌入的 REPL 桥接。</div>
+        <div class="comp-tags">
+          <span class="tag" style="color:var(--purple);">IPC</span>
+          <span class="tag" style="color:var(--purple);">JWT</span>
+          <span class="tag" style="color:var(--purple);">VS Code</span>
+          <span class="tag" style="color:var(--purple);">JetBrains</span>
+        </div>
+      </div>
+
+      <div class="comp-card">
+        <div class="comp-card-header">
+          <div class="comp-icon" style="color:var(--amber);">⛭</div>
+          <div class="comp-name" style="color:var(--amber);">Permission System</div>
+        </div>
+        <div class="comp-path">src/hooks/toolPermission/</div>
+        <div class="comp-desc">每次工具调用的拦截器。根据配置模式解析权限：交互式会话中提示用户确认，绕过模式下自动批准，计划模式下强制只读限制。支持按工具和按路径的允许/拒绝规则。</div>
+        <div class="comp-tags">
+          <span class="tag" style="color:var(--amber);">默认</span>
+          <span class="tag" style="color:var(--amber);">计划</span>
+          <span class="tag" style="color:var(--amber);">绕过</span>
+          <span class="tag" style="color:var(--amber);">自动</span>
+        </div>
+      </div>
+
+      <div class="comp-card">
+        <div class="comp-card-header">
+          <div class="comp-icon" style="color:var(--cyan);">⊕</div>
+          <div class="comp-name" style="color:var(--cyan);">Coordinator / Agent Swarm</div>
+        </div>
+        <div class="comp-path">src/coordinator/</div>
+        <div class="comp-desc">编排多智能体工作流。AgentTool 派生子智能体；TeamCreateTool 管理并行智能体团队。协调器追踪任务归属、智能体间消息传递（SendMessageTool），并将结果汇总回根会话。</div>
+        <div class="comp-tags">
+          <span class="tag" style="color:var(--cyan);">并行</span>
+          <span class="tag" style="color:var(--cyan);">子智能体</span>
+          <span class="tag" style="color:var(--cyan);">团队</span>
+        </div>
+      </div>
+
+      <div class="comp-card">
+        <div class="comp-card-header">
+          <div class="comp-icon" style="color:var(--green);">◉</div>
+          <div class="comp-name" style="color:var(--green);">Memory System</div>
+        </div>
+        <div class="comp-path">src/memdir/ · src/services/extractMemories/</div>
+        <div class="comp-desc">存储在 memdir 中的跨会话持久记忆。会话结束后通过 LLM 自动提取重要事实。团队记忆同步在协作者之间共享知识。/memory 命令提供用户侧管理界面。</div>
+        <div class="comp-tags">
+          <span class="tag" style="color:var(--green);">持久化</span>
+          <span class="tag" style="color:var(--green);">自动提取</span>
+          <span class="tag" style="color:var(--green);">团队同步</span>
+        </div>
+      </div>
+
+      <div class="comp-card">
+        <div class="comp-card-header">
+          <div class="comp-icon" style="color:var(--red);">⚑</div>
+          <div class="comp-name" style="color:var(--red);">Feature Flags</div>
+        </div>
+        <div class="comp-path">bun:bundle · src/services/analytics/</div>
+        <div class="comp-desc">通过 Bun bundle 标志实现编译期死代码消除，将非活跃功能从二进制文件中完全剔除。GrowthBook 运行时标志支持灰度发布。主要标志：PROACTIVE、KAIROS、BRIDGE_MODE、DAEMON、VOICE_MODE、AGENT_TRIGGERS、MONITOR_TOOL。</div>
+        <div class="comp-tags">
+          <span class="tag" style="color:var(--red);">编译期</span>
+          <span class="tag" style="color:var(--red);">GrowthBook</span>
+          <span class="tag" style="color:var(--red);">Tree-shake</span>
+        </div>
+      </div>
+
+    </div>
+  </section>
+
+  <!-- ④ BOOT SEQUENCE -->
+  <section>
+    <div class="section-header">
+      <span class="section-num">04</span>
+      <span class="section-title">启动顺序</span>
+      <div class="section-line"></div>
+    </div>
+
+    <div class="boot-seq">
+      <div class="boot-step">
+        <div class="boot-num" style="color:var(--green);">01</div>
+        <div class="boot-phase" style="color:var(--green);">并行预取</div>
+        <div class="boot-detail">
+          在重型模块导入前触发副作用：
+          <span class="boot-code">startMdmRawRead()</span>
+          <span class="boot-code">startKeychainPrefetch()</span>
+          <span class="boot-code">API 预连接</span>
+          — 与模块求值并行执行
+        </div>
+      </div>
+      <div class="boot-step">
+        <div class="boot-num" style="color:var(--cyan);">02</div>
+        <div class="boot-phase" style="color:var(--cyan);">命令行解析</div>
+        <div class="boot-detail">
+          Commander.js 解析 argv — 标志、子命令、<code>-p</code> 打印模式。
+          确定交互式还是非交互式会话。
+        </div>
+      </div>
+      <div class="boot-step">
+        <div class="boot-num" style="color:var(--amber);">03</div>
+        <div class="boot-phase" style="color:var(--amber);">配置加载</div>
+        <div class="boot-detail">
+          读取 <span class="boot-code">~/.claude.json</span> 全局配置、主题、OAuth token。
+          GrowthBook 功能开关初始化，MDM 托管配置解析。
+        </div>
+      </div>
+      <div class="boot-step">
+        <div class="boot-num" style="color:var(--blue);">04</div>
+        <div class="boot-phase" style="color:var(--blue);">Ink 挂载</div>
+        <div class="boot-detail">
+          <span class="boot-code">createRoot()</span> 初始化 React/Ink 渲染器。
+          备用屏幕激活，欢迎界面/设置界面渲染。
+        </div>
+      </div>
+      <div class="boot-step">
+        <div class="boot-num" style="color:var(--purple);">05</div>
+        <div class="boot-phase" style="color:var(--purple);">初始化界面</div>
+        <div class="boot-detail">
+          信任对话框、新手引导、必要时 OAuth 登录。
+          验证组织约束（<span class="boot-code">validateForceLoginOrg</span>）。
+        </div>
+      </div>
+      <div class="boot-step">
+        <div class="boot-num" style="color:var(--red);">06</div>
+        <div class="boot-phase" style="color:var(--red);">MCP + 钩子</div>
+        <div class="boot-detail">
+          并行建立 MCP 服务器连接。
+          SessionStart 钩子触发，从 cwd 层级加载 CLAUDE.md 文件。
+        </div>
+      </div>
+      <div class="boot-step">
+        <div class="boot-num" style="color:var(--green);">07</div>
+        <div class="boot-phase" style="color:var(--green);">REPL 启动</div>
+        <div class="boot-detail">
+          <span class="boot-code">launchRepl()</span> 渲染完整 REPL。
+          若带 <code>-p</code> 标志：非交互式查询 → stdout → 退出。
+          否则：交互式会话开始，等待用户输入。
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ⑤ PERMISSION MODES -->
+  <section>
+    <div class="section-header">
+      <span class="section-num">05</span>
+      <span class="section-title">权限模式</span>
+      <div class="section-line"></div>
+    </div>
+
+    <div class="perm-flow">
+      <div class="perm-row">
+        <div class="perm-mode" style="color:var(--green);">default</div>
+        <div class="perm-desc">每次工具执行前提示用户确认。文件读取自动批准；写入、Shell、网络请求需明确 yes/no/always。</div>
+      </div>
+      <div class="perm-row">
+        <div class="perm-mode" style="color:var(--amber);">plan</div>
+        <div class="perm-desc">只读模式——允许文件读取和搜索，所有写入和 Shell 命令被阻止。用于提交前的安全探索。</div>
+      </div>
+      <div class="perm-row">
+        <div class="perm-mode" style="color:var(--red);">bypassPermissions</div>
+        <div class="perm-desc">所有工具无需提示自动批准。用于自动化流水线和 CI。需要显式启用标志。</div>
+      </div>
+      <div class="perm-row">
+        <div class="perm-mode" style="color:var(--blue);">auto</div>
+        <div class="perm-desc">基于操作风险评分和信任上下文的启发式自动批准。仅对高风险操作弹出提示。</div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ⑥ TOOLS -->
+  <section>
+    <div class="section-header">
+      <span class="section-num">06</span>
+      <span class="section-title">工具注册表（约 40 个工具）</span>
+      <div class="section-line"></div>
+    </div>
+
+    <div class="tool-grid">
+      <div class="tool-item"><div class="tool-name" style="color:var(--red);">BashTool</div><div class="tool-desc">带超时和输出捕获的 Shell 命令执行</div></div>
+      <div class="tool-item"><div class="tool-name" style="color:var(--red);">FileReadTool</div><div class="tool-desc">带偏移/限制的文件读取；支持图片、PDF、Notebook</div></div>
+      <div class="tool-item"><div class="tool-name" style="color:var(--red);">FileWriteTool</div><div class="tool-desc">原子性创建或覆写文件</div></div>
+      <div class="tool-item"><div class="tool-name" style="color:var(--red);">FileEditTool</div><div class="tool-desc">通过字符串替换进行局部文件修改</div></div>
+      <div class="tool-item"><div class="tool-name" style="color:var(--red);">GlobTool</div><div class="tool-desc">跨目录树的文件模式匹配</div></div>
+      <div class="tool-item"><div class="tool-name" style="color:var(--red);">GrepTool</div><div class="tool-desc">基于 ripgrep 的正则表达式内容搜索</div></div>
+      <div class="tool-item"><div class="tool-name" style="color:var(--red);">WebFetchTool</div><div class="tool-desc">抓取 URL 内容并转换为 Markdown</div></div>
+      <div class="tool-item"><div class="tool-name" style="color:var(--red);">WebSearchTool</div><div class="tool-desc">带结果排序的网页搜索</div></div>
+      <div class="tool-item"><div class="tool-name" style="color:var(--amber);">AgentTool</div><div class="tool-desc">派生拥有独立上下文和工具集的子智能体</div></div>
+      <div class="tool-item"><div class="tool-name" style="color:var(--amber);">SkillTool</div><div class="tool-desc">执行可复用的 Skill 工作流</div></div>
+      <div class="tool-item"><div class="tool-name" style="color:var(--blue);">MCPTool</div><div class="tool-desc">代理调用已连接 MCP 服务器的工具</div></div>
+      <div class="tool-item"><div class="tool-name" style="color:var(--blue);">LSPTool</div><div class="tool-desc">语言服务器协议查询（悬停、引用、诊断）</div></div>
+      <div class="tool-item"><div class="tool-name" style="color:var(--green);">NotebookEditTool</div><div class="tool-desc">Jupyter Notebook 单元格编辑与执行</div></div>
+      <div class="tool-item"><div class="tool-name" style="color:var(--amber);">TaskCreateTool</div><div class="tool-desc">在任务管理系统中创建追踪任务</div></div>
+      <div class="tool-item"><div class="tool-name" style="color:var(--amber);">TaskUpdateTool</div><div class="tool-desc">更新任务状态、优先级和元数据</div></div>
+      <div class="tool-item"><div class="tool-name" style="color:var(--cyan);">SendMessageTool</div><div class="tool-desc">群集模式下的智能体间消息传递</div></div>
+      <div class="tool-item"><div class="tool-name" style="color:var(--cyan);">TeamCreateTool</div><div class="tool-desc">派生一支并行智能体团队</div></div>
+      <div class="tool-item"><div class="tool-name" style="color:var(--cyan);">TeamDeleteTool</div><div class="tool-desc">拆解智能体团队并收集结果</div></div>
+      <div class="tool-item"><div class="tool-name" style="color:var(--purple);">EnterPlanModeTool</div><div class="tool-desc">切换到只读计划模式</div></div>
+      <div class="tool-item"><div class="tool-name" style="color:var(--purple);">ExitPlanModeTool</div><div class="tool-desc">返回正常执行模式</div></div>
+      <div class="tool-item"><div class="tool-name" style="color:var(--purple);">EnterWorktreeTool</div><div class="tool-desc">在 git worktree 中隔离会话</div></div>
+      <div class="tool-item"><div class="tool-name" style="color:var(--purple);">ExitWorktreeTool</div><div class="tool-desc">退出 git worktree 隔离</div></div>
+      <div class="tool-item"><div class="tool-name" style="color:var(--muted);">ToolSearchTool</div><div class="tool-desc">大型工具集的延迟工具发现</div></div>
+      <div class="tool-item"><div class="tool-name" style="color:var(--muted);">CronCreateTool</div><div class="tool-desc">为主动模式创建定时触发器</div></div>
+      <div class="tool-item"><div class="tool-name" style="color:var(--muted);">RemoteTriggerTool</div><div class="tool-desc">守护进程/服务器模式的外部触发器</div></div>
+      <div class="tool-item"><div class="tool-name" style="color:var(--muted);">SleepTool</div><div class="tool-desc">在主动/定时模式下暂停执行</div></div>
+      <div class="tool-item"><div class="tool-name" style="color:var(--muted);">SyntheticOutputTool</div><div class="tool-desc">无副作用地生成结构化输出</div></div>
+    </div>
+  </section>
+
+  <!-- ⑦ TECH STACK -->
+  <section>
+    <div class="section-header">
+      <span class="section-num">07</span>
+      <span class="section-title">技术栈</span>
+      <div class="section-line"></div>
+    </div>
+
+    <table class="tech-table">
+      <thead>
+        <tr>
+          <th>类别</th>
+          <th>技术</th>
+          <th>职责</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td class="tech-cat">运行时</td>
+          <td><span class="tech-name" style="color:var(--amber);">Bun</span></td>
+          <td>高速 JS/TS 运行时 + 打包器。<code>bun:bundle</code> 功能标志支持编译期死代码消除。</td>
+        </tr>
+        <tr>
+          <td class="tech-cat">语言</td>
+          <td><span class="tech-name" style="color:var(--blue);">TypeScript（严格模式）</span></td>
+          <td>约 1,900 个文件、512K+ 行代码的端到端类型安全。</td>
+        </tr>
+        <tr>
+          <td class="tech-cat">终端 UI</td>
+          <td><span class="tech-name" style="color:var(--green);">React + Ink</span></td>
+          <td>通过 Yoga 布局将 React 组件树渲染到终端字符格。自定义差异渲染器实现高效更新。</td>
+        </tr>
+        <tr>
+          <td class="tech-cat">命令行解析</td>
+          <td><span class="tech-name" style="color:var(--cyan);">Commander.js</span></td>
+          <td>带额外类型的参数解析。处理子命令、标志、打印模式。</td>
+        </tr>
+        <tr>
+          <td class="tech-cat">Schema 验证</td>
+          <td><span class="tech-name" style="color:var(--purple);">Zod v4</span></td>
+          <td>工具输入、配置文件、API 响应的运行时校验。为 LLM 工具定义生成 JSON Schema。</td>
+        </tr>
+        <tr>
+          <td class="tech-cat">代码搜索</td>
+          <td><span class="tech-name" style="color:var(--red);">ripgrep</span></td>
+          <td>内置 ripgrep 二进制文件，用于在大型代码库中快速进行正则搜索。</td>
+        </tr>
+        <tr>
+          <td class="tech-cat">协议</td>
+          <td><span class="tech-name" style="color:var(--blue);">MCP SDK + LSP</span></td>
+          <td>外部工具服务器的模型上下文协议。LSP 提供语言智能（悬停、诊断、引用）。</td>
+        </tr>
+        <tr>
+          <td class="tech-cat">API 客户端</td>
+          <td><span class="tech-name" style="color:var(--amber);">Anthropic SDK</span></td>
+          <td>流式 API 客户端。处理 SSE、Token 计数、重试和模型路由。</td>
+        </tr>
+        <tr>
+          <td class="tech-cat">遥测</td>
+          <td><span class="tech-name" style="color:var(--muted);">OpenTelemetry + gRPC</span></td>
+          <td>性能监控的链路追踪导出。延迟加载以避免冷启动开销。</td>
+        </tr>
+        <tr>
+          <td class="tech-cat">功能开关</td>
+          <td><span class="tech-name" style="color:var(--green);">GrowthBook</span></td>
+          <td>灰度发布的运行时功能开关。与编译期 Bun 标志配合使用。</td>
+        </tr>
+        <tr>
+          <td class="tech-cat">认证</td>
+          <td><span class="tech-name" style="color:var(--cyan);">OAuth 2.0 + JWT + Keychain</span></td>
+          <td>claude.ai OAuth 流程。macOS Keychain 存储 token。JWT 用于 Bridge IPC 认证。</td>
+        </tr>
+      </tbody>
+    </table>
+  </section>
+
+</main>
+
+<footer>
+  <span>Claude Code 架构参考 · 源码快照 2026-03-31 · 教育研究存档</span>
+  <span>TypeScript · Bun · React + Ink · 约 512K 行代码</span>
+</footer>
+
+</body>
+</html>
