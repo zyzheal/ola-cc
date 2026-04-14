@@ -49,6 +49,141 @@ const COMPACTABLE_TOOLS = new Set<string>([
   FILE_WRITE_TOOL_NAME,
 ])
 
+// Source code file extensions that should be protected from Micro-Compact
+// clearing. These results are expensive to re-read and critical for context.
+const SOURCE_CODE_EXTENSIONS = new Set([
+  '.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs',
+  '.py', '.pyi',
+  '.go',
+  '.rs',
+  '.java',
+  '.c', '.h', '.cpp', '.hpp', '.cc', '.cxx',
+  '.rb',
+  '.swift',
+  '.kt', '.kts',
+  '.scala',
+  '.php',
+  '.sh', '.bash', '.zsh', '.fish',
+  '.tf', '.hcl',
+  '.yaml', '.yml', '.json', '.toml',
+  '.css', '.scss', '.sass', '.less',
+  '.sql',
+  '.proto',
+  '.vue', '.svelte',
+])
+
+// Error indicators in Bash/PowerShell output that signal critical debugging
+// context. Losing these results would make it harder to diagnose issues.
+const BASH_ERROR_INDICATORS = [
+  'Error',
+  'error',
+  'ERROR',
+  'panic',
+  'PANIC',
+  'failed',
+  'FAILED',
+  'failure',
+  'FAILURE',
+  'stack trace',
+  'Stack trace',
+  'exception',
+  'Exception',
+  'EXCEPTION',
+  'FATAL',
+  'fatal',
+  'Segmentation fault',
+  'core dumped',
+  'Traceback',
+  'Traceback (most recent call last)',
+  'fatal error',
+  'unrecoverable',
+]
+
+/**
+ * Check if a tool result should be protected from Micro-Compact clearing.
+ *
+ * Micro-Compact indiscriminately clears ALL compactable tool results when
+ * the time-based trigger fires. This treats a trivial `ls` output the same
+ * as a critical stack trace or source code read. This function identifies
+ * tool results that are too valuable to clear:
+ *
+ * 1. FileRead results for source code files (.ts, .py, .go, etc.) — these
+ *    are expensive to re-read and critical for maintaining code context.
+ * 2. Bash/PowerShell results that contain error indicators — error context
+ *    is needed for debugging and understanding what went wrong.
+ *
+ * Non-protected results (ls output, simple glob/grep results, web search
+ * results) continue to be cleared as before.
+ */
+function shouldProtectToolResult(
+  toolName: string,
+  toolResultContent: string,
+  toolInput: Record<string, unknown> | null,
+): boolean {
+  // Protect FileRead results for source code files
+  if (toolName === FILE_READ_TOOL_NAME && toolInput) {
+    const filePath = toolInput['file_path'] as string | undefined
+    if (filePath) {
+      const ext = filePath.includes('.')
+        ? '.' + filePath.split('.').pop()!.toLowerCase()
+        : ''
+      if (SOURCE_CODE_EXTENSIONS.has(ext)) {
+        return true
+      }
+    }
+  }
+
+  // Protect Bash/PowerShell results that contain error indicators
+  if (SHELL_TOOL_NAMES.includes(toolName)) {
+    for (const indicator of BASH_ERROR_INDICATORS) {
+      if (toolResultContent.includes(indicator)) {
+        return true
+      }
+    }
+  }
+
+  return false
+}
+
+/**
+ * Build a map from tool_use_id to tool_use input for quick lookup.
+ * Used by shouldProtectToolResult to access file_path for FileRead tools.
+ */
+function buildToolUseInputMap(
+  messages: Message[],
+): Map<string, Record<string, unknown>> {
+  const map = new Map<string, Record<string, unknown>>()
+  for (const message of messages) {
+    if (
+      message.type === 'assistant' &&
+      Array.isArray(message.message.content)
+    ) {
+      for (const block of message.message.content) {
+        if (block.type === 'tool_use') {
+          map.set(block.id, block.input ?? {})
+        }
+      }
+    }
+  }
+  return map
+}
+
+/**
+ * Extract the text content from a tool_result block.
+ */
+function getToolResultTextContent(block: {
+  type: 'tool_result'
+  content?: string | Array<{ type: string; text?: string }>
+}): string {
+  if (!block.content) return ''
+  if (typeof block.content === 'string') return block.content
+  // Array of content blocks
+  return block.content
+    .filter((item): item is { type: string; text?: string } => item.type === 'text')
+    .map(item => item.text ?? '')
+    .join('\n')
+}
+
 // --- Cached microcompact state (ant-only, gated by feature('CACHED_MICROCOMPACT')) ---
 
 // Lazy-initialized cached MC module and state to avoid importing in external builds.
@@ -460,7 +595,49 @@ function maybeTimeBasedMicrocompact(
   // context. Neither degenerate is sensible — always keep at least the last.
   const keepRecent = Math.max(1, config.keepRecent)
   const keepSet = new Set(compactableIds.slice(-keepRecent))
-  const clearSet = new Set(compactableIds.filter(id => !keepSet.has(id)))
+
+  // Build tool use input map for content-aware protection checks
+  const toolUseInputMap = buildToolUseInputMap(messages)
+
+  // Second pass: identify tool results that should be protected based on
+  // content (source code FileRead results, error-containing Bash results).
+  // These are moved to the "keep" set regardless of recency.
+  const protectedIds = new Set<string>()
+  for (const message of messages) {
+    if (message.type === 'user' && Array.isArray(message.message.content)) {
+      for (const block of message.message.content) {
+        if (block.type === 'tool_result' && compactableIds.includes(block.tool_use_id)) {
+          const toolUse = toolUseInputMap.get(block.tool_use_id)
+          // Find the tool name by scanning assistant messages
+          let toolName: string | null = null
+          for (const asstMsg of messages) {
+            if (asstMsg.type === 'assistant' && Array.isArray(asstMsg.message.content)) {
+              for (const asstBlock of asstMsg.message.content) {
+                if (asstBlock.type === 'tool_use' && asstBlock.id === block.tool_use_id) {
+                  toolName = asstBlock.name
+                  break
+                }
+              }
+            }
+            if (toolName) break
+          }
+          if (toolName) {
+            const textContent = getToolResultTextContent(block)
+            if (shouldProtectToolResult(toolName, textContent, toolUse ?? null)) {
+              protectedIds.add(block.tool_use_id)
+            }
+          }
+        }
+      }
+    }
+  }
+
+  // ClearSet excludes both recent (keepSet) and protected (protectedIds) tool results
+  const clearSet = new Set(
+    compactableIds.filter(
+      id => !keepSet.has(id) && !protectedIds.has(id),
+    ),
+  )
 
   if (clearSet.size === 0) {
     return null
@@ -500,12 +677,13 @@ function maybeTimeBasedMicrocompact(
     gapThresholdMinutes: config.gapThresholdMinutes,
     toolsCleared: clearSet.size,
     toolsKept: keepSet.size,
+    toolsProtected: protectedIds.size,
     keepRecent: config.keepRecent,
     tokensSaved,
   })
 
   logForDebugging(
-    `[TIME-BASED MC] gap ${Math.round(gapMinutes)}min > ${config.gapThresholdMinutes}min, cleared ${clearSet.size} tool results (~${tokensSaved} tokens), kept last ${keepSet.size}`,
+    `[TIME-BASED MC] gap ${Math.round(gapMinutes)}min > ${config.gapThresholdMinutes}min, cleared ${clearSet.size} tool results (~${tokensSaved} tokens), kept last ${keepSet.size}, protected ${protectedIds.size} (content-aware)`,
   )
 
   suppressCompactWarning()

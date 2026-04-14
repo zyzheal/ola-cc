@@ -16,6 +16,7 @@ import { getFeatureValue_CACHED_MAY_BE_STALE } from '../analytics/growthbook.js'
 import { getMaxOutputTokensForModel } from '../api/claude.js'
 import { notifyCompaction } from '../api/promptCacheBreakDetection.js'
 import { setLastSummarizedMessageId } from '../SessionMemory/sessionMemoryUtils.js'
+import { TIME_BASED_MC_CLEARED_MESSAGE } from './microCompact.js'
 import {
   type CompactionResult,
   compactConversation,
@@ -68,6 +69,34 @@ export const MANUAL_COMPACT_BUFFER_TOKENS = 3_000
 // BQ 2026-03-10: 1,279 sessions had 50+ consecutive failures (up to 3,272)
 // in a single session, wasting ~250K API calls/day globally.
 const MAX_CONSECUTIVE_AUTOCOMPACT_FAILURES = 3
+
+/**
+ * Detect whether Micro-Compact has recently cleared tool results.
+ *
+ * Micro-Compact runs on every query turn (microcompactMessages) and replaces
+ * old tool_result content with TIME_BASED_MC_CLEARED_MESSAGE. When many tool
+ * results have been cleared, the conversation context is already "lossy" —
+ * generating a session memory summary from this depleted context would
+ * compound the loss (double lossy compression).
+ *
+ * Returns the count of cleared tool results found, or 0 if none.
+ */
+function countClearedToolResults(messages: Message[]): number {
+  let count = 0
+  for (const message of messages) {
+    if (message.type === 'user' && Array.isArray(message.message.content)) {
+      for (const block of message.message.content) {
+        if (
+          block.type === 'tool_result' &&
+          block.content === TIME_BASED_MC_CLEARED_MESSAGE
+        ) {
+          count++
+        }
+      }
+    }
+  }
+  return count
+}
 
 export function getAutoCompactThreshold(model: string): number {
   const effectiveContextWindow = getEffectiveContextWindowSize(model)
@@ -284,12 +313,26 @@ export async function autoCompactIfNeeded(
     querySource,
   }
 
-  // EXPERIMENT: Try session memory compaction first
-  const sessionMemoryResult = await trySessionMemoryCompaction(
-    messages,
-    toolUseContext.agentId,
-    recompactionInfo.autoCompactThreshold,
-  )
+  // EXPERIMENT: Try session memory compaction first.
+  // However, if Micro-Compact has recently cleared many tool results (replacing
+  // them with "[Old tool result content cleared]"), the conversation context is
+  // already depleted. Generating a session memory summary from this "lossy"
+  // context would compound the data loss. Skip SM-Compact in this case and go
+  // directly to Full Compact, which produces a better summary from whatever
+  // context remains.
+  const clearedCount = countClearedToolResults(messages)
+  let sessionMemoryResult: CompactionResult | null = null
+  if (clearedCount < 5) {
+    sessionMemoryResult = await trySessionMemoryCompaction(
+      messages,
+      toolUseContext.agentId,
+      recompactionInfo.autoCompactThreshold,
+    )
+  } else {
+    logForDebugging(
+      `autocompact: skipping SM-compact — ${clearedCount} tool results cleared by Micro-Compact, going straight to Full Compact`,
+    )
+  }
   if (sessionMemoryResult) {
     // Reset lastSummarizedMessageId since session memory compaction prunes messages
     // and the old message UUID will no longer exist after the REPL replaces messages
