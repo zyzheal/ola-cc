@@ -146,13 +146,13 @@ function shouldProtectToolResult(
 }
 
 /**
- * Build a map from tool_use_id to tool_use input for quick lookup.
- * Used by shouldProtectToolResult to access file_path for FileRead tools.
+ * Build a map from tool_use_id to { name, input } for quick lookup.
+ * Used by shouldProtectToolResult to access file_path and tool name.
  */
-function buildToolUseInputMap(
+function buildToolUseInfoMap(
   messages: Message[],
-): Map<string, Record<string, unknown>> {
-  const map = new Map<string, Record<string, unknown>>()
+): Map<string, { name: string; input: Record<string, unknown> }> {
+  const map = new Map<string, { name: string; input: Record<string, unknown> }>()
   for (const message of messages) {
     if (
       message.type === 'assistant' &&
@@ -160,7 +160,7 @@ function buildToolUseInputMap(
     ) {
       for (const block of message.message.content) {
         if (block.type === 'tool_use') {
-          map.set(block.id, block.input ?? {})
+          map.set(block.id, { name: block.name, input: block.input ?? {} })
         }
       }
     }
@@ -596,8 +596,8 @@ function maybeTimeBasedMicrocompact(
   const keepRecent = Math.max(1, config.keepRecent)
   const keepSet = new Set(compactableIds.slice(-keepRecent))
 
-  // Build tool use input map for content-aware protection checks
-  const toolUseInputMap = buildToolUseInputMap(messages)
+  // Build tool use info map for content-aware protection checks
+  const toolUseInfoMap = buildToolUseInfoMap(messages)
 
   // Second pass: identify tool results that should be protected based on
   // content (source code FileRead results, error-containing Bash results).
@@ -607,23 +607,10 @@ function maybeTimeBasedMicrocompact(
     if (message.type === 'user' && Array.isArray(message.message.content)) {
       for (const block of message.message.content) {
         if (block.type === 'tool_result' && compactableIds.includes(block.tool_use_id)) {
-          const toolUse = toolUseInputMap.get(block.tool_use_id)
-          // Find the tool name by scanning assistant messages
-          let toolName: string | null = null
-          for (const asstMsg of messages) {
-            if (asstMsg.type === 'assistant' && Array.isArray(asstMsg.message.content)) {
-              for (const asstBlock of asstMsg.message.content) {
-                if (asstBlock.type === 'tool_use' && asstBlock.id === block.tool_use_id) {
-                  toolName = asstBlock.name
-                  break
-                }
-              }
-            }
-            if (toolName) break
-          }
-          if (toolName) {
+          const toolInfo = toolUseInfoMap.get(block.tool_use_id)
+          if (toolInfo) {
             const textContent = getToolResultTextContent(block)
-            if (shouldProtectToolResult(toolName, textContent, toolUse ?? null)) {
+            if (shouldProtectToolResult(toolInfo.name, textContent, toolInfo.input)) {
               protectedIds.add(block.tool_use_id)
             }
           }
