@@ -1,0 +1,25 @@
+# Progress Log
+
+## Completed Features
+
+### OpenAI Protocol Support (2026-04-16)
+- Added 'openai' to APIProvider type in src/utils/model/providers.ts
+- Updated getAPIProvider() to detect CLAUDE_CODE_USE_OPENAI env var
+- Created src/services/api/openai.ts - OpenAI-compatible API client adapter:
+  - Message format conversion (Anthropic <-> OpenAI)
+  - Streaming response conversion (SSE events to Anthropic stream events)
+  - Tool/function calling support
+  - System prompt handling
+  - Configurable base URL (OPENAI_API_BASE / OPENAI_BASE_URL)
+- Updated src/services/api/client.ts to use OpenAI client when provider is 'openai'
+- Updated scripts/README-publish.md and dist/publish/README.md with OpenAI documentation
+
+### Build Status
+- bun run build:dev - SUCCESS
+- bun run build - SUCCESS
+- bun run ./scripts/build-publish.ts - SUCCESS
+
+## Next Steps
+- End-to-end testing with a real OpenAI-compatible endpoint
+- Consider adding structured outputs support for response_format
+- Consider adding image/multimodal support for vision-capable models
