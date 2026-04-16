@@ -5,7 +5,58 @@ import { getIsGit } from '../utils/git.js'
 import { getCwd } from '../utils/cwd.js'
 import { getIsNonInteractiveSession } from '../bootstrap/state.js'
 import { getCurrentWorktreeSession } from '../utils/worktree.js'
-import { getSessionStartDate } from './common.js'
+import { djb2Hash } from '../utils/hash.js'
+// Session-latched CWD for cache stability — prevents cache bust from cwd changes
+// mid-session. The cwd at session start is what matters for tool behavior.
+let _sessionCwd: string | null = null
+function getSessionCwd(): string {
+  if (_sessionCwd === null) {
+    _sessionCwd = getCwd()
+  }
+  return _sessionCwd
+}
+
+// Session-latched date for cache stability — capture session start time
+const SESSION_START_TIME = Date.now()
+let _sessionDate: string | null = null
+function getSessionStartDate(): string {
+  if (_sessionDate === null) {
+    _sessionDate = new Date(SESSION_START_TIME).toISOString().slice(0, 10)
+  }
+  return _sessionDate
+}
+
+// Session-latched MCP clients hash for cache stability
+// Uses stable sorting by server ID and content hashing to minimize collisions
+let _mcpClientsHash: string | null = null
+function getMcpClientsHash(clients?: MCPServerConnection[]): string {
+  if (_mcpClientsHash === null && clients && clients.length > 0) {
+    // Stable sort by server ID (or name/url as fallback)
+    const sorted = [...clients].sort((a, b) => {
+      const keyA = a.server?.id || a.server?.name || a.server?.url || ''
+      const keyB = b.server?.id || b.server?.name || b.server?.url || ''
+      return keyA.localeCompare(keyB)
+    })
+    // Build stable content string for hashing
+    const content = sorted.map(c => JSON.stringify({
+      id: c.server?.id,
+      name: c.server?.name,
+      url: c.server?.url,
+    })).join('||')
+    // Compute hash to get compact, stable identifier
+    _mcpClientsHash = djb2Hash(content).toString(36)
+  }
+  return _mcpClientsHash ?? 'none'
+}
+
+// Test-only reset function for unit testing
+if (typeof process !== 'undefined' && process.env.NODE_ENV === 'test') {
+  ;(globalThis as Record<string, unknown>).__resetSessionCacheForTests__ = () => {
+    _sessionCwd = null
+    _sessionDate = null
+    _mcpClientsHash = null
+  }
+}
 import { getInitialSettings } from '../utils/settings/settings.js'
 import {
   AGENT_TOOL_NAME,
@@ -449,11 +500,14 @@ export async function getSystemPrompt(
 ): Promise<string[]> {
   if (isEnvTruthy(process.env.CLAUDE_CODE_SIMPLE)) {
     return [
-      `You are Claude Code, Anthropic's official CLI for Claude.\n\nCWD: ${getCwd()}\nDate: ${getSessionStartDate()}`,
+      `You are Claude Code, Anthropic's official CLI for Claude.\n\nCWD: ${getSessionCwd()}\nDate: ${getSessionStartDate()}`,
     ]
   }
 
-  const cwd = getCwd()
+  // Use session-latched CWD for cache stability
+  const cwd = getSessionCwd()
+  // Use session-latched MCP clients hash for cache stability
+  const mcpHash = getMcpClientsHash(mcpClients)
   const [skillToolCommands, outputStyleConfig, envInfo] = await Promise.all([
     getSkillToolCommands(cwd),
     getOutputStyleConfig(),

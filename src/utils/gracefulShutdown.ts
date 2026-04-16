@@ -191,11 +191,22 @@ function printResumeHint(): void {
  * In that case, fall back to SIGKILL which always works.
  */
 function forceExit(exitCode: number): never {
+  // eslint-disable-next-line no-console
+  console.error(`[forceExit] called with code=${exitCode}, isBun=${typeof process !== 'undefined' && 'bun' in process}`)
   // Clear failsafe timer since we're exiting now
   if (failsafeTimer !== undefined) {
     clearTimeout(failsafeTimer)
     failsafeTimer = undefined
   }
+  // SIGKILL failsafe: if process.exit() hangs (doesn't throw but blocks),
+  // kill ourselves after 1s. This handles the rare case where Node.js
+  // process.exit() blocks waiting for libuv handle cleanup.
+  const killTimer = setTimeout(() => {
+    // eslint-disable-next-line no-console
+    console.error('[forceExit] process.exit hung for 1s, SIGKILL')
+    process.kill(process.pid, 'SIGKILL')
+  }, 1000)
+  killTimer.unref()
   // Drain stdin LAST, right before exit. cleanupTerminalModes() sent
   // DISABLE_MOUSE_TRACKING early, but the terminal round-trip plus any
   // events already in flight means bytes can arrive during the seconds
@@ -211,8 +222,12 @@ function forceExit(exitCode: number): never {
     // Terminal may be gone (SIGHUP). Ignore — we are about to exit.
   }
   try {
+    // eslint-disable-next-line no-console
+    console.error('[forceExit] about to call process.exit')
     process.exit(exitCode)
   } catch (e) {
+    // eslint-disable-next-line no-console
+    console.error(`[forceExit] process.exit threw: ${e}`)
     // process.exit() threw. In tests, it's mocked to throw - re-throw so test sees it.
     // In production, it's likely EIO from dead terminal - use SIGKILL.
     if ((process.env.NODE_ENV as string) === 'test') {
@@ -221,6 +236,8 @@ function forceExit(exitCode: number): never {
     // Fall back to SIGKILL which doesn't try to flush anything.
     process.kill(process.pid, 'SIGKILL')
   }
+  // eslint-disable-next-line no-console
+  console.error('[forceExit] process.exit returned (should be unreachable)')
   // In tests, process.exit may be mocked to return instead of exiting.
   // In production, we should never reach here.
   if ((process.env.NODE_ENV as string) !== 'test') {
@@ -248,10 +265,15 @@ export const setupGracefulShutdown = memoize(() => {
   //
   // Fix: pin signal-exit v4 loaded by registering a no-op onExit callback that
   // is never unsubscribed. This keeps v4's internal emitter count > 0 so
-  // unload() never runs and removeListener is never called. Harmless under
-  // Node.js — the pin also ensures signal-exit's process.exit hook stays
-  // active for Ink cleanup.
-  onExit(() => {})
+  // unload() never runs and removeListener is never called.
+  // Only applied in Bun — on Node.js this pin can interfere with process
+  // exit lifecycle, especially when bundled (npx ola-cc), causing hangs
+  // after user input is submitted.
+  // biome-ignore lint/suspicious/noConsole: runtime detection
+  const isBun = typeof process !== 'undefined' && 'bun' in process
+  if (isBun) {
+    onExit(() => {})
+  }
 
   process.on('SIGINT', () => {
     // In print mode, print.ts registers its own SIGINT handler that aborts
@@ -399,9 +421,13 @@ export async function gracefulShutdown(
   },
 ): Promise<void> {
   if (shutdownInProgress) {
+    // eslint-disable-next-line no-console
+    console.error('[gracefulShutdown] already in progress, returning')
     return
   }
   shutdownInProgress = true
+  // eslint-disable-next-line no-console
+  console.error('[gracefulShutdown] started, exitCode=', exitCode, ', reason=', reason)
 
   // Resolve the SessionEnd hook budget before arming the failsafe so the
   // failsafe can scale with it. Without this, a user-configured 10s hook
@@ -440,6 +466,8 @@ export async function gracefulShutdown(
   // terminal is dead (SIGHUP, SSH disconnect), hooks and analytics may hang
   // on I/O to a dead TTY or unreachable network, eating into the
   // failsafe budget. Session persistence must complete before anything else.
+  // eslint-disable-next-line no-console
+  console.error('[gracefulShutdown] step: runCleanupFunctions')
   let cleanupTimeoutId: ReturnType<typeof setTimeout> | undefined
   try {
     const cleanupPromise = (async () => {
@@ -465,6 +493,8 @@ export async function gracefulShutdown(
     // Silently handle timeout and other errors
     clearTimeout(cleanupTimeoutId)
   }
+  // eslint-disable-next-line no-console
+  console.error('[gracefulShutdown] step: executeSessionEndHooks')
 
   // Execute SessionEnd hooks. Bound both the per-hook default timeout and the
   // overall execution via a single budget (CLAUDE_CODE_SESSIONEND_HOOKS_TIMEOUT_MS,
@@ -498,6 +528,8 @@ export async function gracefulShutdown(
     })
   }
 
+  // eslint-disable-next-line no-console
+  console.error('[gracefulShutdown] step: analytics flush')
   // Flush analytics — capped at 500ms. Previously unbounded: the 1P exporter
   // awaits all pending axios POSTs (10s each), eating the full failsafe budget.
   // Lost analytics on slow networks are acceptable; a hanging exit is not.
@@ -509,6 +541,8 @@ export async function gracefulShutdown(
   } catch {
     // Ignore analytics shutdown errors
   }
+  // eslint-disable-next-line no-console
+  console.error('[gracefulShutdown] step: calling forceExit')
 
   if (options?.finalMessage) {
     try {

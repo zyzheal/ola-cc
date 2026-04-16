@@ -1415,12 +1415,20 @@ export default class Ink {
     this.stdinListeners = [];
 
     // Re-enable raw mode if it was enabled before
+    // Note: listeners are already re-attached above (line 1409-1414), so we
+    // must call resume() AFTER setRawMode to ensure flowing mode is correct.
+    // This follows the same Node.js 22+ fix pattern as handleSetRawMode.
     if (this.wasRawMode) {
       const stdinWithRaw = stdin as NodeJS.ReadStream & {
         setRawMode?: (mode: boolean) => void;
+        resume?: () => void;
       };
       if (stdinWithRaw.setRawMode) {
         stdinWithRaw.setRawMode(true);
+      }
+      // Node.js 22+ fix: resume after setRawMode (listeners already added)
+      if (stdinWithRaw.resume) {
+        stdinWithRaw.resume();
       }
       this.wasRawMode = false;
     }

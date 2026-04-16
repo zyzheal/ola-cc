@@ -1,6 +1,14 @@
 {
   "name": "@ant/claude-for-chrome-mcp",
-  "version": "0.0.0-restored",
+  "version": "0.4.0-restored",
   "type": "module",
-  "main": "./index.ts"
+  "main": "./index.js",
+  "bin": {
+    "chrome-native-host": "./native-host.js"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.12.0",
+    "uuid": "^9.0.0",
+    "zod": "^3.24.0"
+  }
 }

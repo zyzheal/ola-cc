@@ -203,6 +203,7 @@ export async function installChromeNativeHostManifest(
     type: 'stdio',
     allowed_origins: [
       `chrome-extension://fcoeoabgfenejglbffodgkkbkcdhcgfn/`, // PROD_EXTENSION_ID
+      `chrome-extension://pnhielkknjookdjklgahibjafpndhdlc/`, // CUSTOM_EXTENSION_ID
       ...(process.env.USER_TYPE === 'ant'
         ? [
             'chrome-extension://dihbgbndebgnbjfmelmegjepbnkhlgni/', // DEV_EXTENSION_ID

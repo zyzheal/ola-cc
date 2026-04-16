@@ -15,11 +15,7 @@ import { getPlatform } from './platform.js'
 import { countCharInString } from './stringUtils.js'
 
 const __filename = fileURLToPath(import.meta.url)
-// we use node:path.join instead of node:url.resolve because the former doesn't encode spaces
-const __dirname = path.join(
-  __filename,
-  process.env.NODE_ENV === 'test' ? '../../../' : '../',
-)
+const __dirname = path.dirname(__filename)
 
 type RipgrepConfig = {
   mode: 'system' | 'builtin' | 'embedded'
@@ -559,9 +555,10 @@ const testRipgrepOnFirstUse = memoize(async (): Promise<void> => {
   try {
     let test: { code: number; stdout: string }
 
-    // For embedded ripgrep, use Bun.spawn with argv0
-    if (config.argv0) {
-      // Only Bun embeds ripgrep.
+    // For embedded ripgrep (bun binary), we need to check if we're running as bun
+    // In npm package (Node.js), this branch is not used since ripgrep is a separate binary
+    if (config.argv0 && typeof process.versions.bun === 'string') {
+      // Only Bun embeds ripgrep. Use Bun.spawn for argv0 support
       // eslint-disable-next-line custom-rules/require-bun-typeof-guard
       const proc = Bun.spawn([config.command, '--version'], {
         argv0: config.argv0,
@@ -579,6 +576,7 @@ const testRipgrepOnFirstUse = memoize(async (): Promise<void> => {
         stdout,
       }
     } else {
+      // Node.js: use execFileNoThrow (ripgrep is a separate binary in vendor/)
       test = await execFileNoThrow(
         config.command,
         [...config.args, '--version'],

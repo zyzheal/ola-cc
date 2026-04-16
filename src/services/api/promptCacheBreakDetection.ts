@@ -87,6 +87,10 @@ type PendingChanges = {
   addedTools: string[]
   removedTools: string[]
   changedToolSchemas: string[]
+  /** True when only MCP tools changed (added/removed/schema). MCP tools are
+   *  deferred by default when tool search is enabled, so the server strips
+   *  them from the prompt and the cache key stays stable. */
+  onlyMcpToolsChanged: boolean
   previousModel: string
   newModel: string
   prevGlobalCacheStrategy: string
@@ -105,6 +109,16 @@ const previousStateBySource = new Map<string, PreviousState>()
 // + tool schemas). Without a cap, spawning many subagents (each with a unique
 // agentId key) causes the map to grow indefinitely.
 const MAX_TRACKED_SOURCES = 10
+
+// LRU tracking: move key to end on access, evict from front (oldest)
+// This prevents active agents from being evicted while idle ones are kept
+function touchTrackingKey(key: string): void {
+  const value = previousStateBySource.get(key)
+  if (value !== undefined) {
+    previousStateBySource.delete(key)
+    previousStateBySource.set(key, value)
+  }
+}
 
 const TRACKED_SOURCE_PREFIXES = [
   'repl_main_thread',
@@ -296,10 +310,15 @@ export function recordPromptState(snapshot: PromptStateSnapshot): void {
     const prev = previousStateBySource.get(key)
 
     if (!prev) {
-      // Evict oldest entries if map is at capacity
+      // Evict oldest (least recently used) entries if map is at capacity
+      // LRU eviction: the act of accessing a key moves it to the end,
+      // so the first key is always the least recently used
       while (previousStateBySource.size >= MAX_TRACKED_SOURCES) {
         const oldest = previousStateBySource.keys().next().value
-        if (oldest !== undefined) previousStateBySource.delete(oldest)
+        if (oldest !== undefined) {
+          previousStateBySource.delete(oldest)
+          logForDebugging(`[CACHE TRACKER] Evicted LRU source: ${oldest}`)
+        }
       }
 
       previousStateBySource.set(key, {
@@ -324,8 +343,13 @@ export function recordPromptState(snapshot: PromptStateSnapshot): void {
         buildDiffableContent: lazyDiffableContent,
         perToolHashes: computeToolHashes(),
       })
+      // Touch the key to mark it as recently used
+      touchTrackingKey(key)
       return
     }
+
+    // Update existing entry — touch to mark as recently used
+    touchTrackingKey(key)
 
     prev.callCount++
 
@@ -376,6 +400,14 @@ export function recordPromptState(snapshot: PromptStateSnapshot): void {
         }
         prev.perToolHashes = newHashes
       }
+      // MCP tools are deferred by default when tool search is enabled, so
+      // the server strips them from the prompt. Only-MCP tool changes don't
+      // actually bust the cache key — flag this for the break detector.
+      const onlyMcpToolsChanged =
+        toolSchemasChanged &&
+        addedTools.every(n => n.startsWith('mcp__')) &&
+        removedTools.every(n => n.startsWith('mcp__')) &&
+        changedToolSchemas.every(n => n.startsWith('mcp__'))
       prev.pendingChanges = {
         systemPromptChanged,
         toolSchemasChanged,
@@ -394,6 +426,7 @@ export function recordPromptState(snapshot: PromptStateSnapshot): void {
         addedTools,
         removedTools,
         changedToolSchemas,
+        onlyMcpToolsChanged,
         systemCharDelta: systemCharCount - prev.systemCharCount,
         previousModel: prev.model,
         newModel: model,
@@ -514,7 +547,14 @@ export async function checkResponseForCacheBreak(
           changes.addedToolCount > 0 || changes.removedToolCount > 0
             ? ` (+${changes.addedToolCount}/-${changes.removedToolCount} tools)`
             : ' (tool prompt/schema changed, same tool set)'
-        parts.push(`tools changed${toolDiff}`)
+        if (changes.onlyMcpToolsChanged) {
+          // MCP tools are dynamic (defer_loading by default). The server
+          // strips deferred tools from the prompt, so the cache key is
+          // stable. This is expected behavior, not a CC bug.
+          parts.push(`tools changed${toolDiff} (MCP only, expected)`)
+        } else {
+          parts.push(`tools changed${toolDiff}`)
+        }
       }
       if (changes.fastModeChanged) {
         parts.push('fast mode toggled')

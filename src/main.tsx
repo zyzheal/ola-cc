@@ -601,15 +601,8 @@ export async function main() {
   process.on('exit', () => {
     resetCursor();
   });
-  process.on('SIGINT', () => {
-    // In print mode, print.ts registers its own SIGINT handler that aborts
-    // the in-flight query and calls gracefulShutdown; skip here to avoid
-    // preempting it with a synchronous process.exit().
-    if (process.argv.includes('-p') || process.argv.includes('--print')) {
-      return;
-    }
-    process.exit(0);
-  });
+  // SIGINT is handled by gracefulShutdown.ts - no need to register here
+  // to avoid conflicting handlers that call process.exit() directly.
   profileCheckpoint('main_warning_handler_initialized');
 
   // Check for cc:// or cc+unix:// URL in argv — rewrite so the main command
@@ -880,6 +873,7 @@ async function getInputPrompt(prompt: string, inputFormat: 'text' | 'stream-json
     // silent data loss visible for the rare producer that's slower still.
     const timedOut = await peekForStdinData(process.stdin, 3000);
     process.stdin.off('data', onData);
+    process.stdin.pause();
     if (timedOut) {
       process.stderr.write('Warning: no stdin data received in 3s, proceeding without it. ' + 'If piping from a slow command, redirect stdin explicitly: < /dev/null to skip, or wait longer.\n');
     }
