@@ -28,6 +28,10 @@ import {
   getVertexRegionForModel,
   isEnvTruthy,
 } from '../../utils/envUtils.js'
+import {
+  createOpenAICompatibleClient,
+  type OpenAICompatibleClientOptions,
+} from './openai.js'
 
 /**
  * Environment variables for different client types:
@@ -295,6 +299,20 @@ export async function getAnthropicClient({
     }
     // we have always been lying about the return type - this doesn't support batching or models
     return new AnthropicVertex(vertexArgs) as unknown as Anthropic
+  }
+
+  if (isEnvTruthy(process.env.CLAUDE_CODE_USE_OPENAI)) {
+    // OpenAI-compatible API provider (supports OpenAI API, Ollama, vLLM, etc.)
+    const openaiArgs: OpenAICompatibleClientOptions = {
+      apiKey: apiKey || process.env.OPENAI_API_KEY,
+      maxRetries,
+      model,
+      ...(fetchOverride && { fetch: fetchOverride }),
+    }
+    logForDebugging?.(
+      `[API:openai] Using OpenAI-compatible client, base=${process.env.OPENAI_API_BASE || process.env.OPENAI_BASE_URL || 'https://api.openai.com/v1'}`,
+    )
+    return createOpenAICompatibleClient(openaiArgs) as unknown as Anthropic
   }
 
   // Determine authentication method based on available tokens
