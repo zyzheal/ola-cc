@@ -2,6 +2,8 @@ import { hasBinaryExtension } from '../constants/files.js'
 import { detectFileEncoding } from './file.js'
 import { getFsImplementation } from './fsOperations.js'
 
+const MAX_FILE_READ_BYTES = 50 * 1024 * 1024 // 50 MB — prevent OOM on huge files
+
 type CachedFileData = {
   content: string
   encoding: BufferEncoding
@@ -49,6 +51,14 @@ class FileReadCache {
     if (hasBinaryExtension(filePath)) {
       throw new Error(
         `Cannot read binary file: ${filePath}. This tool only supports text files.`,
+      )
+    }
+
+    // Size guard: skip files exceeding 50 MB to prevent OOM crashes
+    // when loading very large session/history files (issue #2)
+    if (stats.size > MAX_FILE_READ_BYTES) {
+      throw new Error(
+        `File too large (${(stats.size / 1024 / 1024).toFixed(1)} MB exceeds ${MAX_FILE_READ_BYTES / 1024 / 1024} MB limit): ${filePath}. Use offset/limit parameters instead.`,
       )
     }
 

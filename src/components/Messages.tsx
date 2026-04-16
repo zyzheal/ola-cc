@@ -376,7 +376,20 @@ const MessagesImpl = ({
     columns
   } = useTerminalSize();
   const toggleShowAllShortcut = useShortcutDisplay('transcript:toggleShowAll', 'Transcript', 'Ctrl+E');
-  const normalizedMessages = useMemo(() => normalizeMessages(messages).filter(isNotEmptyMessage), [messages]);
+  const normalizedMessages = useMemo(() => {
+    // React Compiler memoCache fix (issue #7): in long sessions the messages
+    // array can grow to thousands of entries. Each setMessages creates a new
+    // array identity that accumulates in React's internal memoCache.
+    // Combined with virtualScroll's MAX_MOUNTED_ITEMS=300, cap the normalized
+    // array to prevent old versions from being retained via the memoCache chain.
+    // Only the most recent messages are needed for rendering.
+    const MAX_NORMALIZED_MESSAGES_LENGTH = 2000;
+    const result = normalizeMessages(messages).filter(isNotEmptyMessage);
+    if (result.length > MAX_NORMALIZED_MESSAGES_LENGTH) {
+      return result.slice(result.length - MAX_NORMALIZED_MESSAGES_LENGTH);
+    }
+    return result;
+  }, [messages]);
 
   // Check if streaming thinking should be visible (streaming or within 30s timeout)
   const isStreamingThinkingVisible = useMemo(() => {

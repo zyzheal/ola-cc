@@ -204,6 +204,7 @@ function applyTriggerSuggestion(suggestion: SuggestionItem, input: string, curso
   setCursorOffset(before.length + suggestion.displayText.length + 1);
 }
 let currentShellCompletionAbortController: AbortController | null = null;
+const MAX_GHOST_TEXT_BYTES = 4 * 1024 // 4 KB — bound ghost text memory (issue #12)
 
 /**
  * Generate bash shell completion suggestions
@@ -570,20 +571,27 @@ export function useTypeahead({
         return;
       }
       if (historyMatch) {
-        setInlineGhostText({
-          text: historyMatch.suffix,
-          fullCommand: historyMatch.fullCommand,
-          insertPosition: value.length
-        });
-        // Clear dropdown suggestions when showing ghost text
-        setSuggestionsState(() => ({
-          commandArgumentHint: undefined,
-          suggestions: [],
-          selectedSuggestion: -1
-        }));
-        setSuggestionType('none');
-        setMaxColumnWidth(undefined);
-        return;
+        // Size guard: skip overly long ghost text entries to prevent
+        // memory accumulation from large bash history commands (issue #12)
+        const suffixBytes = new TextEncoder().encode(historyMatch.suffix).length;
+        const cmdBytes = new TextEncoder().encode(historyMatch.fullCommand).length;
+        if (suffixBytes <= MAX_GHOST_TEXT_BYTES && cmdBytes <= MAX_GHOST_TEXT_BYTES * 4) {
+          setInlineGhostText({
+            text: historyMatch.suffix,
+            fullCommand: historyMatch.fullCommand,
+            insertPosition: value.length,
+          });
+          // Clear dropdown suggestions when showing ghost text
+          setSuggestionsState(() => ({
+            commandArgumentHint: undefined,
+            suggestions: [],
+            selectedSuggestion: -1,
+          }));
+          setSuggestionType('none');
+          setMaxColumnWidth(undefined);
+          return;
+        }
+        // Entry too large — fall through to no ghost text
       } else {
         // No history match, clear ghost text
         setInlineGhostText(undefined);

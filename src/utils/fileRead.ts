@@ -18,6 +18,8 @@ import { getFsImplementation, safeResolvePath } from './fsOperations.js'
 
 export type LineEndingType = 'CRLF' | 'LF'
 
+const MAX_FILE_READ_BYTES = 50 * 1024 * 1024 // 50 MB — prevent OOM on huge files
+
 export function detectEncodingForResolvedPath(
   resolvedPath: string,
 ): BufferEncoding {
@@ -100,6 +102,21 @@ export function readFileSyncWithMetadata(filePath: string): {
     throw new Error(
       `Cannot read binary file: ${filePath}. This tool only supports text files.`,
     )
+  }
+
+  // Size guard: check file stats before reading to prevent OOM on huge files
+  // (issue #2: >50MB session file crash during message deletion)
+  try {
+    const stats = fs.statSync(resolvedPath)
+    if (stats.size > MAX_FILE_READ_BYTES) {
+      throw new Error(
+        `File too large (${(stats.size / 1024 / 1024).toFixed(1)} MB exceeds ${MAX_FILE_READ_BYTES / 1024 / 1024} MB limit): ${filePath}. Use offset/limit parameters instead.`,
+      )
+    }
+  } catch (e: unknown) {
+    // Re-throw our size error, otherwise let the original error propagate
+    if (e instanceof Error && e.message.includes('File too large')) throw e
+    // stat failed for other reasons — proceed and let readFileSync fail
   }
 
   const encoding = detectEncodingForResolvedPath(resolvedPath)

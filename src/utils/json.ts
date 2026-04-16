@@ -189,14 +189,17 @@ export function parseJSONL<T>(data: string | Buffer): T[] {
   return parseJSONLBuffer<T>(data)
 }
 
-const MAX_JSONL_READ_BYTES = 100 * 1024 * 1024
+const MAX_JSONL_READ_BYTES = 50 * 1024 * 1024 // 50 MB — guard against OOM on huge session files
 
 /**
- * Reads and parses a JSONL file, reading at most the last 100 MB.
- * For files larger than 100 MB, reads the tail and skips the first partial line.
+ * Reads and parses a JSONL file, reading at most the last 50 MB.
+ * For files larger than 50 MB, reads the tail and skips the first partial line.
  *
- * 100 MB is more than sufficient since the longest context window we support
- * is ~2M tokens, which is well under 100 MB of JSONL.
+ * 50 MB is more than sufficient since the longest context window we support
+ * is ~2M tokens, which is well under 50 MB of JSONL.
+ * Files exceeding this limit are truncated on read rather than loaded entirely,
+ * preventing crashes when deleting messages from very large session files
+ * (issue #2: >50MB session file deletion crash).
  */
 export async function readJSONLFile<T>(filePath: string): Promise<T[]> {
   const { size } = await stat(filePath)
