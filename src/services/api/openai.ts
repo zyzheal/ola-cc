@@ -7,11 +7,15 @@
  * - Streaming response conversion
  * - Tool/function calling support
  * - System prompt handling
+ * - Retry with exponential backoff for transient failures
+ * - Model name mapping from Anthropic to OpenAI equivalents
  *
  * Configuration via environment variables:
  * - OPENAI_API_KEY: Required. Your OpenAI API key
  * - OPENAI_API_BASE or OPENAI_BASE_URL: Optional. Custom API base URL
  *   (for Ollama, vLLM, or other OpenAI-compatible endpoints)
+ * - OPENAI_MODEL: Optional. Default OpenAI model name to use when an
+ *   Anthropic model name is passed (e.g., "gpt-4o").
  */
 import { randomUUID } from 'crypto'
 
@@ -153,6 +157,180 @@ interface AnthropicStreamEvent {
   content_block?: AnthropicContentBlock
 }
 
+// -- Model name mapping: Anthropic -> OpenAI
+
+/**
+ * Default model mapping from Anthropic model names to OpenAI equivalents.
+ * Users can override this by setting OPENAI_MODEL env var or passing
+ * a model name directly that is already OpenAI-compatible.
+ */
+const ANTHROPIC_TO_OPENAI_MODEL_MAP: Record<string, string> = {
+  // Claude 4 family
+  'claude-sonnet-4-20250514': 'gpt-4o',
+  'claude-opus-4-20250514': 'gpt-4o',
+  'claude-opus-4-1-20250805': 'gpt-4o',
+  // Claude 3.5 family
+  'claude-sonnet-4-0-20250514': 'gpt-4o',
+  'claude-3-5-sonnet-20241022': 'gpt-4o',
+  'claude-3-5-sonnet-20240620': 'gpt-4o',
+  'claude-3-5-haiku-20241022': 'gpt-4o-mini',
+  // Claude 3 family
+  'claude-3-opus-20240229': 'gpt-4o',
+  'claude-3-sonnet-20240229': 'gpt-4o',
+  'claude-3-haiku-20240307': 'gpt-4o-mini',
+  // Legacy
+  'claude-2.1': 'gpt-4o',
+  'claude-2.0': 'gpt-4o',
+  'claude-instant-1.2': 'gpt-4o-mini',
+}
+
+/**
+ * Convert an Anthropic model name to its OpenAI equivalent.
+ * If the model name is not recognized as an Anthropic model,
+ * it is passed through verbatim (allowing users to specify
+ * their own OpenAI model names directly).
+ * Falls back to OPENAI_MODEL env var if set, otherwise returns as-is.
+ */
+function resolveModelName(anthropicModel: string): string {
+  // Direct mapping lookup
+  const mapped = ANTHROPIC_TO_OPENAI_MODEL_MAP[anthropicModel]
+  if (mapped) return mapped
+
+  // Prefix-based matching for models not in the exact map
+  if (anthropicModel.startsWith('claude-')) {
+    const fallback = process.env.OPENAI_MODEL
+    if (fallback) return fallback
+    // Default to gpt-4o for unknown Claude models
+    return 'gpt-4o'
+  }
+
+  // Not an Anthropic model name — pass through verbatim
+  return anthropicModel
+}
+
+// -- Retry logic with exponential backoff
+
+/**
+ * Check if an HTTP status code represents a retriable error.
+ * Retries on: 429 (rate limit), 5xx (server errors), and 0 (network errors).
+ */
+function isRetriableError(status: number): boolean {
+  return status === 429 || (status >= 500 && status < 600) || status === 0
+}
+
+/**
+ * Calculate delay for exponential backoff with jitter.
+ * Uses the formula: min(base * 2^attempt + random_jitter, maxDelay)
+ */
+function calculateBackoff(attempt: number, baseMs: number, maxMs: number): number {
+  const base = Math.min(baseMs * Math.pow(2, attempt), maxMs)
+  // Add random jitter (up to 25% of base) to avoid thundering herd
+  const jitter = base * 0.25 * Math.random()
+  return base + jitter
+}
+
+/**
+ * HTTP error that carries the response status for retry decision making.
+ */
+class OpenAIHttpError extends Error {
+  status: number
+  constructor(status: number, message: string) {
+    super(message)
+    this.name = 'OpenAIHttpError'
+    this.status = status
+  }
+}
+
+/**
+ * Execute a fetch call with retry and exponential backoff.
+ * Honors the maxRetries option from the client configuration.
+ * Retries on 429, 5xx, and network errors only.
+ */
+async function fetchWithRetry(
+  fetchFn: typeof fetch,
+  url: string,
+  init: RequestInit,
+  maxRetries: number,
+  signal?: AbortSignal,
+): Promise<Response> {
+  const baseDelay = 1000 // 1 second base
+  const maxDelay = 30000 // 30 seconds cap
+
+  let lastError: Error | null = null
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    try {
+      const response = await fetchFn(url, init)
+
+      if (response.ok) {
+        return response
+      }
+
+      // For non-retriable errors (4xx except 429), fail immediately
+      if (!isRetriableError(response.status)) {
+        const errorText = await response.text().catch(() => '')
+        throw new OpenAIHttpError(
+          response.status,
+          `OpenAI API error ${response.status}: ${errorText.slice(0, 500)}`,
+        )
+      }
+
+      // For retriable errors, buffer the error text for the last attempt
+      const errorText = await response.text().catch(() => '')
+      lastError = new OpenAIHttpError(
+        response.status,
+        `OpenAI API error ${response.status}: ${errorText.slice(0, 500)}`,
+      )
+
+      if (attempt < maxRetries) {
+        const delay = calculateBackoff(attempt, baseDelay, maxDelay)
+        // Wait with abort signal support
+        await new Promise<void>((resolve, reject) => {
+          const timeoutId = setTimeout(resolve, delay)
+          signal?.addEventListener('abort', () => {
+            clearTimeout(timeoutId)
+            reject(signal.reason)
+          }, { once: true })
+        })
+      }
+    } catch (err) {
+      // Network errors (fetch throws) are retriable
+      if (err instanceof OpenAIHttpError && !isRetriableError(err.status)) {
+        throw err
+      }
+
+      lastError = err instanceof Error ? err : new Error(String(err))
+
+      if (attempt < maxRetries) {
+        const delay = calculateBackoff(attempt, baseDelay, maxDelay)
+        await new Promise<void>((resolve, reject) => {
+          const timeoutId = setTimeout(resolve, delay)
+          signal?.addEventListener('abort', () => {
+            clearTimeout(timeoutId)
+            reject(signal.reason)
+          }, { once: true })
+        })
+      }
+    }
+  }
+
+  throw lastError || new Error('Request failed after retries')
+}
+
+// -- Helper: Safely parse JSON with fallback
+function safeJsonParse(text: string, fallback: unknown = {}): unknown {
+  try {
+    return JSON.parse(text)
+  } catch {
+    return fallback
+  }
+}
+
+// -- Helper: Log warnings (console.warn, safe if no logger available)
+function warn(message: string): void {
+  // eslint-disable-next-line no-console
+  console.warn(`[OpenAI Client Warning] ${message}`)
+}
+
 // -- Helper: Convert Anthropic messages to OpenAI format
 
 /**
@@ -195,17 +373,52 @@ function convertAnthropicMessageToOpenAI(
 
     // Process content blocks
     const textParts: string[] = []
+    const imageParts: Array<{ type: string; image_url: { url: string; detail?: string } }> = []
     for (const block of msg.content as Array<{
       type: string
       text?: string
       source?: { data?: string; media_type?: string; type?: string }
       cache_control?: { type: string }
     }>) {
+      // Warn about cache_control being dropped (OpenAI has no equivalent)
+      if (block.cache_control) {
+        warn(`cache_control on content block is not supported by OpenAI and will be ignored`)
+      }
       if (block.type === 'text') {
         textParts.push(block.text ?? '')
+      } else if (block.type === 'image') {
+        // Handle image blocks — OpenAI supports image_url format
+        if (block.source?.data && block.source?.media_type) {
+          imageParts.push({
+            type: 'image_url',
+            image_url: {
+              url: `data:${block.source.media_type};base64,${block.source.data}`,
+            },
+          })
+        } else if (block.source?.type === 'url') {
+          // External URL reference
+          imageParts.push({
+            type: 'image_url',
+            image_url: { url: (block.source as { url?: string }).url ?? '' },
+          })
+        } else {
+          warn(`Image block at user message index ${index} has no usable source — skipping`)
+        }
+      } else if (block.type === 'document' || block.type === 'tool_result') {
+        // Documents and tool_results in user messages are noted but not converted
+        warn(`Content block type "${block.type}" at user message index ${index} is not fully supported — extracting text only`)
       }
-      // Note: Image/document blocks would need special handling
-      // For now, we extract text and note other types
+    }
+
+    // Build content: if there are images, use multimodal array; otherwise use string
+    if (imageParts.length > 0) {
+      const multimodalContent: Array<{ type: string; text?: string; image_url?: object }> = []
+      const joinedText = textParts.join('\n')
+      if (joinedText) {
+        multimodalContent.push({ type: 'text', text: joinedText })
+      }
+      multimodalContent.push(...imageParts)
+      return [{ role: 'user', content: multimodalContent }]
     }
 
     return [
@@ -469,7 +682,7 @@ function convertResponseToAnthropic(
           type: 'tool_use',
           id: tc.id,
           name: tc.function.name,
-          input: JSON.parse(tc.function.arguments || '{}'),
+          input: safeJsonParse(tc.function.arguments || '{}', {}) as Record<string, unknown>,
         })
       }
     }
@@ -529,6 +742,20 @@ export function createOpenAICompatibleClient(options: OpenAICompatibleClientOpti
     process.env.OPENAI_BASE_URL ||
     'https://api.openai.com/v1'
 
+  // Validate API key upfront — fail fast rather than sending empty Authorization header
+  if (!apiKey || apiKey.trim() === '') {
+    throw new Error(
+      'OpenAI API key is not set. Please set the OPENAI_API_KEY environment variable ' +
+      'or provide apiKey in the client options.',
+    )
+  }
+
+  // Resolve maxRetries (default to 0 for backward compatibility)
+  const maxRetries = options.maxRetries ?? 0
+
+  // Streaming timeout in milliseconds (default 5 minutes)
+  const STREAMING_TIMEOUT_MS = 300_000
+
   // Build the beta.messages interface
   const beta = {
     messages: {
@@ -564,8 +791,11 @@ export function createOpenAICompatibleClient(options: OpenAICompatibleClientOpti
           params.system,
         )
 
+        // Map the model name from Anthropic to OpenAI format
+        const resolvedModel = resolveModelName(params.model)
+
         const openaiParams: OpenAIChatCompletionParams = {
-          model: params.model,
+          model: resolvedModel,
           messages: openaiMessages,
           max_tokens: params.max_tokens,
           stream: params.stream ?? false,
@@ -618,6 +848,12 @@ export function createOpenAICompatibleClient(options: OpenAICompatibleClientOpti
           }
         }
 
+        // Map Anthropic's stop_sequences to OpenAI's stop parameter
+        if ('stop_sequences' in params && params.stop_sequences !== undefined && !('stop' in params)) {
+          // @ts-expect-error dynamic key assignment
+          openaiParams.stop = params.stop_sequences
+        }
+
         const fetchFn = options.fetchOverride ?? globalThis.fetch
         const url = `${baseURL.replace(/\/+$/, '')}/chat/completions`
 
@@ -627,17 +863,24 @@ export function createOpenAICompatibleClient(options: OpenAICompatibleClientOpti
           ...(requestOptions?.headers ?? {}),
         }
 
-        // Non-streaming request
+        // Build the effective signal for this request
+        const effectiveSignal = requestOptions?.timeout
+          ? createTimeoutSignal(requestOptions.timeout, requestOptions?.signal)
+          : requestOptions?.signal
+
+        // Non-streaming request — use retry with exponential backoff
         if (!params.stream) {
-          const response = await fetchFn(url, {
-            method: 'POST',
-            headers,
-            body: JSON.stringify(openaiParams),
-            signal: requestOptions?.signal,
-            ...(requestOptions?.timeout
-              ? { signal: createTimeoutSignal(requestOptions.timeout, requestOptions?.signal) }
-              : {}),
-          })
+          const response = await fetchWithRetry(
+            fetchFn,
+            url,
+            {
+              method: 'POST',
+              headers,
+              body: JSON.stringify(openaiParams),
+            },
+            maxRetries,
+            effectiveSignal,
+          )
 
           if (!response.ok) {
             const errorText = await response.text().catch(() => '')
@@ -710,16 +953,27 @@ export function createOpenAICompatibleClient(options: OpenAICompatibleClientOpti
           }
         }
 
-        // Streaming request
-        const fetchResponse = await fetchFn(url, {
-          method: 'POST',
-          headers: {
-            ...headers,
-            Accept: 'text/event-stream',
+        // Streaming request — also uses retry for the initial fetch,
+        // and adds a timeout to prevent SSE connections from hanging
+        const streamingSignal = createTimeoutSignal(
+          STREAMING_TIMEOUT_MS,
+          requestOptions?.signal,
+        )
+
+        const fetchResponse = await fetchWithRetry(
+          fetchFn,
+          url,
+          {
+            method: 'POST',
+            headers: {
+              ...headers,
+              Accept: 'text/event-stream',
+            },
+            body: JSON.stringify({ ...openaiParams, stream: true }),
           },
-          body: JSON.stringify({ ...openaiParams, stream: true }),
-          signal: requestOptions?.signal,
-        })
+          maxRetries,
+          streamingSignal,
+        )
 
         if (!fetchResponse.ok) {
           const errorText = await fetchResponse.text().catch(() => '')
@@ -742,7 +996,7 @@ export function createOpenAICompatibleClient(options: OpenAICompatibleClientOpti
           id: messageId,
           type: 'message',
           role: 'assistant',
-          model: params.model,
+          model: resolvedModel,
           content: [],
           stop_reason: null,
           stop_sequence: null,
@@ -797,7 +1051,7 @@ export function createOpenAICompatibleClient(options: OpenAICompatibleClientOpti
                         type: 'message',
                         role: 'assistant',
                         content: [],
-                        model: chunk.model ?? params.model,
+                        model: chunk.model ?? resolvedModel,
                         stop_reason: null,
                         stop_sequence: null,
                         usage: { input_tokens: 0, output_tokens: 0 },
