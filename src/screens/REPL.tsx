@@ -179,6 +179,7 @@ import { resetMicrocompactState } from '../services/compact/microCompact.js';
 import { runPostCompactCleanup } from '../services/compact/postCompactCleanup.js';
 import { provisionContentReplacementState, reconstructContentReplacementState, type ContentReplacementRecord } from '../utils/toolResultStorage.js';
 import { partialCompactConversation } from '../services/compact/compact.js';
+import { resetPromptCacheBreakDetection, notifyCompaction } from '../services/api/promptCacheBreakDetection.js';
 import type { LogOption } from '../types/logs.js';
 import type { AgentColorName } from '../tools/AgentTool/agentColorManager.js';
 import { fileHistoryMakeSnapshot, type FileHistoryState, fileHistoryRewind, type FileHistorySnapshot, copyFileHistoryForResume, fileHistoryEnabled, fileHistoryHasAnyChanges } from '../utils/fileHistory.js';
@@ -232,6 +233,65 @@ import { FeedbackSurvey } from 'src/components/FeedbackSurvey/FeedbackSurvey.js'
 import { useInstallMessages } from 'src/hooks/notifs/useInstallMessages.js';
 import { useAwaySummary } from 'src/hooks/useAwaySummary.js';
 import { useChromeExtensionNotification } from 'src/hooks/useChromeExtensionNotification.js';
+
+/**
+ * 流式文本缓冲区 - 高效管理流式文本累积
+ *
+ * 使用环形缓冲区 + 节流渲染策略：
+ * - 环形缓冲区：限制最大长度，避免无限增长
+ * - 节流渲染：每 100ms 最多触发一次 React 状态更新
+ * - 可变引用：累积过程不触发重渲染
+ */
+class StreamingTextBuffer {
+  private buffer: string[] = []
+  private totalLength = 0
+  private readonly maxLength = 50000 // 最大 50KB
+  private lastFlushTime = 0
+  private readonly flushIntervalMs = 100 // 节流间隔
+
+  constructor(private readonly onFlush?: (text: string) => void) {}
+
+  append(text: string): void {
+    this.buffer.push(text)
+    this.totalLength += text.length
+
+    // 环形缓冲区：如果超出最大长度，移除最老的内容
+    if (this.totalLength > this.maxLength) {
+      const excess = this.totalLength - this.maxLength
+      let removed = 0
+      while (removed < excess && this.buffer.length > 0) {
+        const first = this.buffer.shift()!
+        removed += first.length
+      }
+      this.totalLength = Math.min(this.totalLength, this.maxLength)
+    }
+
+    // 节流刷新
+    const now = Date.now()
+    if (this.onFlush && now - this.lastFlushTime >= this.flushIntervalMs) {
+      this.flush()
+      this.lastFlushTime = now
+    }
+  }
+
+  flush(): void {
+    if (this.onFlush && this.buffer.length > 0) {
+      this.onFlush(this.buffer.join(''))
+    }
+  }
+
+  clear(): void {
+    this.buffer = []
+    this.totalLength = 0
+    if (this.onFlush) {
+      this.onFlush('')
+    }
+  }
+
+  getText(): string {
+    return this.buffer.join('')
+  }
+}
 import { useOfficialMarketplaceNotification } from 'src/hooks/useOfficialMarketplaceNotification.js';
 import { usePromptsFromClaudeInChrome } from 'src/hooks/usePromptsFromClaudeInChrome.js';
 import { getTipToShowOnSpinner, recordShownTip } from 'src/services/tips/tipScheduler.js';
@@ -1487,16 +1547,39 @@ export function REPL({
     }
   }, []);
 
-  // Streaming text display: set state directly per delta (Ink's 16ms render
-  // throttle batches rapid updates). Cleared on message arrival (messages.ts)
-  // so displayedMessages switches from deferredMessages to messages atomically.
+  // Streaming text display: use ring buffer + throttled rendering
+  // - StreamingTextBuffer: ring buffer limits to 50KB, throttles to 100ms
+  // - useRef for accumulation (no re-renders), useState only for render
+  // - Cleared on message arrival so displayedMessages switches atomically
+  const streamingTextBufferRef = useRef<StreamingTextBuffer | null>(null);
   const [streamingText, setStreamingText] = useState<string | null>(null);
   const reducedMotion = useAppState(s => s.settings.prefersReducedMotion) ?? false;
   const showStreamingText = !reducedMotion && !hasCursorUpViewportYankBug();
+
+  // Initialize buffer on demand
+  const getOrCreateBuffer = React.useCallback(() => {
+    if (!streamingTextBufferRef.current) {
+      streamingTextBufferRef.current = new StreamingTextBuffer(text => {
+        setStreamingText(text);
+      });
+    }
+    return streamingTextBufferRef.current;
+  }, []);
+
   const onStreamingText = useCallback((f: (current: string | null) => string | null) => {
     if (!showStreamingText) return;
-    setStreamingText(f);
-  }, [showStreamingText]);
+    const currentText = streamingTextBufferRef.current?.getText() ?? null;
+    const newText = f(currentText);
+    if (newText === null || newText === '') {
+      streamingTextBufferRef.current?.clear();
+    } else {
+      const oldText = currentText ?? '';
+      const delta = newText.substring(oldText.length);
+      if (delta) {
+        getOrCreateBuffer().append(delta);
+      }
+    }
+  }, [showStreamingText, getOrCreateBuffer]);
 
   // Hide the in-progress source line so text streams line-by-line, not
   // char-by-char. lastIndexOf returns -1 when no newline, giving '' → null.
@@ -1861,6 +1944,11 @@ export function REPL({
       resetLoadingState();
       setAbortController(null);
       setConversationId(sessionId);
+
+      // Reset prompt cache break detection state — the resumed session starts
+      // fresh, and continuing the old session's cache tracking would cause
+      // false positive cache break alerts (different messages, tools, etc.)
+      resetPromptCacheBreakDetection();
 
       // Get target session's costs BEFORE saving current session
       // (saveCurrentSessionCosts overwrites the config, so we need to read first)

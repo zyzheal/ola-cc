@@ -233,6 +233,31 @@ export default class App extends PureComponent<Props, State> {
         // coexist -- our handler would drain stdin before Ink's can see it.
         // The buffered text is preserved for REPL.tsx via consumeEarlyInput().
         stopCapturingEarlyInput();
+        // Node.js 22 compatibility: resume stdin after pause from stopCapturingEarlyInput
+        // This ensures the stream is in a flowing state so we can properly drain
+        // any buffered data before setting up our own listener.
+        try {
+          stdin.resume();
+        } catch {
+          // Ignore errors - resume may fail on some Node.js versions
+        }
+        // Node.js 22 compatibility: drain any buffered data from stdin
+        // This clears any buffered data from earlyInput capture and ensures
+        // stdin is ready for the new rawMode session.
+        try {
+          // Drain any buffered data from stdin
+          while (stdin.read() !== null) { /* drain */ }
+        } catch {
+          // Ignore errors - drain may fail on some Node.js versions
+        }
+        // Node.js 22 fix: pause stream before adding our listener
+        // After draining, pause the stream so we can add our 'readable' listener
+        // in paused mode, then call resume() after to properly set up flowing mode.
+        try {
+          stdin.pause();
+        } catch {
+          // Ignore errors
+        }
         // KeepAlive already holds the event loop open for interactive TTYs.
         // Only ref here when no keepAlive is active (e.g. custom non-App use).
         if (!this.stdinKeepAliveActive) {
@@ -240,6 +265,18 @@ export default class App extends PureComponent<Props, State> {
         }
         stdin.setRawMode(true);
         stdin.addListener('readable', this.handleReadable);
+        // Node.js 22+ comprehensive fix: resume MUST be called AFTER adding readable listener
+        //
+        // In Node.js Readable stream state machine:
+        // 1. on('readable') sets flowing = false (paused mode)
+        // 2. resume() sets flowing = true (flowing mode)
+        //
+        // If resume() is called BEFORE addListener('readable'), the listener
+        // addition resets flowing to false, preventing events from firing.
+        //
+        // Node.js 22+ has stricter state management, so this order is critical.
+        // The fix: resume() AFTER addListener ensures flowing mode is correct.
+        stdin.resume();
         // Enable bracketed paste mode
         this.props.stdout.write(EBP);
         // Enable terminal focus reporting (DECSET 1004)

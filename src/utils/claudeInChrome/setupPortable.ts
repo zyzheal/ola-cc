@@ -10,11 +10,13 @@ const PROD_EXTENSION_ID = 'fcoeoabgfenejglbffodgkkbkcdhcgfn'
 // Dev extension IDs (for internal use)
 const DEV_EXTENSION_ID = 'dihbgbndebgnbjfmelmegjepbnkhlgni'
 const ANT_EXTENSION_ID = 'dngcpimnedloihjnnfngkgjoidhnaolf'
+// Custom extension ID
+const CUSTOM_EXTENSION_ID = 'pnhielkknjookdjklgahibjafpndhdlc'
 
 function getExtensionIds(): string[] {
   return process.env.USER_TYPE === 'ant'
-    ? [PROD_EXTENSION_ID, DEV_EXTENSION_ID, ANT_EXTENSION_ID]
-    : [PROD_EXTENSION_ID]
+    ? [PROD_EXTENSION_ID, DEV_EXTENSION_ID, ANT_EXTENSION_ID, CUSTOM_EXTENSION_ID]
+    : [PROD_EXTENSION_ID, CUSTOM_EXTENSION_ID]
 }
 
 // Must match ChromiumBrowser from common.ts
