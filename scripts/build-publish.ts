@@ -24,7 +24,7 @@ const args = process.argv.slice(2)
 
 // ─── Publish Version ─────────────────────────────────────────
 // Use the publish package version, not the root workspace version
-const publishVersion = '0.0.17'
+const publishVersion = '0.1.2'
 
 // ─── Feature Flags ───────────────────────────────────────────
 const defaultFeatures = ['VOICE_MODE', 'BUDDY']
@@ -170,11 +170,11 @@ const publishPkg = {
   license: 'SEE LICENSE IN LICENSE.md',
   type: 'module',
   bin: {
-    'ola-c': './cli.js',
+    'ola-cc': './cli.js',
   },
   repository: {
     type: 'git',
-    url: 'https://github.com/anthropics/claude-code.git',
+    url: 'https://github.com/zyzheal/ola-cc.git',
   },
   engines: {
     bun: '>=1.3.5',
