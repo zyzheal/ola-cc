@@ -195,11 +195,13 @@ export const INITIAL_STATE: KeyParseState = {
 
 function inputToString(input: Buffer | string): string {
   if (Buffer.isBuffer(input)) {
+    // Use proper UTF-8 decoding for cross-runtime compatibility (Node.js & Bun)
+    // String(buffer) behavior differs between runtimes; toString('utf8') is reliable
     if (input[0]! > 127 && input[1] === undefined) {
       ;(input[0] as unknown as number) -= 128
-      return '\x1b' + String(input)
+      return '\x1b' + input.toString('utf8')
     } else {
-      return String(input)
+      return input.toString('utf8')
     }
   } else if (input !== undefined && typeof input !== 'string') {
     return String(input)
