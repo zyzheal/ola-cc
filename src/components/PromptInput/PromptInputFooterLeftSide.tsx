@@ -15,6 +15,7 @@ import { isVimModeEnabled } from './utils.js';
 import { useShortcutDisplay } from '../../keybindings/useShortcutDisplay.js';
 import { isDefaultMode, permissionModeSymbol, permissionModeTitle, getModeColor } from '../../utils/permissions/PermissionMode.js';
 import { BackgroundTaskStatus } from '../tasks/BackgroundTaskStatus.js';
+import { WorktreeProgressPills } from '../tasks/WorktreeProgressPills.js';
 import { isBackgroundTask } from '../../tasks/types.js';
 import { isPanelAgentTask } from '../../tasks/LocalAgentTask/LocalAgentTask.js';
 import { getVisibleAgentTasks } from '../CoordinatorAgentStatus.js';
@@ -392,6 +393,7 @@ function ModeIndicator({
         <Box>
           <BackgroundTaskStatus tasksSelected={tasksSelected} isViewingTeammate={isViewingTeammate} teammateFooterIndex={teammateFooterIndex} isLeaderIdle={!isLoading} onOpenDialog={onOpenTasksDialog} />
         </Box>
+        <WorktreeProgressPills />
         {otherParts.length > 0 && <Box>
             <Byline>{otherParts}</Byline>
           </Box>}
@@ -461,24 +463,30 @@ function ModeIndicator({
   // part (e.g. the selection copy/native-select hints) grow the column
   // from 0→1 row. Always render 1 row in fullscreen; return a space when
   // empty so Yoga reserves the row without painting anything visible.
+
+  // Worktree progress pills render above tasksPart when active.
+  // WorktreeProgressPills returns null when no entries exist.
   if (parts.length === 0 && !tasksPart && !modePart) {
     return isFullscreenEnvEnabled() ? <Text> </Text> : null;
   }
 
   // flexShrink=0 keeps mode + pill at natural width; the remaining parts
   // truncate at the tail as one string inside the Text wrapper.
-  return <Box height={1} overflow="hidden">
-      {modePart && <Box flexShrink={0}>
-          {modePart}
-          {(tasksPart || parts.length > 0) && <Text dimColor> · </Text>}
-        </Box>}
-      {tasksPart && <Box flexShrink={0}>
-          {tasksPart}
-          {parts.length > 0 && <Text dimColor> · </Text>}
-        </Box>}
-      {parts.length > 0 && <Text wrap="truncate">
-          <Byline>{parts}</Byline>
-        </Text>}
+  return <Box flexDirection="column">
+      <Box height={1} overflow="hidden">
+        {modePart && <Box flexShrink={0}>
+            {modePart}
+            {(tasksPart || parts.length > 0) && <Text dimColor> · </Text>}
+          </Box>}
+        {tasksPart && <Box flexShrink={0}>
+            {tasksPart}
+            {parts.length > 0 && <Text dimColor> · </Text>}
+          </Box>}
+        {parts.length > 0 && <Text wrap="truncate">
+            <Byline>{parts}</Byline>
+          </Text>}
+      </Box>
+      <WorktreeProgressPills />
     </Box>;
 }
 function getSpinnerHintParts(isLoading: boolean, escShortcut: string, todosShortcut: string, killAgentsShortcut: string, hasTaskItems: boolean, expandedView: 'none' | 'tasks' | 'teammates', hasTeammates: boolean, hasRunningAgentTasks: boolean, isKillAgentsConfirmShowing: boolean): React.ReactElement[] {
