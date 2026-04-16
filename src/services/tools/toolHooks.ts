@@ -35,6 +35,7 @@ import type { McpServerType, MessageUpdateLazy } from './toolExecution.js'
 export type PostToolUseHooksResult<Output> =
   | MessageUpdateLazy<AttachmentMessage | ProgressMessage<HookProgress>>
   | { updatedMCPToolOutput: Output }
+  | { updatedToolOutput: Output }
 
 export async function* runPostToolUseHooks<Input extends AnyObject, Output>(
   toolUseContext: ToolUseContext,
@@ -147,6 +148,14 @@ export async function* runPostToolUseHooks<Input extends AnyObject, Output>(
           toolOutput = result.updatedMCPToolOutput as Output
           yield {
             updatedMCPToolOutput: toolOutput,
+          }
+        }
+
+        // If hooks provided updatedToolOutput, yield it for non-MCP tools
+        if (result.updatedToolOutput && !isMcpTool(tool)) {
+          toolOutput = result.updatedToolOutput as Output
+          yield {
+            updatedToolOutput: toolOutput,
           }
         }
       } catch (error) {

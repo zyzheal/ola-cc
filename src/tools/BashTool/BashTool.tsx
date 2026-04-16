@@ -740,6 +740,7 @@ export const BashTool = buildTool({
         const dest = getToolResultPath(result.outputTaskId, false);
         if (fileStat.size > MAX_PERSISTED_SIZE) {
           await fsTruncate(result.outputFilePath, MAX_PERSISTED_SIZE);
+          persistedOutputSize = MAX_PERSISTED_SIZE; // Update size after truncation
         }
         try {
           await link(result.outputFilePath, dest);

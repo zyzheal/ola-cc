@@ -1372,6 +1372,11 @@ export const connectToServer = memoize(
 
       // Enhanced close handler with connection drop context
       client.onclose = () => {
+        // Reject any pending callTool promises — the connection is gone and
+        // won't come back. Without this, pending calls hang until the 27.8h
+        // fallback timeout.
+        closeTransportAndRejectPending('connection closed')
+
         const uptime = Date.now() - connectionStartTime
         const transportType = serverRef.type ?? 'unknown'
 

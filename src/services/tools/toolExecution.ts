@@ -1473,11 +1473,6 @@ async function checkPermissionsAndCallTool(
       })
     }
 
-    // TOOD(hackyon): refactor so we don't have different experiences for MCP tools
-    if (!isMcpTool(tool)) {
-      await addToolResult(toolOutput, mappedToolResultBlock)
-    }
-
     const postToolHookInfos: StopHookInfo[] = []
     const postToolHookStart = Date.now()
     for await (const hookResult of runPostToolUseHooks(
@@ -1495,6 +1490,8 @@ async function checkPermissionsAndCallTool(
         if (isMcpTool(tool)) {
           toolOutput = hookResult.updatedMCPToolOutput
         }
+      } else if ('updatedToolOutput' in hookResult) {
+        toolOutput = hookResult.updatedToolOutput
       } else if (isMcpTool(tool)) {
         hookResults.push(hookResult)
         if (hookResult.message.type === 'attachment') {
@@ -1537,7 +1534,11 @@ async function checkPermissionsAndCallTool(
       )
     }
 
+    // Add tool result AFTER hooks so format-on-save modifications are reflected.
+    // Non-MCP tools re-map from scratch since hook may have changed the output.
     if (isMcpTool(tool)) {
+      await addToolResult(toolOutput)
+    } else {
       await addToolResult(toolOutput)
     }
 
