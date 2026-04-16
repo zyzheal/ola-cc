@@ -12,6 +12,7 @@
  * import from file.ts.
  */
 
+import { hasBinaryExtension, isBinaryContent } from '../constants/files.js'
 import { logForDebugging } from './debug.js'
 import { getFsImplementation, safeResolvePath } from './fsOperations.js'
 
@@ -28,6 +29,14 @@ export function detectEncodingForResolvedPath(
   // This fixes a bug where writing emojis/CJK to empty files caused corruption
   if (bytesRead === 0) {
     return 'utf8'
+  }
+
+  // Binary content check: detect null bytes or high non-printable ratio
+  // This catches binaries even when they don't have standard binary extensions
+  if (isBinaryContent(buffer.subarray(0, bytesRead))) {
+    throw new Error(
+      `Cannot read binary file: ${resolvedPath}. This tool only supports text files.`,
+    )
   }
 
   if (bytesRead >= 2) {
@@ -82,6 +91,15 @@ export function readFileSyncWithMetadata(filePath: string): {
 
   if (isSymlink) {
     logForDebugging(`Reading through symlink: ${filePath} -> ${resolvedPath}`)
+  }
+
+  // Binary file guard: check extension first (zero I/O).
+  // Content-level binary detection happens inside detectEncodingForResolvedPath
+  // which reads the first bytes anyway for BOM detection.
+  if (hasBinaryExtension(resolvedPath)) {
+    throw new Error(
+      `Cannot read binary file: ${filePath}. This tool only supports text files.`,
+    )
   }
 
   const encoding = detectEncodingForResolvedPath(resolvedPath)

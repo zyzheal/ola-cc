@@ -1,3 +1,4 @@
+import { hasBinaryExtension } from '../constants/files.js'
 import { detectFileEncoding } from './file.js'
 import { getFsImplementation } from './fsOperations.js'
 
@@ -44,6 +45,13 @@ class FileReadCache {
     }
 
     // Cache miss or stale data - read the file
+    // Binary file guard: skip files with binary extensions
+    if (hasBinaryExtension(filePath)) {
+      throw new Error(
+        `Cannot read binary file: ${filePath}. This tool only supports text files.`,
+      )
+    }
+
     const encoding = detectFileEncoding(filePath)
     const content = fs
       .readFileSync(filePath, { encoding })

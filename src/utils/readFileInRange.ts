@@ -38,7 +38,8 @@
 // ---------------------------------------------------------------------------
 
 import { createReadStream, fstat } from 'fs'
-import { stat as fsStat, readFile } from 'fs/promises'
+import { stat as fsStat, readFile, open } from 'fs/promises'
+import { hasBinaryExtension, isBinaryContent } from '../constants/files.js'
 import { formatFileSize } from './format.js'
 
 const FAST_PATH_MAX_SIZE = 10 * 1024 * 1024 // 10 MB
@@ -90,6 +91,34 @@ export async function readFileInRange(
     throw new Error(
       `EISDIR: illegal operation on a directory, read '${filePath}'`,
     )
+  }
+
+  // Binary file guard: check extension first (zero I/O), then sniff content
+  // for files without extensions or with unknown extensions.
+  if (hasBinaryExtension(filePath)) {
+    throw new Error(
+      `Cannot read binary file: ${filePath}. This tool only supports text files.`,
+    )
+  }
+
+  // For files without a known binary extension, sniff the first bytes to
+  // catch binaries with non-standard extensions (e.g., a .dat file that is
+  // actually a compiled binary).
+  if (stats.isFile() && stats.size > 0) {
+    const sniffSize = Math.min(8192, stats.size)
+    const fd = await open(filePath, 'r')
+    try {
+      const sniffBuf = Buffer.alloc(sniffSize)
+      const { bytesRead } = await fd.read(sniffBuf, 0, sniffSize, 0)
+      const sniff = sniffBuf.subarray(0, bytesRead)
+      if (isBinaryContent(sniff)) {
+        throw new Error(
+          `Cannot read binary file: ${filePath}. This tool only supports text files.`,
+        )
+      }
+    } finally {
+      await fd.close()
+    }
   }
 
   if (stats.isFile() && stats.size < FAST_PATH_MAX_SIZE) {
