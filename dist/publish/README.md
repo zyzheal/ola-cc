@@ -1,26 +1,29 @@
-# Ola-CC (Ola Claude Code)
+# Claude Code
 
 AI 编码助手，运行在你的终端中。
 
 ## 安装
 
 ```bash
-npm install -g @zyzheal/ola-cc
+npm install claude
+# 或
+bun add claude
 ```
 
 ## 使用
 
 ```bash
 # 启动交互式会话
-ola-cc
+npx claude
 
-# 或使用 npx
-npx @zyzheal/ola-cc
+# 或全局安装
+npm install -g claude
+claude
 ```
 
 ## 配置文件
 
-Ola-CC 的配置存储在 `~/.claude/` 目录中。
+Claude Code 的配置存储在 `~/.claude/` 目录中。
 
 ### 配置目录结构
 
@@ -141,7 +144,7 @@ Ola-CC 的配置存储在 `~/.claude/` 目录中。
 
 ## 开启"宠物"功能
 
-"宠物"（SprocketDudot）是 Ola-CC 的伴随功能。开启方式：
+"宠物"（SprocketDudot）是 Claude Code 的伴随功能。开启方式：
 
 1. **通过 session.json 配置**：
 
@@ -157,11 +160,11 @@ Ola-CC 的配置存储在 `~/.claude/` 目录中。
 
 2. **通过环境变量**：
 
-   在启动 Ola-CC 前设置环境变量：
+   在启动 Claude Code 前设置环境变量：
 
    ```bash
    export SPROCKET_DUDOT_ENABLED=1
-   ola-cc
+   claude
    ```
 
 3. **通过 settings.json 配置**：
@@ -180,7 +183,7 @@ Ola-CC 的配置存储在 `~/.claude/` 目录中。
 
 浏览器自动化需要安装 Claude in Chrome 扩展：
 
-1. Ola-CC 会自动安装原生主机清单
+1. Claude Code 会自动安装原生主机清单
 2. 从 Chrome 应用商店安装扩展
 3. 设置 `CLAUDE_CODE_ENABLE_CFC=1` 或使用 `--chrome` 参数
 

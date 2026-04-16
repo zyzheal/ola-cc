@@ -95,6 +95,22 @@ Claude Code 的配置存储在 `~/.claude/` 目录中。
 - **name** — 模型名称，格式取决于代理服务的 API。本地 Ollama 代理通常为 `qwen/qwen3-235b-a22b` 或 `llama3.1`
 - **provider** — 提供商类型，本地 OpenAI 兼容代理填 `openai`，也支持 `bedrock`、`vertex` 等
 
+#### OpenAI 协议支持
+
+当设置 `CLAUDE_CODE_USE_OPENAI=1` 时，CLI 将使用 OpenAI 兼容协议与 API 通信。支持以下配置：
+
+| 环境变量 | 说明 |
+|----------|------|
+| `CLAUDE_CODE_USE_OPENAI` | 启用 OpenAI 协议（设为 `1` 或 `true`） |
+| `OPENAI_API_KEY` | OpenAI API 密钥（必填） |
+| `OPENAI_API_BASE` | 自定义 API 基础 URL（可选，默认 `https://api.openai.com/v1`） |
+| `OPENAI_BASE_URL` | 同上，另一个可用的环境变量名 |
+
+支持的端点示例：
+- **OpenAI API**: `OPENAI_API_BASE=https://api.openai.com/v1`
+- **Ollama (本地)**: `OPENAI_API_BASE=http://127.0.0.1:11434/v1`
+- **vLLM**: `OPENAI_API_BASE=http://localhost:8000/v1`
+
 ### settings.json 配置示例
 
 ```json
@@ -136,6 +152,9 @@ Claude Code 的配置存储在 `~/.claude/` 目录中。
 | 变量 | 说明 |
 |------|------|
 | `ANTHROPIC_API_KEY` | API 密钥 |
+| `CLAUDE_CODE_USE_OPENAI` | 启用 OpenAI 协议（1=启用） |
+| `OPENAI_API_KEY` | OpenAI API 密钥 |
+| `OPENAI_API_BASE` | OpenAI 兼容 API 基础 URL |
 | `CLAUDE_CODE_ENABLE_CFC` | 启用 Chrome 集成（1=启用，0=禁用） |
 | `CLAUDE_CHROME_HTTP` | 启用 Chrome HTTP 桥接模式（1=启用） |
 | `CLAUDE_CHROME_HTTP_PORT` | HTTP 服务器端口（默认 12306） |
