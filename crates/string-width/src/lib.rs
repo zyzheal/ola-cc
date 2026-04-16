@@ -1,5 +1,6 @@
-use wasm_bindgen::prelude::*;
+use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthChar;
+use wasm_bindgen::prelude::*;
 
 /// Strips ANSI escape sequences from a string.
 fn strip_ansi(s: &str) -> String {
@@ -28,6 +29,8 @@ fn is_zero_width(cp: char) -> bool {
     match cp as u32 {
         // Control characters (C0 and C1)
         0x00..=0x1F | 0x7F..=0x9F => true,
+        // Soft hyphen
+        0x00AD => true,
         // Zero-width space, ZWJ, zero-width non-joiner
         0x200B..=0x200D | 0x200E | 0x200F => true,
         // BOM, word joiner, and other format characters
@@ -81,6 +84,56 @@ fn is_emoji(cp: char) -> bool {
     }
 }
 
+/// Checks if any character in the grapheme is an emoji or triggers
+/// grapheme segmentation (variation selectors, ZWJ, regional indicators).
+fn grapheme_needs_segmentation(grapheme: &str) -> bool {
+    for ch in grapheme.chars() {
+        let cp = ch as u32;
+        // Emoji ranges
+        if cp >= 0x1F300 && cp <= 0x1FAFF {
+            return true;
+        }
+        if cp >= 0x2600 && cp <= 0x27BF {
+            return true;
+        }
+        if cp >= 0x1F1E6 && cp <= 0x1F1FF {
+            return true;
+        }
+        // Variation selectors, ZWJ
+        if cp >= 0xFE00 && cp <= 0xFE0F {
+            return true;
+        }
+        if cp == 0x200D {
+            return true;
+        }
+    }
+    false
+}
+
+/// Calculate the width of an emoji grapheme cluster.
+/// Matches the TypeScript `getEmojiWidth()` behavior.
+fn get_emoji_grapheme_width(grapheme: &str) -> usize {
+    let first = grapheme.chars().next().map(|c| c as u32).unwrap_or(0);
+
+    // Regional indicators: single = 1, pair = 2
+    if first >= 0x1F1E6 && first <= 0x1F1FF {
+        let count = grapheme.chars().count();
+        return if count == 1 { 1 } else { 2 };
+    }
+
+    // Incomplete keycap: digit/symbol + VS16 without U+20E3
+    let chars: Vec<char> = grapheme.chars().collect();
+    if chars.len() == 2 {
+        let second = chars[1] as u32;
+        if second == 0xFE0F && ((first >= 0x30 && first <= 0x39) || first == 0x23 || first == 0x2A) {
+            return 1;
+        }
+    }
+
+    // All other emoji sequences are width 2
+    2
+}
+
 /// Calculates the display width of a string as it would appear in a terminal.
 ///
 /// This matches the behavior of `src/ink/stringWidth.ts` in the TypeScript
@@ -88,7 +141,7 @@ fn is_emoji(cp: char) -> bool {
 /// - ASCII fast path
 /// - ANSI escape sequence stripping
 /// - East Asian width (ambiguous as narrow, via unicode-width crate)
-/// - Emoji (width 2)
+/// - Emoji (width 2) with proper grapheme cluster awareness for ZWJ sequences
 /// - Zero-width combining marks
 /// - Regional indicator pairs (flag emoji)
 pub fn string_width(s: &str) -> usize {
@@ -97,13 +150,14 @@ pub fn string_width(s: &str) -> usize {
     }
 
     // Fast path: pure ASCII (no escape, no non-ASCII)
+    // Control chars below 0x20 except tab (0x09) and newline (0x0a) are zero-width
     let is_pure_ascii = s.bytes().all(|b| b < 127 && b != 0x1b);
     if is_pure_ascii {
-        return s.chars().filter(|&c| c > '\x1f').count();
+        return s.chars().filter(|&c| c > '\x1f' || c == '\t' || c == '\n').count();
     }
 
     // Strip ANSI if present
-    let text = if s.contains('\x1b') {
+    let text: String = if s.contains('\x1b') {
         strip_ansi(s)
     } else {
         s.to_string()
@@ -113,25 +167,54 @@ pub fn string_width(s: &str) -> usize {
         return 0;
     }
 
-    let mut width = 0;
-    let mut prev_was_regional = false;
+    // Check if we need grapheme-aware processing (emoji, ZWJ, variation selectors)
+    let needs_grapheme = text.chars().any(|ch| {
+        let cp = ch as u32;
+        cp >= 0x1F300 && cp <= 0x1FAFF
+            || cp >= 0x2600 && cp <= 0x27BF
+            || cp >= 0x1F1E6 && cp <= 0x1F1FF
+            || cp >= 0xFE00 && cp <= 0xFE0F
+            || cp == 0x200D
+    });
 
+    if needs_grapheme {
+        // Use grapheme cluster iteration for emoji and ZWJ sequences
+        let mut width = 0;
+        for grapheme in text.graphemes(true) {
+            if grapheme_needs_segmentation(grapheme) {
+                if get_emoji_grapheme_width(grapheme) == 0 {
+                    // Emoji regex didn't match, calculate width by counting first non-zero-width char
+                    for ch in grapheme.chars() {
+                        if !is_zero_width(ch) {
+                            if let Some(w) = UnicodeWidthChar::width(ch) {
+                                width += w;
+                            }
+                            break;
+                        }
+                    }
+                } else {
+                    width += get_emoji_grapheme_width(grapheme);
+                }
+            } else {
+                // Simple grapheme: sum non-zero-width characters
+                for ch in grapheme.chars() {
+                    if !is_zero_width(ch) {
+                        if let Some(w) = UnicodeWidthChar::width(ch) {
+                            width += w;
+                        }
+                    }
+                }
+            }
+        }
+        return width;
+    }
+
+    // Simple path: no emoji/ZWJ, iterate characters directly
+    let mut width = 0;
     for ch in text.chars() {
         if is_zero_width(ch) {
-            prev_was_regional = false;
             continue;
         }
-
-        let cp = ch as u32;
-
-        // Regional indicator handling (flag emoji components)
-        if matches!(cp, 0x1F1E6..=0x1F1FF) {
-            // Each RI is width 1; a pair totals width 2
-            width += 1;
-            prev_was_regional = true;
-            continue;
-        }
-        prev_was_regional = false;
 
         // Emoji detection: most emoji are width 2
         if is_emoji(ch) {
@@ -172,7 +255,7 @@ mod tests {
 
     #[test]
     fn test_ascii_with_control_chars() {
-        assert_eq!(string_width("hello\tworld"), 11); // tab is > 0x1f
+        assert_eq!(string_width("hello\tworld"), 11); // tab is width 1
         assert_eq!(string_width("\x01\x02"), 0);
     }
 
@@ -240,5 +323,45 @@ mod tests {
     #[test]
     fn test_newline() {
         assert_eq!(string_width("hello\nworld"), 11); // newline > 0x1f
+    }
+
+    // ZWJ sequence tests (fix for M1)
+    #[test]
+    fn test_zwj_family_emoji() {
+        // Family emoji: man + ZWJ + woman + ZWJ + girl should be width 2
+        let family = "\u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467}";
+        assert_eq!(string_width(family), 2);
+    }
+
+    #[test]
+    fn test_zwj_profession_emoji() {
+        // Man health worker: man + ZWJ + stethoscope + VS16 should be width 2
+        let worker = "\u{1F468}\u{200D}\u{2695}\u{FE0F}";
+        assert_eq!(string_width(worker), 2);
+    }
+
+    #[test]
+    fn test_zwj_rainbow_flag() {
+        // White flag + ZWJ + rainbow should be width 2
+        let rainbow = "\u{1F3F3}\u{FE0F}\u{200D}\u{1F308}";
+        assert_eq!(string_width(rainbow), 2);
+    }
+
+    #[test]
+    fn test_simple_emoji_with_zwj_not_involved() {
+        // Two separate emoji should be width 4
+        assert_eq!(string_width("\u{1F600}\u{1F600}"), 4);
+    }
+
+    #[test]
+    fn test_soft_hyphen() {
+        // Soft hyphen (U+00AD) should be zero-width
+        assert_eq!(string_width("hel\u{00AD}lo"), 5);
+    }
+
+    #[test]
+    fn test_incomplete_keycap() {
+        // Hash + VS16 without U+20E3 should be width 1
+        assert_eq!(string_width("#\u{FE0F}"), 1);
     }
 }

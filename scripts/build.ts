@@ -47,6 +47,7 @@ const fullExperimentalFeatures = [
   'UNATTENDED_RETRY',
   'VERIFICATION_AGENT',
   'VOICE_MODE',
+  'WASM_MODULES',
 ] as const
 
 function runCommand(cmd: string[]): string | null {
