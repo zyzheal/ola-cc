@@ -347,7 +347,8 @@ export const PowerShellTool = buildTool({
     return `Running ${desc}`;
   },
   isEnabled(): boolean {
-    return true;
+    // PowerShell is only available on Windows platforms
+    return getPlatform() === 'windows';
   },
   async validateInput(input: PowerShellToolInput): Promise<ValidationResult> {
     // Defense-in-depth: also guarded in call() for direct callers.
