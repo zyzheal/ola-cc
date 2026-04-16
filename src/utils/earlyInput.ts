@@ -59,7 +59,15 @@ export function startCapturingEarlyInput(): void {
       }
     }
 
+    // Node.js 22+ fix: resume MUST be called AFTER adding the 'readable' listener.
+    // In Node.js Readable stream state machine:
+    // 1. on('readable') sets flowing = false (paused mode)
+    // 2. resume() sets flowing = true (flowing mode)
+    //
+    // Without this resume() call, the stream stays in paused mode and
+    // 'readable' events won't fire properly in Node.js 22+.
     process.stdin.on('readable', readableHandler)
+    process.stdin.resume()
   } catch {
     // If we can't set raw mode, just silently continue without early capture
     isCapturing = false
@@ -151,9 +159,32 @@ export function stopCapturingEarlyInput(): void {
     readableHandler = null
   }
 
-  // Don't reset stdin state - the REPL's Ink App will manage stdin state.
-  // If we call setRawMode(false) here, it can interfere with the REPL's
-  // own stdin setup which happens around the same time.
+  // Reset stdin state to a clean state for Ink to take over.
+  // In Node.js 22+, the stream state machine requires explicit handling:
+  //
+  // 1. pause() is needed to reset the stream to a known state after removing
+  //    the 'readable' listener. Without this, the stream may stay in an
+  //    inconsistent state (flowing mode with no listener) which causes
+  //    issues when Ink tries to add its own listener.
+  //
+  // 2. setRawMode(false) disables raw mode, allowing Ink to re-enable it
+  //    cleanly with its own listener setup.
+  //
+  // The order matters: pause() BEFORE setRawMode(false) ensures the stream
+  // is in a clean paused state when Ink later calls setRawMode(true) and
+  // adds its own 'readable' listener followed by resume().
+  try {
+    if (process.stdin.isTTY) {
+      // Node.js 22+ fix: pause first to reset stream state
+      process.stdin.pause()
+      // Then disable raw mode
+      if (process.stdin.setRawMode) {
+        process.stdin.setRawMode(false)
+      }
+    }
+  } catch {
+    // Ignore errors - Ink will handle raw mode setup
+  }
 }
 
 /**

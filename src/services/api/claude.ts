@@ -118,6 +118,7 @@ import {
   getCacheEditingHeaderLatched,
   getFastModeHeaderLatched,
   getLastApiCompletionTimestamp,
+  getLatchedGlobalCacheStrategy,
   getPromptCache1hAllowlist,
   getPromptCache1hEligible,
   getSessionId,
@@ -126,6 +127,7 @@ import {
   setCacheEditingHeaderLatched,
   setFastModeHeaderLatched,
   setLastMainRequestId,
+  setLatchedGlobalCacheStrategy,
   setPromptCache1hAllowlist,
   setPromptCache1hEligible,
   setThinkingClearLatched,
@@ -403,14 +405,38 @@ function should1hCacheTTL(querySource?: QuerySource): boolean {
   // Latch eligibility in bootstrap state for session stability — prevents
   // mid-session overage flips from changing the cache_control TTL, which
   // would bust the server-side prompt cache (~20K tokens per flip).
+  //
+  // CRITICAL FIX: Once latched as eligible, stay eligible for the entire session
+  // even if isUsingOverage becomes true. The overage check should only affect
+  // the INITIAL eligibility determination, not subsequent checks.
+  //
+  // Bug pattern: cache miss → token spike → Extra Usage triggered →
+  // isUsingOverage=true → TTL drops to 5min → more cache misses → death spiral
   let userEligible = getPromptCache1hEligible()
   if (userEligible === null) {
+    // Initial determination: ant always eligible, subscribers eligible if not
+    // yet in overage mode. Once set, this NEVER changes for the session.
     userEligible =
       process.env.USER_TYPE === 'ant' ||
       (isClaudeAISubscriber() && !currentLimits.isUsingOverage)
     setPromptCache1hEligible(userEligible)
+    logForDebugging(
+      `[CACHE TTL] Initial eligibility: ${userEligible} (ant=${process.env.USER_TYPE === 'ant'}, subscriber=${isClaudeAISubscriber()}, overage=${currentLimits.isUsingOverage})`,
+    )
   }
-  if (!userEligible) return false
+  // Don't re-check isUsingOverage on subsequent calls — the latched value
+  // is what prevents mid-session TTL flips from busting the cache.
+  if (!userEligible) {
+    // Only log on first rejection to avoid spam
+    const key = `overage-rejection-log-${getSessionId()}`
+    if (!globalThis[key as keyof typeof globalThis]) {
+      logForDebugging(
+        `[CACHE TTL] User not eligible: ant=${process.env.USER_TYPE === 'ant'}, subscriber=${isClaudeAISubscriber()}`,
+      )
+      globalThis[key as keyof typeof globalThis] = true as never
+    }
+    return false
+  }
 
   // Cache allowlist in bootstrap state for session stability — prevents mixed
   // TTLs when GrowthBook's disk cache updates mid-request
@@ -423,14 +449,15 @@ function should1hCacheTTL(querySource?: QuerySource): boolean {
     setPromptCache1hAllowlist(allowlist)
   }
 
-  return (
+  const result =
     querySource !== undefined &&
     allowlist.some(pattern =>
       pattern.endsWith('*')
         ? querySource.startsWith(pattern.slice(0, -1))
         : querySource === pattern,
     )
-  )
+
+  return result
 }
 
 /**
@@ -1222,11 +1249,20 @@ async function* queryModel(
   }
 
   // Determine global cache strategy for logging
-  const globalCacheStrategy: GlobalCacheStrategy = useGlobalCacheFeature
+  const rawStrategy: GlobalCacheStrategy = useGlobalCacheFeature
     ? needsToolBasedCacheMarker
       ? 'none'
       : 'system_prompt'
     : 'none'
+
+  // Latch strategy on first evaluation so mid-session MCP connect/disconnect
+  // doesn't flip cache_control scope and bust the prompt cache (~20K tokens).
+  // Same pattern as promptCache1hEligible latching.
+  let globalCacheStrategy = getLatchedGlobalCacheStrategy()
+  if (globalCacheStrategy === null) {
+    globalCacheStrategy = rawStrategy
+    setLatchedGlobalCacheStrategy(rawStrategy)
+  }
 
   // Build tool schemas, adding defer_loading for MCP tools when tool search is enabled
   // Note: We pass the full `tools` list (not filteredTools) to toolToAPISchema so that

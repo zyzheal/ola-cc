@@ -55,6 +55,20 @@ if (feature('ABLATION_BASELINE') && process.env.CLAUDE_CODE_ABLATION_BASELINE) {
  * Fast-path for --version has zero imports beyond this file.
  */
 async function main(): Promise<void> {
+  // Node.js version check - must come before any other logic
+  const nodeVersion = process.version;
+  const nodeMajor = parseInt(nodeVersion.slice(1).split('.')[0], 10);
+  const minRequiredVersion = 18;
+
+  if (isNaN(nodeMajor) || nodeMajor < minRequiredVersion) {
+    console.error(`Error: Node.js ${minRequiredVersion}.0.0 or higher is required.`);
+    console.error(`Current Node.js version: ${nodeVersion}`);
+    console.error('');
+    console.error('Please upgrade Node.js to continue.');
+    console.error('Download: https://nodejs.org/');
+    process.exit(1);
+  }
+
   const args = process.argv.slice(2);
 
   // Fast-path for --version/-v: zero module loading needed

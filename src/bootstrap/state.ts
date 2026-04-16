@@ -240,6 +240,10 @@ type State = {
   // benefit to keeping thinking). Once latched, stays on so the newly-warmed
   // thinking-cleared cache isn't busted by flipping back to keep:'all'.
   thinkingClearLatched: boolean | null
+  // Latched global cache strategy. Once MCP tools are detected (or not) at
+  // session start, the strategy is locked so mid-session MCP connect/disconnect
+  // doesn't flip cache_control scope and bust the prompt cache (~20K+ tokens).
+  latchedGlobalCacheStrategy: 'system_prompt' | 'none' | null
   // Current prompt ID (UUID) correlating a user prompt with subsequent OTel events
   promptId: string | null
   // Last API requestId for the main conversation chain (not subagents).
@@ -415,6 +419,7 @@ function getInitialState(): State {
     fastModeHeaderLatched: null,
     cacheEditingHeaderLatched: null,
     thinkingClearLatched: null,
+    latchedGlobalCacheStrategy: null,
     // Current prompt ID
     promptId: null,
     lastMainRequestId: undefined,
@@ -1747,6 +1752,16 @@ export function setThinkingClearLatched(v: boolean): void {
   STATE.thinkingClearLatched = v
 }
 
+export function getLatchedGlobalCacheStrategy(): 'system_prompt' | 'none' | null {
+  return STATE.latchedGlobalCacheStrategy
+}
+
+export function setLatchedGlobalCacheStrategy(
+  v: 'system_prompt' | 'none',
+): void {
+  STATE.latchedGlobalCacheStrategy = v
+}
+
 /**
  * Reset beta header latches to null. Called on /clear and /compact so a
  * fresh conversation gets fresh header evaluation.
@@ -1756,6 +1771,7 @@ export function clearBetaHeaderLatches(): void {
   STATE.fastModeHeaderLatched = null
   STATE.cacheEditingHeaderLatched = null
   STATE.thinkingClearLatched = null
+  STATE.latchedGlobalCacheStrategy = null
 }
 
 export function getPromptId(): string | null {

@@ -50,9 +50,11 @@ function getStdinOverride(): ReadStream | undefined {
     // This is needed because some runtimes (like Bun's compiled binaries)
     // may not correctly detect isTTY on ReadStream created from a file descriptor.
     ttyStream.isTTY = true
+    console.error('[renderOptions] Opened /dev/tty successfully, isTTY:', ttyStream.isTTY, 'setRawMode:', typeof ttyStream.setRawMode)
     cachedStdinOverride = ttyStream
     return cachedStdinOverride
   } catch (err) {
+    console.error('[renderOptions] Failed to open /dev/tty:', (err as Error).message)
     logError(err as Error)
     cachedStdinOverride = undefined
     return undefined
