@@ -1,0 +1,3 @@
+[workspace]
+members = ["string-width"]
+resolver = "2"
