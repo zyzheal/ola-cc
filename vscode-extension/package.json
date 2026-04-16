@@ -186,6 +186,11 @@
           "type": "boolean",
           "default": false,
           "description": "Show Claude's thinking process in the chat."
+        },
+        "claude.enableHoverInsights": {
+          "type": "boolean",
+          "default": false,
+          "description": "Enable hover-based Claude insights on code elements."
         }
       }
     },

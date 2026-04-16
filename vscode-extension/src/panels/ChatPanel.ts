@@ -9,6 +9,7 @@
  */
 import * as vscode from 'vscode';
 import * as path from 'path';
+import * as crypto from 'crypto';
 import { StatusBarManager } from '../utils/StatusBarManager';
 import { ClaudeClient } from '../utils/ClaudeClient';
 
@@ -352,7 +353,8 @@ export class ChatPanel {
 
   /**
    * Generate the HTML for the webview.
-   * This embeds the React-based chat UI rendered as HTML with inline JS.
+   * The actual chat UI is rendered by the app.js bundle built from app.tsx.
+   * Only minimal CSS and the script tag are included here.
    */
   private getWebviewHtml(): string {
     const scriptUri = this.panel?.webview.asWebviewUri(
@@ -367,8 +369,6 @@ export class ChatPanel {
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <meta http-equiv="Content-Security-Policy"
     content="default-src 'none'; style-src ${this.panel?.webview.cspSource} 'unsafe-inline'; script-src 'nonce-${nonce}';">
-  <meta http-equiv="Content-Security-Policy"
-    content="default-src 'none'; style-src 'unsafe-inline'; script-src 'nonce-${nonce}';">
   <title>Claude Code</title>
   <style>
     :root {
@@ -513,205 +513,16 @@ export class ChatPanel {
 </head>
 <body>
   <div id="root"></div>
-  <script nonce="${nonce}">
-    // Claude Code VSCode Webview - Chat UI
-    // This runs inside VSCode's webview with full VSCode API access via acquireVsCodeApi()
-
-    const vscode = acquireVsCodeApi();
-    let messages = [];
-    let config = {};
-    let isStreaming = false;
-
-    // Message handler from VSCode extension
-    window.addEventListener('message', event => {
-      const message = event.data;
-      switch (message.command) {
-        case 'add_message':
-          messages.push(message.message);
-          renderMessages();
-          break;
-        case 'update_message':
-          const idx = messages.findIndex(m => m.id === message.messageId);
-          if (idx !== -1) {
-            messages[idx].content = message.content;
-            messages[idx].isStreaming = message.isStreaming;
-            renderMessages();
-          }
-          break;
-        case 'clear_messages':
-          messages = [];
-          renderMessages();
-          break;
-        case 'load_history':
-          messages = message.messages || [];
-          renderMessages();
-          break;
-        case 'update_config':
-          config = message.config || {};
-          break;
-        case 'update_file_context':
-          updateFileContext(message.context);
-          break;
-        case 'focus_input':
-          document.getElementById('chat-input')?.focus();
-          break;
-        case 'error':
-          showError(message.message);
-          break;
-      }
-    });
-
-    let activeFileContext = null;
-
-    function updateFileContext(ctx) {
-      activeFileContext = ctx;
-      const badge = document.getElementById('file-context-badge');
-      if (ctx && ctx.path) {
-        badge.textContent = 'Active: ' + ctx.path.split('/').pop() + ' (' + ctx.language + ')';
-        badge.style.display = 'inline-block';
-      } else {
-        badge.style.display = 'none';
-      }
-    }
-
-    function renderMessages() {
-      const container = document.getElementById('chat-messages');
-      const inputContainer = document.getElementById('chat-input-container');
-      if (!container) return;
-
-      if (messages.length === 0) {
-        container.innerHTML = getWelcomeHTML();
-        return;
-      }
-
-      let html = '<span id="file-context-badge" style="display:none" class="file-context-badge"></span>';
-      for (const msg of messages) {
-        if (msg.role === 'user') {
-          html += '<div class="message user">' + escapeHtml(msg.content) + '</div>';
-        } else {
-          html += '<div class="message assistant">' + renderMarkdown(msg.content) +
-            (msg.isStreaming ? ' <span class="typing-indicator">...</span>' : '') +
-            getActionButtons(msg.content, msg.id) + '</div>';
-        }
-      }
-
-      container.innerHTML = html;
-      container.scrollTop = container.scrollHeight;
-    }
-
-    function getWelcomeHTML() {
-      return '<div class="welcome-screen">' +
-        '<h2>Claude Code</h2>' +
-        '<p>Your AI coding assistant, built into VSCode</p>' +
-        '<p style="font-size: 12px; margin-top: 8px;">Ask me anything about your code</p>' +
-        '<div class="suggestions">' +
-        '<button class="suggestion-btn" onclick="sendSuggestion(this.textContent)">Explain this file</button>' +
-        '<button class="suggestion-btn" onclick="sendSuggestion(this.textContent)">Find bugs in my code</button>' +
-        '<button class="suggestion-btn" onclick="sendSuggestion(this.textContent)">Write tests</button>' +
-        '<button class="suggestion-btn" onclick="sendSuggestion(this.textContent)">Improve performance</button>' +
-        '</div></div>';
-    }
-
-    function sendSuggestion(text) {
-      sendMessage(text);
-    }
-
-    function sendMessage(content) {
-      if (!content.trim()) return;
-      vscode.postMessage({ command: 'user_message', content: content });
-      document.getElementById('chat-input').value = '';
-      resizeInput();
-    }
-
-    function getActionButtons(content, msgId) {
-      if (!content.includes('\`')) return '';
-      return '<div style="margin-top:4px">' +
-        '<button onclick="applyCode(\\'' + msgId + '\\')" style="margin-right:4px;padding:2px 8px;font-size:11px;cursor:pointer;background:var(--vscode-button-background);color:var(--vscode-button-foreground);border:none;border-radius:2px">Apply to Editor</button>' +
-        '<button onclick="copyCode(\\'' + msgId + '\\')" style="padding:2px 8px;font-size:11px;cursor:pointer;background:var(--vscode-input-background);color:var(--vscode-input-foreground);border:1px solid var(--vscode-widget-border);border-radius:2px">Copy</button>' +
-        '</div>';
-    }
-
-    function applyCode(msgId) {
-      const msg = messages.find(m => m.id === msgId);
-      if (msg) {
-        const code = extractCodeBlocks(msg.content);
-        vscode.postMessage({ command: 'apply_to_editor', content: code });
-      }
-    }
-
-    function copyCode(msgId) {
-      const msg = messages.find(m => m.id === msgId);
-      if (msg) {
-        const code = extractCodeBlocks(msg.content);
-        vscode.postMessage({ command: 'copy_to_clipboard', content: code });
-      }
-    }
-
-    function extractCodeBlocks(content) {
-      const match = content.match(/\`\`\`[\\w]*\\n([\\s\\S]*?)\`\`\`/);
-      return match ? match[1] : content;
-    }
-
-    function renderMarkdown(text) {
-      if (!text) return '';
-      let html = escapeHtml(text);
-
-      // Code blocks
-      html = html.replace(/\`\`\`(\\w+)?\\n([\\s\\S]*?)\`\`\`/g, '<pre><code class="lang-$1">$2</code></pre>');
-      // Inline code
-      html = html.replace(/\`([^\`]+)\`/g, '<code>$1</code>');
-      // Bold
-      html = html.replace(/\\*\\*([^\\*]+)\\*\\*/g, '<strong>$1</strong>');
-      // Italic
-      html = html.replace(/\\*([^\\*]+)\\*/g, '<em>$1</em>');
-      // Line breaks to paragraphs
-      html = html.replace(/\\n\\n/g, '</p><p>');
-      html = '<p>' + html + '</p>';
-      html = html.replace(/<p><\\/p>/g, '');
-
-      return html;
-    }
-
-    function escapeHtml(text) {
-      const div = document.createElement('div');
-      div.textContent = text;
-      return div.innerHTML;
-    }
-
-    function showError(message) {
-      const container = document.getElementById('chat-messages');
-      if (container) {
-        container.innerHTML += '<div class="message" style="color:#f48771">Error: ' + escapeHtml(message) + '</div>';
-        container.scrollTop = container.scrollHeight;
-      }
-    }
-
-    function resizeInput() {
-      const input = document.getElementById('chat-input');
-      if (input) {
-        input.style.height = 'auto';
-        input.style.height = Math.min(input.scrollHeight, 150) + 'px';
-      }
-    }
-
-    // Initialize with empty state
-    renderMessages();
-  </script>
   <script nonce="${nonce}" src="${scriptUri}"></script>
 </body>
 </html>`;
   }
 
   /**
-   * Generate a nonce for CSP.
+   * Generate a cryptographically secure nonce for CSP.
    */
   private getNonce(): string {
-    let text = '';
-    const possible = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
-    for (let i = 0; i < 32; i++) {
-      text += possible.charAt(Math.floor(Math.random() * possible.length));
-    }
-    return text;
+    return crypto.randomUUID().replace(/-/g, '');
   }
 
   /**

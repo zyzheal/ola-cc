@@ -21,6 +21,7 @@ let chatPanel: ChatPanel | undefined;
 let statusBar: StatusBarManager | undefined;
 let codeActionDisposable: vscode.Disposable | undefined;
 let hoverDisposable: vscode.Disposable | undefined;
+let hoverProvider: HoverProvider | undefined;
 
 /**
  * Extension activation - called when the extension is first activated.
@@ -134,8 +135,6 @@ function registerCommands(context: vscode.ExtensionContext, panel: ChatPanel): v
  * Register code providers (code actions, hover, etc.)
  */
 function registerProviders(context: vscode.ExtensionContext): void {
-  const config = vscode.workspace.getConfiguration('claude');
-
   // Code action provider - offers Claude actions in the editor
   const codeActionProvider = new CodeActionProvider();
   codeActionDisposable = vscode.languages.registerCodeActionsProvider(
@@ -147,9 +146,10 @@ function registerProviders(context: vscode.ExtensionContext): void {
   );
   context.subscriptions.push(codeActionDisposable);
 
-  // Hover provider - shows Claude insights on hover
+  // Hover provider - only register if enabled in settings
+  const config = vscode.workspace.getConfiguration('claude');
   if (config.get<boolean>('enableHoverInsights', false)) {
-    const hoverProvider = new HoverProvider();
+    hoverProvider = new HoverProvider();
     hoverDisposable = vscode.languages.registerHoverProvider(
       { pattern: '**/*' },
       hoverProvider
@@ -171,6 +171,11 @@ function registerEventListeners(
       if (e.affectsConfiguration('claude')) {
         panel.onConfigChanged();
         statusBar?.updateStatus('idle');
+
+        // Re-register/unregister hover provider when enableHoverInsights changes
+        if (e.affectsConfiguration('claude.enableHoverInsights')) {
+          updateHoverProviderRegistration(context);
+        }
       }
     })
   );
@@ -202,6 +207,29 @@ function registerEventListeners(
       }
     })
   );
+}
+
+/**
+ * Toggle hover provider registration based on current setting.
+ */
+function updateHoverProviderRegistration(context: vscode.ExtensionContext): void {
+  const config = vscode.workspace.getConfiguration('claude');
+  const enabled = config.get<boolean>('enableHoverInsights', false);
+
+  if (enabled && !hoverDisposable) {
+    // Enable: register the hover provider
+    hoverProvider = new HoverProvider();
+    hoverDisposable = vscode.languages.registerHoverProvider(
+      { pattern: '**/*' },
+      hoverProvider
+    );
+    context.subscriptions.push(hoverDisposable);
+  } else if (!enabled && hoverDisposable) {
+    // Disable: dispose the hover provider
+    hoverDisposable.dispose();
+    hoverDisposable = undefined;
+    hoverProvider = undefined;
+  }
 }
 
 /**

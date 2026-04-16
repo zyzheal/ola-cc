@@ -7,6 +7,9 @@
  */
 import * as vscode from 'vscode';
 
+/** Maximum entries before triggering cleanup */
+const MAX_HOVER_ENTRIES = 500;
+
 /**
  * HoverProvider shows Claude insights when hovering over code.
  * This is opt-in via settings to avoid unnecessary API calls.
@@ -22,6 +25,11 @@ export class HoverProvider implements vscode.HoverProvider {
     const config = vscode.workspace.getConfiguration('claude');
     if (!config.get<boolean>('enableHoverInsights', false)) {
       return undefined;
+    }
+
+    // Periodically evict stale entries to prevent unbounded memory growth
+    if (this.recentHovers.size >= MAX_HOVER_ENTRIES) {
+      this.evictStaleEntries();
     }
 
     const wordRange = document.getWordRangeAtPosition(position);
@@ -56,5 +64,25 @@ export class HoverProvider implements vscode.HoverProvider {
     hoverContent.isTrusted = true;
 
     return new vscode.Hover(hoverContent);
+  }
+
+  /**
+   * Remove entries older than the cooldown period.
+   */
+  private evictStaleEntries(): void {
+    const now = Date.now();
+    for (const [key, timestamp] of this.recentHovers) {
+      if (now - timestamp > this.HOVER_COOLDOWN_MS) {
+        this.recentHovers.delete(key);
+      }
+    }
+    // If still too large, remove oldest entries
+    if (this.recentHovers.size >= MAX_HOVER_ENTRIES) {
+      const sorted = Array.from(this.recentHovers.entries()).sort((a, b) => a[1] - b[1]);
+      const toRemove = sorted.slice(0, sorted.length / 2);
+      for (const [key] of toRemove) {
+        this.recentHovers.delete(key);
+      }
+    }
   }
 }

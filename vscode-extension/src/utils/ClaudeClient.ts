@@ -22,6 +22,11 @@ export interface ApiMessage {
   content: string;
 }
 
+/** Retry configuration for transient failures */
+const MAX_RETRIES = 3;
+const INITIAL_RETRY_DELAY_MS = 1000;
+const MAX_RETRY_DELAY_MS = 10000;
+
 /**
  * ClaudeClient manages the connection to the Anthropic API.
  * It handles authentication, request formatting, and streaming.
@@ -32,6 +37,7 @@ export class ClaudeClient {
   private maxTokens: number;
   private temperature: number;
   private baseUrl: string;
+  private abortController: AbortController | null = null;
 
   constructor() {
     const config = vscode.workspace.getConfiguration('claude');
@@ -61,7 +67,7 @@ export class ClaudeClient {
   }
 
   /**
-   * Stream a completion from the Claude API.
+   * Stream a completion from the Claude API with retry logic.
    *
    * @param messages - Array of messages to send
    * @param callbacks - Streaming callbacks
@@ -79,83 +85,151 @@ export class ClaudeClient {
     const systemPrompt = systemMessages.map(m => m.content).join('\n\n');
     const apiMessages = messages.filter(m => m.role !== 'system');
 
-    try {
-      const response = await fetch(`${this.baseUrl}/v1/messages`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'x-api-key': this.apiKey!,
-          'anthropic-version': '2023-06-01',
-          'anthropic-beta': 'message-batches-2024-09-24',
-        },
-        body: JSON.stringify({
-          model: this.model,
-          max_tokens: this.maxTokens,
-          temperature: this.temperature,
-          system: systemPrompt,
-          messages: apiMessages.map(m => ({
-            role: m.role === 'assistant' ? 'assistant' : 'user',
-            content: m.content,
-          })),
-          stream: true,
-        }),
-      });
+    let lastError: Error | undefined;
 
-      if (!response.ok) {
-        const errorBody = await response.text();
-        throw new Error(`API error ${response.status}: ${errorBody}`);
-      }
+    for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+      // Abort any in-flight request before starting a new one
+      this.abortController?.abort();
+      this.abortController = new AbortController();
+      const { signal } = this.abortController;
 
-      if (!response.body) {
-        throw new Error('No response body from API');
-      }
+      try {
+        const response = await fetch(`${this.baseUrl}/v1/messages`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'x-api-key': this.apiKey!,
+            'anthropic-version': '2023-06-01',
+          },
+          body: JSON.stringify({
+            model: this.model,
+            max_tokens: this.maxTokens,
+            temperature: this.temperature,
+            system: systemPrompt,
+            messages: apiMessages.map(m => ({
+              role: m.role === 'assistant' ? 'assistant' : 'user',
+              content: m.content,
+            })),
+            stream: true,
+          }),
+          signal,
+        });
 
-      // Process the streaming response
-      const reader = response.body.getReader();
-      const decoder = new TextDecoder();
-      let buffer = '';
+        // Retry on transient errors: 429 (rate limit) and 5xx (server errors)
+        if (!response.ok && (response.status === 429 || response.status >= 500)) {
+          const retryAfter = this.getRetryAfter(response, attempt);
+          lastError = new Error(`API error ${response.status}: ${await response.text()}`);
+          if (attempt < MAX_RETRIES) {
+            await this.delay(retryAfter);
+            continue;
+          }
+          callbacks.onError(new Error(`Failed after ${MAX_RETRIES} retries: ${lastError.message}`));
+          return;
+        }
 
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
+        if (!response.ok) {
+          const errorBody = await response.text();
+          callbacks.onError(new Error(`API error ${response.status}: ${errorBody}`));
+          return;
+        }
 
-        buffer += decoder.decode(value, { stream: true });
+        if (!response.body) {
+          callbacks.onError(new Error('No response body from API'));
+          return;
+        }
 
-        // Process SSE frames from the buffer
-        const lines = buffer.split('\n');
-        buffer = lines.pop() || ''; // Keep incomplete line in buffer
+        // Process the streaming response with a guard to prevent double onComplete
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+        let completed = false;
 
-        for (const line of lines) {
-          const trimmed = line.trim();
-          if (!trimmed || trimmed.startsWith(':')) continue;
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
 
-          if (trimmed.startsWith('data: ')) {
-            const data = trimmed.slice(6);
-            if (data === '[DONE]') {
-              callbacks.onComplete();
-              return;
-            }
+          buffer += decoder.decode(value, { stream: true });
 
-            try {
-              const parsed = JSON.parse(data);
-              this.handleStreamEvent(parsed, callbacks);
-            } catch (e) {
-              // Skip malformed JSON
+          // Process SSE frames from the buffer
+          const lines = buffer.split('\n');
+          buffer = lines.pop() || ''; // Keep incomplete line in buffer
+
+          for (const line of lines) {
+            const trimmed = line.trim();
+            if (!trimmed || trimmed.startsWith(':')) continue;
+
+            if (trimmed.startsWith('data: ')) {
+              const data = trimmed.slice(6);
+              if (data === '[DONE]') {
+                if (!completed) {
+                  completed = true;
+                  callbacks.onComplete();
+                }
+                return;
+              }
+
+              try {
+                const parsed = JSON.parse(data);
+                this.handleStreamEvent(parsed, callbacks, () => {
+                  if (!completed) {
+                    completed = true;
+                    callbacks.onComplete();
+                  }
+                });
+              } catch (e) {
+                // Skip malformed JSON
+              }
             }
           }
         }
-      }
 
-      callbacks.onComplete();
-    } catch (error) {
-      callbacks.onError(error instanceof Error ? error : new Error(String(error)));
+        // Final onComplete guard for normal stream end without [DONE]
+        if (!completed) {
+          completed = true;
+          callbacks.onComplete();
+        }
+        return;
+      } catch (error) {
+        // AbortError means the request was cancelled (e.g. dispose or retry)
+        if (error instanceof Error && error.name === 'AbortError') {
+          continue;
+        }
+
+        // Network errors are retriable
+        if (attempt < MAX_RETRIES) {
+          const delayMs = this.getRetryDelay(attempt);
+          lastError = error instanceof Error ? error : new Error(String(error));
+          await this.delay(delayMs);
+          continue;
+        }
+
+        const finalError = error instanceof Error ? error : new Error(String(error));
+        callbacks.onError(new Error(`Failed after ${MAX_RETRIES} retries: ${finalError.message}`));
+        return;
+      }
     }
+
+    // Exhausted all retries
+    if (lastError) {
+      callbacks.onError(new Error(`Failed after ${MAX_RETRIES} retries: ${lastError.message}`));
+    }
+  }
+
+  /**
+   * Cancel any in-flight streaming request.
+   */
+  cancel(): void {
+    this.abortController?.abort();
   }
 
   /**
    * Handle a single stream event from the SSE response.
    */
-  private handleStreamEvent(event: Record<string, unknown>, callbacks: StreamCallbacks): void {
+  private handleStreamEvent(
+    event: Record<string, unknown>,
+    callbacks: StreamCallbacks,
+    onComplete: () => void
+  ): void {
     const eventType = event.type as string | undefined;
 
     switch (eventType) {
@@ -184,7 +258,7 @@ export class ClaudeClient {
         break;
 
       case 'message_stop':
-        callbacks.onComplete();
+        onComplete();
         break;
 
       case 'ping':
@@ -200,9 +274,43 @@ export class ClaudeClient {
   }
 
   /**
+   * Determine retry delay based on response headers (Retry-After) or exponential backoff.
+   */
+  private getRetryAfter(response: Response, attempt: number): number {
+    const retryAfter = response.headers.get('Retry-After');
+    if (retryAfter) {
+      const seconds = parseInt(retryAfter, 10);
+      if (!isNaN(seconds)) {
+        return Math.min(seconds * 1000, MAX_RETRY_DELAY_MS);
+      }
+    }
+    return this.getRetryDelay(attempt);
+  }
+
+  /**
+   * Calculate exponential backoff delay with jitter.
+   */
+  private getRetryDelay(attempt: number): number {
+    const baseDelay = Math.min(
+      INITIAL_RETRY_DELAY_MS * Math.pow(2, attempt),
+      MAX_RETRY_DELAY_MS
+    );
+    // Add jitter (+/- 25%)
+    const jitter = baseDelay * 0.25 * (Math.random() * 2 - 1);
+    return Math.round(baseDelay + jitter);
+  }
+
+  /**
+   * Helper to delay execution.
+   */
+  private delay(ms: number): Promise<void> {
+    return new Promise(resolve => setTimeout(resolve, ms));
+  }
+
+  /**
    * Clean up resources.
    */
   dispose(): void {
-    // Nothing to clean up currently
+    this.cancel();
   }
 }
