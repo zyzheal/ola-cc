@@ -1,0 +1,226 @@
+{
+  "name": "claude-code-vscode",
+  "displayName": "Claude Code",
+  "description": "Embed Claude Code's AI capabilities directly inside VSCode. Chat, explain, refactor, and more.",
+  "version": "0.1.0",
+  "publisher": "anthropic",
+  "license": "SEE LICENSE IN LICENSE.md",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/anthropics/claude-code.git"
+  },
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "AI",
+    "Chat",
+    "Programming Languages",
+    "Other"
+  ],
+  "keywords": [
+    "claude",
+    "anthropic",
+    "ai",
+    "chat",
+    "code assistant",
+    "refactor",
+    "explain"
+  ],
+  "activationEvents": [
+    "onCommand:claude.chat",
+    "onCommand:claude.explain",
+    "onCommand:claude.refactor",
+    "onCommand:claude.fix",
+    "onCommand:claude.generateTests",
+    "onCommand:claude.review",
+    "onView:claudeCode.sidebar"
+  ],
+  "main": "./dist/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "claude.chat",
+        "title": "Claude: Open Chat",
+        "icon": "$(comment-discussion)"
+      },
+      {
+        "command": "claude.explain",
+        "title": "Claude: Explain Code",
+        "icon": "$(info)"
+      },
+      {
+        "command": "claude.refactor",
+        "title": "Claude: Refactor Code",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "claude.fix",
+        "title": "Claude: Fix Issue",
+        "icon": "$(bug)"
+      },
+      {
+        "command": "claude.generateTests",
+        "title": "Claude: Generate Tests",
+        "icon": "$(beaker)"
+      },
+      {
+        "command": "claude.review",
+        "title": "Claude: Review Code",
+        "icon": "$(eye)"
+      },
+      {
+        "command": "claude.clearChat",
+        "title": "Claude: Clear Chat",
+        "icon": "$(clear-all)"
+      },
+      {
+        "command": "claude.focusInput",
+        "title": "Claude: Focus Chat Input",
+        "icon": "$(cursor)"
+      }
+    ],
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "claudeCode",
+          "title": "Claude Code",
+          "icon": "$(comment-discussion)"
+        }
+      ]
+    },
+    "views": {
+      "claudeCode": [
+        {
+          "type": "webview",
+          "id": "claudeCode.sidebar",
+          "name": "Claude Chat"
+        }
+      ]
+    },
+    "menus": {
+      "editor/context": [
+        {
+          "command": "claude.explain",
+          "group": "claude@1"
+        },
+        {
+          "command": "claude.refactor",
+          "group": "claude@2"
+        },
+        {
+          "command": "claude.fix",
+          "group": "claude@3"
+        },
+        {
+          "command": "claude.generateTests",
+          "group": "claude@4"
+        },
+        {
+          "command": "claude.review",
+          "group": "claude@5"
+        }
+      ],
+      "editor/title": [
+        {
+          "command": "claude.chat",
+          "group": "navigation"
+        }
+      ],
+      "view/title": [
+        {
+          "command": "claude.clearChat",
+          "when": "view == claudeCode.sidebar",
+          "group": "navigation"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "Claude Code",
+      "properties": {
+        "claude.apiKey": {
+          "type": "string",
+          "default": "",
+          "description": "Anthropic API key. Leave empty to use CLAUDE_API_KEY environment variable.",
+          "format": "password"
+        },
+        "claude.model": {
+          "type": "string",
+          "default": "claude-sonnet-4-20250514",
+          "enum": [
+            "claude-sonnet-4-20250514",
+            "claude-opus-4-20250414",
+            "claude-haiku-4-20250414"
+          ],
+          "description": "Default model to use for Claude Code."
+        },
+        "claude.maxTokens": {
+          "type": "number",
+          "default": 8192,
+          "description": "Maximum tokens in the response."
+        },
+        "claude.temperature": {
+          "type": "number",
+          "default": 0,
+          "minimum": 0,
+          "maximum": 1,
+          "description": "Sampling temperature (0 = deterministic, 1 = creative)."
+        },
+        "claude.systemPrompt": {
+          "type": "string",
+          "default": "You are Claude Code, an AI coding assistant integrated into VSCode. You help with code explanation, refactoring, debugging, test generation, and general coding tasks.",
+          "description": "Custom system prompt for Claude Code.",
+          "editPresentation": "multilineText"
+        },
+        "claude.includeFileContext": {
+          "type": "boolean",
+          "default": true,
+          "description": "Automatically include the active file's content when invoking Claude from the editor."
+        },
+        "claude.includeSelectionOnly": {
+          "type": "boolean",
+          "default": true,
+          "description": "When text is selected, only include the selection (not the entire file)."
+        },
+        "claude.showThinking": {
+          "type": "boolean",
+          "default": false,
+          "description": "Show Claude's thinking process in the chat."
+        }
+      }
+    },
+    "keybindings": [
+      {
+        "command": "claude.chat",
+        "key": "ctrl+shift+l",
+        "mac": "cmd+shift+l",
+        "when": "editorTextFocus"
+      },
+      {
+        "command": "claude.explain",
+        "key": "ctrl+shift+e",
+        "mac": "cmd+shift+e",
+        "when": "editorTextFocus"
+      },
+      {
+        "command": "claude.focusInput",
+        "key": "ctrl+shift+i",
+        "mac": "cmd+shift+i"
+      }
+    ]
+  },
+  "scripts": {
+    "vscode:prepublish": "bun run build",
+    "build": "bun run ./build.mjs",
+    "watch": "bun run ./build.mjs --watch",
+    "package": "bun run ./build.mjs && vsce package",
+    "publish": "bun run ./build.mjs && vsce publish"
+  },
+  "devDependencies": {
+    "@types/vscode": "^1.85.0",
+    "@types/react": "^18.2.0",
+    "@types/react-dom": "^18.2.0",
+    "esbuild": "^0.19.0",
+    "@vscode/vsce": "^2.24.0"
+  }
+}
