@@ -24,7 +24,7 @@ const args = process.argv.slice(2)
 
 // ─── Publish Version ─────────────────────────────────────────
 // Use the publish package version, not the root workspace version
-const publishVersion = '0.0.16'
+const publishVersion = '0.0.17'
 
 // ─── Feature Flags ───────────────────────────────────────────
 const defaultFeatures = ['VOICE_MODE', 'BUDDY']
