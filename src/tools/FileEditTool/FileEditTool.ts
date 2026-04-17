@@ -4,6 +4,7 @@ import { getFeatureValue_CACHED_MAY_BE_STALE } from '../../services/analytics/gr
 import { diagnosticTracker } from '../../services/diagnosticTracking.js'
 import { clearDeliveredDiagnosticsForFile } from '../../services/lsp/LSPDiagnosticRegistry.js'
 import { getLspServerManager } from '../../services/lsp/manager.js'
+import { lspResultCache } from '../../services/lsp/lspResultCache.js'
 import { notifyVscodeFileUpdated } from '../../services/mcp/vscodeSdkMcp.js'
 import { checkTeamMemSecrets } from '../../services/teamMemorySync/teamMemSecretGuard.js'
 import {
@@ -495,6 +496,8 @@ export const FileEditTool = buildTool({
     if (lspManager) {
       // Clear previously delivered diagnostics so new ones will be shown
       clearDeliveredDiagnosticsForFile(`file://${absoluteFilePath}`)
+      // Invalidate cached LSP results for this file
+      lspResultCache.invalidateFile(absoluteFilePath)
       // didChange: Content has been modified
       lspManager
         .changeFile(absoluteFilePath, updatedFile)

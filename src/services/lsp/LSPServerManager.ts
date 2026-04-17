@@ -38,6 +38,8 @@ export type LSPServerManager = {
   saveFile(filePath: string): Promise<void>
   /** Synchronize file close to LSP server (sends didClose notification) */
   closeFile(filePath: string): Promise<void>
+  /** Close all tracked files (used during compaction) */
+  closeAllFiles(): Promise<void>
   /** Check if a file is already open on a compatible LSP server */
   isFileOpen(filePath: string): boolean
 }
@@ -61,7 +63,11 @@ export function createLSPServerManager(): LSPServerManager {
   const servers: Map<string, LSPServerInstance> = new Map()
   const extensionMap: Map<string, string[]> = new Map()
   // Track which files have been opened on which servers (URI -> server name)
-  const openedFiles: Map<string, string> = new Map()
+  // Plus version tracking for didChange synchronization
+  const openedFiles: Map<string, { serverName: string; version: number }> =
+    new Map()
+  // LRU ordering: touch order for eviction, capped to prevent unbounded growth
+  const MAX_OPEN_FILES = 50
 
   /**
    * Initialize the manager by loading all configured LSP servers.
@@ -273,12 +279,25 @@ export function createLSPServerManager(): LSPServerManager {
 
     const fileUri = pathToFileURL(path.resolve(filePath)).href
 
-    // Skip if already opened on this server
-    if (openedFiles.get(fileUri) === server.name) {
+    // Skip if already opened on this server — bump version for change tracking
+    const existing = openedFiles.get(fileUri)
+    if (existing?.serverName === server.name) {
       logForDebugging(
         `LSP: File already open, skipping didOpen for ${filePath}`,
       )
       return
+    }
+
+    // LRU eviction: if at capacity, evict the least-recently used file.
+    // Only remove the tracking entry — do NOT send didClose, because the
+    // LSP server would discard its AST and need to rebuild on next query,
+    // which costs far more CPU than keeping a {uri→metadata} Map entry.
+    // Actual didClose is handled by closeAllFiles() during post-compact cleanup.
+    if (openedFiles.size >= MAX_OPEN_FILES) {
+      const [oldestUri] = openedFiles.keys().next() as [string | undefined]
+      if (oldestUri) {
+        openedFiles.delete(oldestUri)
+      }
     }
 
     // Get language ID from server's extensionToLanguage mapping
@@ -294,8 +313,8 @@ export function createLSPServerManager(): LSPServerManager {
           text: content,
         },
       })
-      // Track that this file is now open on this server
-      openedFiles.set(fileUri, server.name)
+      // Track that this file is now open on this server, starting at version 1
+      openedFiles.set(fileUri, { serverName: server.name, version: 1 })
       logForDebugging(
         `LSP: Sent didOpen for ${filePath} (languageId: ${languageId})`,
       )
@@ -319,19 +338,23 @@ export function createLSPServerManager(): LSPServerManager {
 
     // If file hasn't been opened on this server yet, open it first
     // LSP servers require didOpen before didChange
-    if (openedFiles.get(fileUri) !== server.name) {
+    const entry = openedFiles.get(fileUri)
+    if (entry?.serverName !== server.name) {
       return openFile(filePath, content)
     }
+
+    // Bump version for incremental change tracking
+    entry.version++
 
     try {
       await server.sendNotification('textDocument/didChange', {
         textDocument: {
           uri: fileUri,
-          version: 1,
+          version: entry.version,
         },
         contentChanges: [{ text: content }],
       })
-      logForDebugging(`LSP: Sent didChange for ${filePath}`)
+      logForDebugging(`LSP: Sent didChange for ${filePath} (v${entry.version})`)
     } catch (error) {
       const err = new Error(
         `Failed to sync file change ${filePath}: ${errorMessage(error)}`,
@@ -401,7 +424,33 @@ export function createLSPServerManager(): LSPServerManager {
 
   function isFileOpen(filePath: string): boolean {
     const fileUri = pathToFileURL(path.resolve(filePath)).href
-    return openedFiles.has(fileUri)
+    // Touch the entry to move it to the end (most-recently used) for LRU ordering
+    const entry = openedFiles.get(fileUri)
+    if (entry) {
+      openedFiles.delete(fileUri)
+      openedFiles.set(fileUri, entry)
+    }
+    return !!entry
+  }
+
+  /**
+   * Close all tracked files (sends didClose for each).
+   * Used during compaction to release LSP resources for files
+   * that are being evicted from the conversation context.
+   */
+  async function closeAllFiles(): Promise<void> {
+    const filesToClose = Array.from(openedFiles.keys())
+    for (const fileUri of filesToClose) {
+      // Convert file URI back to file path for closeFile
+      const filePath = fileUri.replace(/^file:\/\//, '')
+      try {
+        // Decode URI component (e.g. %20 for spaces)
+        await closeFile(decodeURIComponent(filePath))
+      } catch {
+        // Best-effort: remove from tracking even if notification failed
+        openedFiles.delete(fileUri)
+      }
+    }
   }
 
   return {
@@ -415,6 +464,7 @@ export function createLSPServerManager(): LSPServerManager {
     changeFile,
     saveFile,
     closeFile,
+    closeAllFiles,
     isFileOpen,
   }
 }

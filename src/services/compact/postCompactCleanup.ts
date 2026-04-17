@@ -2,12 +2,14 @@ import { feature } from 'bun:bundle'
 import type { QuerySource } from '../../constants/querySource.js'
 import { clearSystemPromptSections } from '../../constants/systemPromptSections.js'
 import { getUserContext } from '../../context.js'
+import { getLspServerManager } from '../../services/lsp/manager.js'
 import { clearSpeculativeChecks } from '../../tools/BashTool/bashPermissions.js'
 import { clearClassifierApprovals } from '../../utils/classifierApprovals.js'
 import { resetGetMemoryFilesCache } from '../../utils/claudemd.js'
 import { clearSessionMessagesCache } from '../../utils/sessionStorage.js'
 import { clearBetaTracingState } from '../../utils/telemetry/betaSessionTracing.js'
 import { resetMicrocompactState } from './microCompact.js'
+import { lspResultCache } from '../../services/lsp/lspResultCache.js'
 
 /**
  * Run cleanup of caches and tracking state after compaction.
@@ -39,6 +41,9 @@ export function runPostCompactCleanup(querySource?: QuerySource): void {
     querySource === 'sdk'
 
   resetMicrocompactState()
+  if (isMainThreadCompact) {
+    lspResultCache.clear()
+  }
   if (feature('CONTEXT_COLLAPSE')) {
     if (isMainThreadCompact) {
       /* eslint-disable @typescript-eslint/no-require-imports */
@@ -74,4 +79,18 @@ export function runPostCompactCleanup(querySource?: QuerySource): void {
     )
   }
   clearSessionMessagesCache()
+
+  // Close all LSP-tracked files to release memory held by LSP server
+  // file content caches. Without this, the LSP openedFiles map grows
+  // unbounded over long sessions as files are opened but never closed.
+  if (isMainThreadCompact) {
+    const lspManager = getLspServerManager()
+    if (lspManager) {
+      void lspManager.closeAllFiles().catch(err => {
+        // Best-effort: log but don't fail the cleanup
+        const { logError } = require('../../utils/log.js') as typeof import('../../utils/log.js')
+        logError(err)
+      })
+    }
+  }
 }
