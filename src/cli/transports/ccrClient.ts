@@ -871,6 +871,7 @@ export class CCRClient {
 
     const allEvents: InternalEvent[] = []
     let cursor: string | undefined
+    const maxEvents = 10_000 // Cap to prevent unbounded memory growth
 
     do {
       const url = new URL(`${this.sessionBaseUrl}${path}`)
@@ -888,7 +889,13 @@ export class CCRClient {
       )
       if (!page) return null
 
-      allEvents.push(...(page.data ?? []))
+      const newEvents = page.data ?? []
+      if (allEvents.length + newEvents.length > maxEvents) {
+        // Drop oldest events to stay under cap (FIFO eviction)
+        const excess = allEvents.length + newEvents.length - maxEvents
+        allEvents.splice(0, excess)
+      }
+      allEvents.push(...newEvents)
       cursor = page.next_cursor
     } while (cursor)
 
