@@ -1,5 +1,21 @@
 import { isEnvTruthy } from 'src/utils/envUtils.js'
 
+/**
+ * 读取必需的环境变量，未设置则抛出异常。
+ * 所有 OAuth/API 端点均通过此函数强制要求配置。
+ * 每个环境变量在文件头部有对应的配置说明注释。
+ */
+export function getEnvOrThrow(name: string): string {
+  const value = process.env[name]
+  if (!value) {
+    throw new Error(
+      `Missing required environment variable: ${name}. ` +
+      `Please configure it before running the application.`
+    )
+  }
+  return value
+}
+
 // Default to prod config, override with test/staging if enabled
 type OauthConfigType = 'prod' | 'staging' | 'local'
 
