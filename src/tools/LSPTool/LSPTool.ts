@@ -17,6 +17,7 @@ import {
   getLspServerManager,
   waitForInitialization,
 } from '../../services/lsp/manager.js'
+import { lspResultCache } from '../../services/lsp/lspResultCache.js'
 import type { ValidationResult } from '../../Tool.js'
 import { buildTool, type ToolDef } from '../../Tool.js'
 import { uniq } from '../../utils/array.js'
@@ -251,85 +252,115 @@ export const LSPTool = buildTool({
     }
 
     // Map operation to LSP method and prepare params
-    const { method, params } = getMethodAndParams(input, absolutePath)
+    const { method, params, position } = getMethodAndParams(input, absolutePath)
 
-    try {
-      // Ensure file is open in LSP server before making requests
-      // Most LSP servers require textDocument/didOpen before operations
-      // Only read the file if it's not already open to avoid unnecessary I/O
-      if (!manager.isFileOpen(absolutePath)) {
-        const handle = await open(absolutePath, 'r')
-        try {
-          const stats = await handle.stat()
-          if (stats.size > MAX_LSP_FILE_SIZE_BYTES) {
-            const output: Output = {
-              operation: input.operation,
-              result: `File too large for LSP analysis (${Math.ceil(stats.size / 1_000_000)}MB exceeds 10MB limit)`,
-              filePath: input.filePath,
-            }
-            return { data: output }
-          }
-          const fileContent = await handle.readFile({ encoding: 'utf-8' })
-          await manager.openFile(absolutePath, fileContent)
-        } finally {
-          await handle.close()
-        }
+    // Check cache before sending request to LSP server
+    const cacheKey = lspResultCache.makeKey(absolutePath, method, position)
+    const cachedResult = lspResultCache.get(cacheKey)
+    if (cachedResult !== undefined) {
+      logForDebugging(`LSP cache hit for ${method} on ${input.filePath}`)
+      const { formatted, resultCount, fileCount } = formatResult(
+        input.operation,
+        cachedResult,
+        cwd,
+      )
+      const output: Output = {
+        operation: input.operation,
+        result: formatted,
+        filePath: input.filePath,
+        resultCount,
+        fileCount,
       }
+      return { data: output }
+    }
 
-      // Send request to LSP server
-      let result = await manager.sendRequest(absolutePath, method, params)
-
-      if (result === undefined) {
-        // Log for diagnostic purposes - helps track usage patterns and potential bugs
-        logForDebugging(
-          `No LSP server available for file type ${path.extname(absolutePath)} for operation ${input.operation} on file ${input.filePath}`,
-        )
-
-        const output: Output = {
-          operation: input.operation,
-          result: `No LSP server available for file type: ${path.extname(absolutePath)}`,
-          filePath: input.filePath,
-        }
-        return {
-          data: output,
-        }
-      }
-
-      // For incomingCalls and outgoingCalls, we need a two-step process:
-      // 1. First get CallHierarchyItem(s) from prepareCallHierarchy
-      // 2. Then request the actual calls using that item
-      if (
-        input.operation === 'incomingCalls' ||
-        input.operation === 'outgoingCalls'
-      ) {
-        const callItems = result as CallHierarchyItem[]
-        if (!callItems || callItems.length === 0) {
+    // Ensure file is open in LSP server before making requests
+    // This happens outside getOrFetch so concurrent agents don't duplicate I/O
+    if (!manager.isFileOpen(absolutePath)) {
+      const handle = await open(absolutePath, 'r')
+      try {
+        const stats = await handle.stat()
+        if (stats.size > MAX_LSP_FILE_SIZE_BYTES) {
           const output: Output = {
             operation: input.operation,
-            result: 'No call hierarchy item found at this position',
+            result: `File too large for LSP analysis (${Math.ceil(stats.size / 1_000_000)}MB exceeds 10MB limit)`,
             filePath: input.filePath,
-            resultCount: 0,
-            fileCount: 0,
           }
           return { data: output }
         }
+        const fileContent = await handle.readFile({ encoding: 'utf-8' })
+        await manager.openFile(absolutePath, fileContent)
+      } finally {
+        await handle.close()
+      }
+    }
 
-        // Use the first call hierarchy item to request calls
-        const callMethod =
-          input.operation === 'incomingCalls'
-            ? 'callHierarchy/incomingCalls'
-            : 'callHierarchy/outgoingCalls'
+    try {
+      // Use getOrFetch for in-flight dedup: when multiple agents concurrently
+      // query the same key, only ONE LSP request is issued.
+      let result = await lspResultCache.getOrFetch(cacheKey, async () => {
+        // Send request to LSP server
+        let lspResult = await manager.sendRequest(absolutePath, method, params)
 
-        result = await manager.sendRequest(absolutePath, callMethod, {
-          item: callItems[0],
-        })
-
-        if (result === undefined) {
+        if (lspResult === undefined) {
           logForDebugging(
-            `LSP server returned undefined for ${callMethod} on ${input.filePath}`,
+            `No LSP server available for file type ${path.extname(absolutePath)} for operation ${input.operation} on file ${input.filePath}`,
           )
-          // Continue to formatter which will handle empty/null gracefully
+          return undefined
         }
+
+        // For incomingCalls and outgoingCalls, two-step process:
+        // 1. prepareCallHierarchy → CallHierarchyItem[]
+        // 2. callHierarchy/incomingCalls or outgoingCalls
+        if (
+          input.operation === 'incomingCalls' ||
+          input.operation === 'outgoingCalls'
+        ) {
+          const callItems = lspResult as CallHierarchyItem[]
+          if (!callItems || callItems.length === 0) {
+            return undefined
+          }
+
+          const callMethod =
+            input.operation === 'incomingCalls'
+              ? 'callHierarchy/incomingCalls'
+              : 'callHierarchy/outgoingCalls'
+
+          // Dedup the second step as well
+          const callsCacheKey = lspResultCache.makeKey(
+            absolutePath,
+            callMethod,
+            position,
+          )
+          lspResult = await lspResultCache.getOrFetch(
+            callsCacheKey,
+            async () =>
+              manager.sendRequest(absolutePath, callMethod, {
+                item: callItems[0],
+              }),
+          )
+
+          if (lspResult === undefined) {
+            logForDebugging(
+              `LSP server returned undefined for ${callMethod} on ${input.filePath}`,
+            )
+          }
+        }
+
+        return lspResult
+      })
+
+      if (result === undefined) {
+        const output: Output = {
+          operation: input.operation,
+          result:
+            input.operation === 'incomingCalls' ||
+            input.operation === 'outgoingCalls'
+              ? 'No call hierarchy item found at this position'
+              : `No LSP server available for file type: ${path.extname(absolutePath)}`,
+          filePath: input.filePath,
+        }
+        return { data: output }
       }
 
       // Filter out gitignored files from location-based results
@@ -342,7 +373,6 @@ export const LSPTool = buildTool({
           input.operation === 'workspaceSymbol')
       ) {
         if (input.operation === 'workspaceSymbol') {
-          // SymbolInformation has location.uri — filter by extracting locations
           const symbols = result as SymbolInformation[]
           const locations = symbols
             .filter(s => s?.location?.uri)
@@ -356,7 +386,6 @@ export const LSPTool = buildTool({
             s => !s?.location?.uri || filteredUris.has(s.location.uri),
           )
         } else {
-          // Location[] or (Location | LocationLink)[]
           const locations = (result as (Location | LocationLink)[]).map(
             toLocation,
           )
@@ -421,12 +450,13 @@ export const LSPTool = buildTool({
 } satisfies ToolDef<InputSchema, Output>)
 
 /**
- * Maps LSPTool operation to LSP method and params
+ * Maps LSPTool operation to LSP method and params.
+ * Also returns the position (if any) for cache key construction.
  */
 function getMethodAndParams(
   input: Input,
   absolutePath: string,
-): { method: string; params: unknown } {
+): { method: string; params: unknown; position?: { line: number; character: number } } {
   const uri = pathToFileURL(absolutePath).href
   // Convert from 1-based (user-friendly) to 0-based (LSP protocol)
   const position = {
@@ -442,6 +472,7 @@ function getMethodAndParams(
           textDocument: { uri },
           position,
         },
+        position,
       }
     case 'findReferences':
       return {
@@ -451,6 +482,7 @@ function getMethodAndParams(
           position,
           context: { includeDeclaration: true },
         },
+        position,
       }
     case 'hover':
       return {
@@ -459,6 +491,7 @@ function getMethodAndParams(
           textDocument: { uri },
           position,
         },
+        position,
       }
     case 'documentSymbol':
       return {
@@ -481,6 +514,7 @@ function getMethodAndParams(
           textDocument: { uri },
           position,
         },
+        position,
       }
     case 'prepareCallHierarchy':
       return {
@@ -489,6 +523,7 @@ function getMethodAndParams(
           textDocument: { uri },
           position,
         },
+        position,
       }
     case 'incomingCalls':
       // For incoming/outgoing calls, we first need to prepare the call hierarchy
@@ -499,6 +534,7 @@ function getMethodAndParams(
           textDocument: { uri },
           position,
         },
+        position,
       }
     case 'outgoingCalls':
       return {
@@ -507,6 +543,7 @@ function getMethodAndParams(
           textDocument: { uri },
           position,
         },
+        position,
       }
   }
 }
