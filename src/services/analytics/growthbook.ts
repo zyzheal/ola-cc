@@ -24,7 +24,8 @@ import {
   is1PEventLoggingEnabled,
   logGrowthBookExperimentTo1P,
 } from './firstPartyEventLogger.js'
-import { getOauthConfig, getEnvOrThrow } from '../../constants/oauth.js'
+import { getOauthConfig } from '../../constants/oauth.js'
+import { getEnvOrThrow } from '../../utils/envUtils.js'
 
 /**
  * User attributes sent to GrowthBook for targeting.

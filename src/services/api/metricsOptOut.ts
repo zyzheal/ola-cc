@@ -8,7 +8,7 @@ import { logError } from '../../utils/log.js'
 import { memoizeWithTTLAsync } from '../../utils/memoize.js'
 import { isEssentialTrafficOnly } from '../../utils/privacyLevel.js'
 import { getClaudeCodeUserAgent } from '../../utils/userAgent.js'
-import { getEnvOrThrow } from '../../constants/oauth.js'
+import { getEnvOrThrow } from '../../utils/envUtils.js'
 
 type MetricsEnabledResponse = {
   metrics_logging_enabled: boolean

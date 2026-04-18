@@ -1,15 +1,72 @@
-import { getEnvOrThrow } from './oauth.js'
+import { readFileSync } from 'fs'
+import { join } from 'path'
 
-export const PRODUCT_URL = getEnvOrThrow('CLAUDE_PRODUCT_URL')
+// Lazy evaluation: env vars are only read when first accessed,
+// preventing crashes at module load time.
+// Falls back to ~/.claude/settings.json env field, then default value.
 
-// Claude Code Remote session URLs
-export const CLAUDE_AI_BASE_URL = getEnvOrThrow('CLAUDE_AI_BASE_URL')
-export const CLAUDE_AI_STAGING_BASE_URL = getEnvOrThrow('CLAUDE_AI_STAGING_BASE_URL')
-export const CLAUDE_AI_LOCAL_BASE_URL = getEnvOrThrow('CLAUDE_AI_LOCAL_BASE_URL')
+let _settingsEnv: Record<string, string> | undefined
+function getSettingsEnv(): Record<string, string> {
+  if (_settingsEnv !== undefined) return _settingsEnv
+  try {
+    const home = process.env.HOME || process.env.USERPROFILE || ''
+    if (!home) {
+      _settingsEnv = {}
+      return _settingsEnv
+    }
+    const settingsPath = join(home, '.claude', 'settings.json')
+    const raw = readFileSync(settingsPath, 'utf-8')
+    const parsed = JSON.parse(raw)
+    _settingsEnv = parsed?.env || {}
+  } catch {
+    _settingsEnv = {}
+  }
+  return _settingsEnv
+}
+
+function lazyEnv(name: string, defaultValue?: string): string {
+  let value: string | undefined
+  return new Proxy({} as string, {
+    get(_, prop) {
+      if (value === undefined) {
+        value = process.env[name] || getSettingsEnv()[name]
+        if (!value && defaultValue !== undefined) value = defaultValue
+        if (!value) {
+          throw new Error(
+            `Missing required environment variable: ${name}. ` +
+            `Please configure it in process.env or ~/.claude/settings.json env field.`,
+          )
+        }
+      }
+      const v = value
+      const result = (v as any)[prop]
+      return typeof result === 'function' ? result.bind(v) : result
+    },
+    getOwnPropertyDescriptor() {
+      if (value === undefined) {
+        value = process.env[name] || getSettingsEnv()[name]
+        if (!value && defaultValue !== undefined) value = defaultValue
+        if (!value) {
+          throw new Error(
+            `Missing required environment variable: ${name}. ` +
+            `Please configure it in process.env or ~/.claude/settings.json env field.`,
+          )
+        }
+      }
+      return { value, enumerable: true, configurable: true, writable: true }
+    },
+  }) as unknown as string
+}
+
+export const PRODUCT_URL = lazyEnv('CLAUDE_PRODUCT_URL', 'https://claude.ai')
+
+// Claude Code Remote session URLs — default to Anthropic official URLs
+export const CLAUDE_AI_BASE_URL = lazyEnv('CLAUDE_AI_BASE_URL', 'https://claude.ai')
+export const CLAUDE_AI_STAGING_BASE_URL = lazyEnv('CLAUDE_AI_STAGING_BASE_URL', 'https://staging.claude.ai')
+export const CLAUDE_AI_LOCAL_BASE_URL = lazyEnv('CLAUDE_AI_LOCAL_BASE_URL', 'http://localhost:3000')
 
 /**
  * Determine if we're in a staging environment for remote sessions.
- * Checks session ID format and ingress URL.
  */
 export function isRemoteSessionStaging(
   sessionId?: string,
@@ -23,7 +80,6 @@ export function isRemoteSessionStaging(
 
 /**
  * Determine if we're in a local-dev environment for remote sessions.
- * Checks session ID format (e.g. `session_local_...`) and ingress URL.
  */
 export function isRemoteSessionLocal(
   sessionId?: string,
@@ -53,16 +109,6 @@ export function getClaudeAiBaseUrl(
 
 /**
  * Get the full session URL for a remote session.
- *
- * The cse_→session_ translation is a temporary shim gated by
- * tengu_bridge_repl_v2_cse_shim_enabled (see isCseShimEnabled). Worker
- * endpoints (/v1/code/sessions/{id}/worker/*) want `cse_*` but the claude.ai
- * frontend currently routes on `session_*` (compat/convert.go:27 validates
- * TagSession). Same UUID body, different tag prefix. Once the server tags by
- * environment_kind and the frontend accepts `cse_*` directly, flip the gate
- * off. No-op for IDs already in `session_*` form. See toCompatSessionId in
- * src/bridge/sessionIdCompat.ts for the canonical helper (lazy-required here
- * to keep constants/ leaf-of-DAG at module-load time).
  */
 export function getRemoteSessionUrl(
   sessionId: string,

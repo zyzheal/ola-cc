@@ -23,8 +23,8 @@ const pkg = await Bun.file(new URL('../package.json', import.meta.url)).json() a
 const args = process.argv.slice(2)
 
 // ─── Publish Version ─────────────────────────────────────────
-// Use the publish package version, not the root workspace version
-const publishVersion = '0.1.2'
+// Version is read from root package.json for single source of truth
+const publishVersion = pkg.version
 
 // ─── Feature Flags ───────────────────────────────────────────
 const defaultFeatures = ['VOICE_MODE', 'BUDDY']

@@ -9,14 +9,13 @@
  * so a heavy transitive import here defeats the prefetch. The execa →
  * human-signals → cross-spawn chain alone is ~58ms of synchronous init.
  *
- * The imports below (envUtils, oauth constants, crypto, os) are already
- * evaluated by startupProfiler.ts at main.tsx:5, so they add no module-init
- * cost when keychainPrefetch.ts pulls this file in.
+ * The imports below (envUtils, crypto, os) are already evaluated by
+ * startupProfiler.ts at main.tsx:5, so they add no module-init cost when
+ * keychainPrefetch.ts pulls this file in.
  */
 
 import { createHash } from 'crypto'
 import { userInfo } from 'os'
-import { getOauthConfig } from 'src/constants/oauth.js'
 import { getClaudeConfigHomeDir } from '../envUtils.js'
 import type { SecureStorageData } from './types.js'
 
@@ -37,7 +36,9 @@ export function getMacOsKeychainStorageServiceName(
   const dirHash = isDefaultDir
     ? ''
     : `-${createHash('sha256').update(configDir).digest('hex').substring(0, 8)}`
-  return `Claude Code${getOauthConfig().OAUTH_FILE_SUFFIX}${serviceSuffix}${dirHash}`
+  // OAUTH_FILE_SUFFIX is always '' but importing getOauthConfig() here would
+  // cause a crash at module load time when env vars aren't set yet.
+  return `Claude Code${serviceSuffix}${dirHash}`
 }
 
 export function getUsername(): string {

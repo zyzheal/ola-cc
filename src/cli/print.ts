@@ -777,9 +777,20 @@ export async function runHeadless(
   const isUsingSdkUrl = Boolean(options.sdkUrl)
 
   if (!inputPrompt && !hasValidResumeSessionId && !isUsingSdkUrl) {
-    process.stderr.write(
-      `Error: Input must be provided either through stdin or as a prompt argument when using --print\n`,
-    )
+    const hasExplicitPrintFlag =
+      process.argv.includes('-p') || process.argv.includes('--print')
+    if (!hasExplicitPrintFlag) {
+      process.stderr.write(
+        `Error: No input provided. When running without a prompt argument or -p/--print flag in a non-interactive context, input must be provided via stdin.\n` +
+          `Use: echo "your prompt" | claude\n` +
+          `Or:  claude -p "your prompt"\n` +
+          `Or:  claude (in an interactive terminal)\n`,
+      )
+    } else {
+      process.stderr.write(
+        `Error: Input must be provided either through stdin or as a prompt argument when using --print\n`,
+      )
+    }
     gracefulShutdownSync(1)
     return
   }
