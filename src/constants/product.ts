@@ -1,9 +1,11 @@
-export const PRODUCT_URL = 'https://claude.com/claude-code'
+import { getEnvOrThrow } from './oauth.js'
+
+export const PRODUCT_URL = getEnvOrThrow('CLAUDE_PRODUCT_URL')
 
 // Claude Code Remote session URLs
-export const CLAUDE_AI_BASE_URL = 'https://claude.ai'
-export const CLAUDE_AI_STAGING_BASE_URL = 'https://claude-ai.staging.ant.dev'
-export const CLAUDE_AI_LOCAL_BASE_URL = 'http://localhost:4000'
+export const CLAUDE_AI_BASE_URL = getEnvOrThrow('CLAUDE_AI_BASE_URL')
+export const CLAUDE_AI_STAGING_BASE_URL = getEnvOrThrow('CLAUDE_AI_STAGING_BASE_URL')
+export const CLAUDE_AI_LOCAL_BASE_URL = getEnvOrThrow('CLAUDE_AI_LOCAL_BASE_URL')
 
 /**
  * Determine if we're in a staging environment for remote sessions.
