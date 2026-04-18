@@ -11,6 +11,7 @@ import axios from 'axios'
 import { randomUUID } from 'crypto'
 import * as fs from 'fs/promises'
 import * as path from 'path'
+import { getEnvOrThrow } from '../../constants/oauth.js'
 import { count } from '../../utils/array.js'
 import { getCwd } from '../../utils/cwd.js'
 import { logForDebugging } from '../../utils/debug.js'
@@ -27,14 +28,9 @@ import {
 const FILES_API_BETA_HEADER = 'files-api-2025-04-14,oauth-2025-04-20'
 const ANTHROPIC_VERSION = '2023-06-01'
 
-// API base URL - uses ANTHROPIC_BASE_URL set by env-manager for the appropriate environment
-// Falls back to public API for standalone usage
+// API base URL - driven by CLAUDE_FILES_API_BASE_URL env var
 function getDefaultApiBaseUrl(): string {
-  return (
-    process.env.ANTHROPIC_BASE_URL ||
-    process.env.CLAUDE_CODE_API_BASE_URL ||
-    'https://api.anthropic.com'
-  )
+  return getEnvOrThrow('CLAUDE_FILES_API_BASE_URL')
 }
 
 function logDebugError(message: string): void {
@@ -60,7 +56,7 @@ export type File = {
 export type FilesApiConfig = {
   /** OAuth token for authentication (from session JWT) */
   oauthToken: string
-  /** Base URL for the API (default: https://api.anthropic.com) */
+  /** Base URL for the API (from CLAUDE_FILES_API_BASE_URL env var) */
   baseUrl?: string
   /** Session ID for creating session-specific directories */
   sessionId: string
