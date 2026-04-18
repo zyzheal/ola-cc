@@ -1,5 +1,3 @@
-import { isEnvTruthy } from 'src/utils/envUtils.js'
-
 /**
  * 读取必需的环境变量，未设置则抛出异常。
  * 所有 OAuth/API 端点均通过此函数强制要求配置。
@@ -16,34 +14,16 @@ export function getEnvOrThrow(name: string): string {
   return value
 }
 
-// Default to prod config, override with test/staging if enabled
-type OauthConfigType = 'prod' | 'staging' | 'local'
+// OAuth config type is now always 'prod' (all values come from env vars)
+type OauthConfigType = 'prod'
 
-function getOauthConfigType(): OauthConfigType {
-  if (process.env.USER_TYPE === 'ant') {
-    if (isEnvTruthy(process.env.USE_LOCAL_OAUTH)) {
-      return 'local'
-    }
-    if (isEnvTruthy(process.env.USE_STAGING_OAUTH)) {
-      return 'staging'
-    }
-  }
+function getOauthConfigType(): 'prod' {
   return 'prod'
 }
 
+// Always return empty suffix since OAUTH_FILE_SUFFIX is now always ''
 export function fileSuffixForOauthConfig(): string {
-  if (process.env.CLAUDE_CODE_CUSTOM_OAUTH_URL) {
-    return '-custom-oauth'
-  }
-  switch (getOauthConfigType()) {
-    case 'local':
-      return '-local-oauth'
-    case 'staging':
-      return '-staging-oauth'
-    case 'prod':
-      // No suffix for production config
-      return ''
-  }
+  return ''
 }
 
 export const CLAUDE_AI_INFERENCE_SCOPE = 'user:inference' as const
@@ -96,26 +76,38 @@ type OauthConfig = {
   MCP_PROXY_PATH: string
 }
 
-// Production OAuth configuration - Used in normal operation
+// ============================================================
+// OAuth/API 端点配置 — 全部通过环境变量提供，无默认值
+//
+// 必需环境变量清单:
+//   CLAUDE_API_BASE_URL                  — API 基础地址
+//   CLAUDE_OAUTH_CONSOLE_AUTHORIZE_URL   — Console OAuth 授权页
+//   CLAUDE_OAUTH_CLAUDE_AI_AUTHORIZE_URL — claude.ai OAuth 授权页
+//   CLAUDE_OAUTH_CLAUDE_AI_ORIGIN        — claude.ai Web Origin
+//   CLAUDE_OAUTH_TOKEN_URL              — Token 交换端点
+//   CLAUDE_OAUTH_API_KEY_URL            — API Key 创建端点
+//   CLAUDE_OAUTH_ROLES_URL              — 用户角色查询端点
+//   CLAUDE_OAUTH_CLIENT_ID              — OAuth Client ID
+//   CLAUDE_OAUTH_CONSOLE_SUCCESS_URL    — Console 认证成功跳转页
+//   CLAUDE_OAUTH_CLAUDEAI_SUCCESS_URL   — claude.ai 认证成功跳转页
+//   CLAUDE_OAUTH_MANUAL_REDIRECT_URL    — 手动认证回调地址
+//   CLAUDE_MCP_PROXY_URL                — MCP 代理服务器地址
+// ============================================================
+
 const PROD_OAUTH_CONFIG = {
-  BASE_API_URL: 'https://api.anthropic.com',
-  CONSOLE_AUTHORIZE_URL: 'https://platform.claude.com/oauth/authorize',
-  // Bounces through claude.com/cai/* so CLI sign-ins connect to claude.com
-  // visits for attribution. 307s to claude.ai/oauth/authorize in two hops.
-  CLAUDE_AI_AUTHORIZE_URL: 'https://claude.com/cai/oauth/authorize',
-  CLAUDE_AI_ORIGIN: 'https://claude.ai',
-  TOKEN_URL: 'https://platform.claude.com/v1/oauth/token',
-  API_KEY_URL: 'https://api.anthropic.com/api/oauth/claude_cli/create_api_key',
-  ROLES_URL: 'https://api.anthropic.com/api/oauth/claude_cli/roles',
-  CONSOLE_SUCCESS_URL:
-    'https://platform.claude.com/buy_credits?returnUrl=/oauth/code/success%3Fapp%3Dclaude-code',
-  CLAUDEAI_SUCCESS_URL:
-    'https://platform.claude.com/oauth/code/success?app=claude-code',
-  MANUAL_REDIRECT_URL: 'https://platform.claude.com/oauth/code/callback',
-  CLIENT_ID: '9d1c250a-e61b-44d9-88ed-5944d1962f5e',
-  // No suffix for production config
+  BASE_API_URL: getEnvOrThrow('CLAUDE_API_BASE_URL'),
+  CONSOLE_AUTHORIZE_URL: getEnvOrThrow('CLAUDE_OAUTH_CONSOLE_AUTHORIZE_URL'),
+  CLAUDE_AI_AUTHORIZE_URL: getEnvOrThrow('CLAUDE_OAUTH_CLAUDE_AI_AUTHORIZE_URL'),
+  CLAUDE_AI_ORIGIN: getEnvOrThrow('CLAUDE_OAUTH_CLAUDE_AI_ORIGIN'),
+  TOKEN_URL: getEnvOrThrow('CLAUDE_OAUTH_TOKEN_URL'),
+  API_KEY_URL: getEnvOrThrow('CLAUDE_OAUTH_API_KEY_URL'),
+  ROLES_URL: getEnvOrThrow('CLAUDE_OAUTH_ROLES_URL'),
+  CONSOLE_SUCCESS_URL: getEnvOrThrow('CLAUDE_OAUTH_CONSOLE_SUCCESS_URL'),
+  CLAUDEAI_SUCCESS_URL: getEnvOrThrow('CLAUDE_OAUTH_CLAUDEAI_SUCCESS_URL'),
+  MANUAL_REDIRECT_URL: getEnvOrThrow('CLAUDE_OAUTH_MANUAL_REDIRECT_URL'),
+  CLIENT_ID: getEnvOrThrow('CLAUDE_OAUTH_CLIENT_ID'),
   OAUTH_FILE_SUFFIX: '',
-  MCP_PROXY_URL: 'https://mcp-proxy.anthropic.com',
+  MCP_PROXY_URL: getEnvOrThrow('CLAUDE_MCP_PROXY_URL'),
   MCP_PROXY_PATH: '/v1/mcp/{server_id}',
 } as const
 
@@ -129,118 +121,14 @@ const PROD_OAUTH_CONFIG = {
 export const MCP_CLIENT_METADATA_URL =
   'https://claude.ai/oauth/claude-code-client-metadata'
 
-// Staging OAuth configuration - only included in ant builds with staging flag
-// Uses literal check for dead code elimination
-const STAGING_OAUTH_CONFIG =
-  process.env.USER_TYPE === 'ant'
-    ? ({
-        BASE_API_URL: 'https://api-staging.anthropic.com',
-        CONSOLE_AUTHORIZE_URL:
-          'https://platform.staging.ant.dev/oauth/authorize',
-        CLAUDE_AI_AUTHORIZE_URL:
-          'https://claude-ai.staging.ant.dev/oauth/authorize',
-        CLAUDE_AI_ORIGIN: 'https://claude-ai.staging.ant.dev',
-        TOKEN_URL: 'https://platform.staging.ant.dev/v1/oauth/token',
-        API_KEY_URL:
-          'https://api-staging.anthropic.com/api/oauth/claude_cli/create_api_key',
-        ROLES_URL:
-          'https://api-staging.anthropic.com/api/oauth/claude_cli/roles',
-        CONSOLE_SUCCESS_URL:
-          'https://platform.staging.ant.dev/buy_credits?returnUrl=/oauth/code/success%3Fapp%3Dclaude-code',
-        CLAUDEAI_SUCCESS_URL:
-          'https://platform.staging.ant.dev/oauth/code/success?app=claude-code',
-        MANUAL_REDIRECT_URL:
-          'https://platform.staging.ant.dev/oauth/code/callback',
-        CLIENT_ID: '22422756-60c9-4084-8eb7-27705fd5cf9a',
-        OAUTH_FILE_SUFFIX: '-staging-oauth',
-        MCP_PROXY_URL: 'https://mcp-proxy-staging.anthropic.com',
-        MCP_PROXY_PATH: '/v1/mcp/{server_id}',
-      } as const)
-    : undefined
-
-// Three local dev servers: :8000 api-proxy (`api dev start -g ccr`),
-// :4000 claude-ai frontend, :3000 Console frontend. Env vars let
-// scripts/claude-localhost override if your layout differs.
-function getLocalOauthConfig(): OauthConfig {
-  const api =
-    process.env.CLAUDE_LOCAL_OAUTH_API_BASE?.replace(/\/$/, '') ??
-    'http://localhost:8000'
-  const apps =
-    process.env.CLAUDE_LOCAL_OAUTH_APPS_BASE?.replace(/\/$/, '') ??
-    'http://localhost:4000'
-  const consoleBase =
-    process.env.CLAUDE_LOCAL_OAUTH_CONSOLE_BASE?.replace(/\/$/, '') ??
-    'http://localhost:3000'
-  return {
-    BASE_API_URL: api,
-    CONSOLE_AUTHORIZE_URL: `${consoleBase}/oauth/authorize`,
-    CLAUDE_AI_AUTHORIZE_URL: `${apps}/oauth/authorize`,
-    CLAUDE_AI_ORIGIN: apps,
-    TOKEN_URL: `${api}/v1/oauth/token`,
-    API_KEY_URL: `${api}/api/oauth/claude_cli/create_api_key`,
-    ROLES_URL: `${api}/api/oauth/claude_cli/roles`,
-    CONSOLE_SUCCESS_URL: `${consoleBase}/buy_credits?returnUrl=/oauth/code/success%3Fapp%3Dclaude-code`,
-    CLAUDEAI_SUCCESS_URL: `${consoleBase}/oauth/code/success?app=claude-code`,
-    MANUAL_REDIRECT_URL: `${consoleBase}/oauth/code/callback`,
-    CLIENT_ID: '22422756-60c9-4084-8eb7-27705fd5cf9a',
-    OAUTH_FILE_SUFFIX: '-local-oauth',
-    MCP_PROXY_URL: 'http://localhost:8205',
-    MCP_PROXY_PATH: '/v1/toolbox/shttp/mcp/{server_id}',
-  }
-}
-
-// Allowed base URLs for CLAUDE_CODE_CUSTOM_OAUTH_URL override.
-// Only FedStart/PubSec deployments are permitted to prevent OAuth tokens
-// from being sent to arbitrary endpoints.
-const ALLOWED_OAUTH_BASE_URLS = [
-  'https://beacon.claude-ai.staging.ant.dev',
-  'https://claude.fedstart.com',
-  'https://claude-staging.fedstart.com',
-]
-
-// Default to prod config, override with test/staging if enabled
+// Default to prod config (all values come from environment variables)
 export function getOauthConfig(): OauthConfig {
-  let config: OauthConfig = (() => {
-    switch (getOauthConfigType()) {
-      case 'local':
-        return getLocalOauthConfig()
-      case 'staging':
-        return STAGING_OAUTH_CONFIG ?? PROD_OAUTH_CONFIG
-      case 'prod':
-        return PROD_OAUTH_CONFIG
-    }
-  })()
-
-  // Allow overriding all OAuth URLs to point to an approved FedStart deployment.
-  // Only allowlisted base URLs are accepted to prevent credential leakage.
-  const oauthBaseUrl = process.env.CLAUDE_CODE_CUSTOM_OAUTH_URL
-  if (oauthBaseUrl) {
-    const base = oauthBaseUrl.replace(/\/$/, '')
-    if (!ALLOWED_OAUTH_BASE_URLS.includes(base)) {
-      throw new Error(
-        'CLAUDE_CODE_CUSTOM_OAUTH_URL is not an approved endpoint.',
-      )
-    }
-    config = {
-      ...config,
-      BASE_API_URL: base,
-      CONSOLE_AUTHORIZE_URL: `${base}/oauth/authorize`,
-      CLAUDE_AI_AUTHORIZE_URL: `${base}/oauth/authorize`,
-      CLAUDE_AI_ORIGIN: base,
-      TOKEN_URL: `${base}/v1/oauth/token`,
-      API_KEY_URL: `${base}/api/oauth/claude_cli/create_api_key`,
-      ROLES_URL: `${base}/api/oauth/claude_cli/roles`,
-      CONSOLE_SUCCESS_URL: `${base}/oauth/code/success?app=claude-code`,
-      CLAUDEAI_SUCCESS_URL: `${base}/oauth/code/success?app=claude-code`,
-      MANUAL_REDIRECT_URL: `${base}/oauth/code/callback`,
-      OAUTH_FILE_SUFFIX: '-custom-oauth',
-    }
-  }
+  const config = PROD_OAUTH_CONFIG
 
   // Allow CLIENT_ID override via environment variable (e.g., for Xcode integration)
   const clientIdOverride = process.env.CLAUDE_CODE_OAUTH_CLIENT_ID
   if (clientIdOverride) {
-    config = {
+    return {
       ...config,
       CLIENT_ID: clientIdOverride,
     }
