@@ -31,7 +31,7 @@ Claude Code 中有大量未公开的斜杠命令、CLI 参数和环境变量。
 
 ## 仅内部用户命令
 
-仅 `USER_TYPE === 'ant'`（Anthropic 内部员工）可见，定义在 `src/commands.ts` 第 225-254 行：
+仅 `USER_TYPE === 'ant'`（Anthropic 内部员工）可见，定义在 `src/commands.ts` 导入段及命令列表（约第 179-200 行）：
 
 | 命令 | 功能 |
 |------|------|
@@ -80,7 +80,7 @@ Claude Code 中有大量未公开的斜杠命令、CLI 参数和环境变量。
 
 ## 隐藏 CLI 参数
 
-定义在 `src/main.tsx` 第 3817-3877 行，通过 `hideHelp()` 隐藏。
+定义在 `src/main.tsx` 第 3819-3876 行，通过 `hideHelp()` 隐藏。
 
 ### 所有构建可见但隐藏
 
