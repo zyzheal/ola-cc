@@ -14,14 +14,6 @@ export function getEnvOrThrow(name: string): string {
   return value
 }
 
-// OAuth config type is now always 'prod' (all values come from env vars)
-type OauthConfigType = 'prod'
-
-function getOauthConfigType(): 'prod' {
-  return 'prod'
-}
-
-// Always return empty suffix since OAUTH_FILE_SUFFIX is now always ''
 export function fileSuffixForOauthConfig(): string {
   return ''
 }
