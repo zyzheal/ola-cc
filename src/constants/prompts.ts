@@ -190,13 +190,13 @@ function getAntModelOverrideSection(): string | null {
   return getAntModelOverrideConfig()?.defaultSystemPromptSuffix || null
 }
 
-function getLanguageSection(
+export function getLanguageSection(
   languagePreference: string | undefined,
 ): string | null {
-  if (!languagePreference) return null
+  const lang = languagePreference || 'Chinese (中文)'
 
   return `# Language
-Always respond in ${languagePreference}. Use ${languagePreference} for all explanations, comments, and communications with the user. Technical terms and code identifiers should remain in their original form.`
+Always respond in ${lang}. Use ${lang} for all explanations, comments, and communications with the user. Technical terms and code identifiers should remain in their original form.`
 }
 
 function getOutputStyleSection(

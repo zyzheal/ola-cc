@@ -5,7 +5,7 @@ import type { Message as MessageType, NormalizedUserMessage } from 'src/types/me
 import { getQuerySourceForAgent } from 'src/utils/promptCategory.js';
 import { z } from 'zod/v4';
 import { clearInvokedSkillsForAgent, getSdkAgentProgressSummariesEnabled } from '../../bootstrap/state.js';
-import { enhanceSystemPromptWithEnvDetails, getSystemPrompt } from '../../constants/prompts.js';
+import { enhanceSystemPromptWithEnvDetails, getSystemPrompt, getLanguageSection } from '../../constants/prompts.js';
 import { isCoordinatorMode } from '../../coordinator/coordinatorMode.js';
 import { startAgentSummarization } from '../../services/AgentSummary/agentSummary.js';
 import { getFeatureValue_CACHED_MAY_BE_STALE } from '../../services/analytics/growthbook.js';
@@ -28,6 +28,7 @@ import { getAgentModel } from '../../utils/model/agent.js';
 import { permissionModeSchema } from '../../utils/permissions/PermissionMode.js';
 import type { PermissionResult } from '../../utils/permissions/PermissionResult.js';
 import { filterDeniedAgents, getDenyRuleForAgent } from '../../utils/permissions/permissions.js';
+import { getInitialSettings } from '../../utils/settings/settings.js';
 import { enqueueSdkEvent } from '../../utils/sdkEventQueue.js';
 import { writeAgentMetadata } from '../../utils/sessionStorage.js';
 import { sleep } from '../../utils/sleep.js';
@@ -531,7 +532,8 @@ export const AgentTool = buildTool({
         }
 
         // Apply environment details enhancement
-        enhancedSystemPrompt = await enhanceSystemPromptWithEnvDetails([agentPrompt], resolvedAgentModel, additionalWorkingDirectories);
+        const settings = getInitialSettings()
+        enhancedSystemPrompt = await enhanceSystemPromptWithEnvDetails([agentPrompt, getLanguageSection(settings.language)], resolvedAgentModel, additionalWorkingDirectories);
       } catch (error) {
         logForDebugging(`Failed to get system prompt for agent ${selectedAgent.agentType}: ${errorMessage(error)}`);
       }

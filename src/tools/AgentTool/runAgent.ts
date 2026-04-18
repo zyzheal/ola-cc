@@ -8,6 +8,7 @@ import { getCommand, getSkillToolCommands, hasCommand } from '../../commands.js'
 import {
   DEFAULT_AGENT_PROMPT,
   enhanceSystemPromptWithEnvDetails,
+  getLanguageSection,
 } from '../../constants/prompts.js'
 import type { QuerySource } from '../../constants/querySource.js'
 import { getSystemContext, getUserContext } from '../../context.js'
@@ -68,6 +69,7 @@ import {
   isRestrictedToPluginOnly,
   isSourceAdminTrusted,
 } from '../../utils/settings/pluginOnlyPolicy.js'
+import { getInitialSettings } from '../../utils/settings/settings.js'
 import {
   asSystemPrompt,
   type SystemPrompt,
@@ -911,9 +913,10 @@ async function getAgentSystemPrompt(
   resolvedTools: readonly Tool[],
 ): Promise<string[]> {
   const enabledToolNames = new Set(resolvedTools.map(t => t.name))
+  const settings = getInitialSettings()
   try {
     const agentPrompt = agentDefinition.getSystemPrompt({ toolUseContext })
-    const prompts = [agentPrompt]
+    const prompts = [agentPrompt, getLanguageSection(settings.language)]
 
     return await enhanceSystemPromptWithEnvDetails(
       prompts,
@@ -923,7 +926,7 @@ async function getAgentSystemPrompt(
     )
   } catch (_error) {
     return enhanceSystemPromptWithEnvDetails(
-      [DEFAULT_AGENT_PROMPT],
+      [DEFAULT_AGENT_PROMPT, getLanguageSection(settings.language)],
       resolvedAgentModel,
       additionalWorkingDirectories,
       enabledToolNames,
