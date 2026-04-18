@@ -18,6 +18,7 @@ import { getAuthHeaders } from '../http.js'
 import { logError } from '../log.js'
 import { jsonStringify } from '../slowOperations.js'
 import { getClaudeCodeUserAgent } from '../userAgent.js'
+import { getEnvOrThrow } from '../../constants/oauth.js'
 
 type DataPoint = {
   attributes: Record<string, string>
@@ -44,8 +45,6 @@ export class BigQueryMetricsExporter implements PushMetricExporter {
   private isShutdown = false
 
   constructor(options: { timeout?: number } = {}) {
-    const defaultEndpoint = 'https://api.anthropic.com/api/claude_code/metrics'
-
     if (
       process.env.USER_TYPE === 'ant' &&
       process.env.ANT_CLAUDE_CODE_METRICS_ENDPOINT
@@ -54,7 +53,7 @@ export class BigQueryMetricsExporter implements PushMetricExporter {
         process.env.ANT_CLAUDE_CODE_METRICS_ENDPOINT +
         '/api/claude_code/metrics'
     } else {
-      this.endpoint = defaultEndpoint
+      this.endpoint = getEnvOrThrow('CLAUDE_METRICS_URL')
     }
 
     this.timeout = options.timeout || 5000

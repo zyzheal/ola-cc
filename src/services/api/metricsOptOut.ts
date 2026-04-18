@@ -8,6 +8,7 @@ import { logError } from '../../utils/log.js'
 import { memoizeWithTTLAsync } from '../../utils/memoize.js'
 import { isEssentialTrafficOnly } from '../../utils/privacyLevel.js'
 import { getClaudeCodeUserAgent } from '../../utils/userAgent.js'
+import { getEnvOrThrow } from '../../constants/oauth.js'
 
 type MetricsEnabledResponse = {
   metrics_logging_enabled: boolean
@@ -42,7 +43,7 @@ async function _fetchMetricsEnabled(): Promise<MetricsEnabledResponse> {
     ...authResult.headers,
   }
 
-  const endpoint = `https://api.anthropic.com/api/claude_code/organizations/metrics_enabled`
+  const endpoint = getEnvOrThrow('CLAUDE_METRICS_OPT_OUT_URL')
   const response = await axios.get<MetricsEnabledResponse>(endpoint, {
     headers,
     timeout: 5000,
