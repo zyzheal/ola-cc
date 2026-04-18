@@ -14,6 +14,7 @@ import {
 } from '../../utils/sessionStorage.js'
 import { jsonStringify } from '../../utils/slowOperations.js'
 import { redactSensitiveInfo } from '../Feedback.js'
+import { getEnvOrThrow } from '../../constants/oauth.js'
 
 type TranscriptShareResult = {
   success: boolean
@@ -85,7 +86,7 @@ export async function submitTranscriptShare(
     }
 
     const response = await axios.post(
-      'https://api.anthropic.com/api/claude_code_shared_session_transcripts',
+      getEnvOrThrow('CLAUDE_TRANSCRIPT_SHARE_URL'),
       { content, appearance_id: appearanceId },
       {
         headers,

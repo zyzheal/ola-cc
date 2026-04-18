@@ -21,6 +21,7 @@ import {
   isClaudeAISubscriber,
 } from '../../utils/auth.js'
 import { checkHasTrustDialogAccepted } from '../../utils/config.js'
+import { getOauthConfig } from '../../constants/oauth.js'
 import { logForDebugging } from '../../utils/debug.js'
 import { getClaudeConfigHomeDir } from '../../utils/envUtils.js'
 import { errorMessage, isFsInaccessible, toError } from '../../utils/errors.js'
@@ -111,11 +112,7 @@ export class FirstPartyEventLoggingExporter implements LogRecordExporter {
   ) {
     // Default: prod, except when ANTHROPIC_BASE_URL is explicitly staging.
     // Overridable via tengu_1p_event_batch_config.baseUrl.
-    const baseUrl =
-      options.baseUrl ||
-      (process.env.ANTHROPIC_BASE_URL === 'https://api-staging.anthropic.com'
-        ? 'https://api-staging.anthropic.com'
-        : 'https://api.anthropic.com')
+    const baseUrl = options.baseUrl || getOauthConfig().BASE_API_URL
 
     this.endpoint = `${baseUrl}${options.path || '/api/event_logging/batch'}`
 
