@@ -1,3 +1,4 @@
+import { readFileSync } from 'fs'
 import memoize from 'lodash-es/memoize.js'
 import { homedir } from 'os'
 import { join } from 'path'
@@ -180,4 +181,32 @@ export function getVertexRegionForModel(
     }
   }
   return getDefaultVertexRegion()
+}
+
+/**
+ * Read env var with settings.json fallback. Throws if not found.
+ * Used by telemetry, feedback, files API, and other non-Oauth services.
+ */
+export function getEnvOrThrow(name: string): string {
+  let value = process.env[name]
+  if (!value) {
+    try {
+      const home = process.env.HOME || process.env.USERPROFILE || ''
+      if (home) {
+        const settingsPath = join(home, '.claude', 'settings.json')
+        const raw = readFileSync(settingsPath, 'utf-8')
+        const parsed = JSON.parse(raw)
+        value = parsed?.env?.[name]
+      }
+    } catch {
+      // settings.json not found or parse error
+    }
+  }
+  if (!value) {
+    throw new Error(
+      `Missing required environment variable: ${name}. ` +
+      `Please configure it in process.env or ~/.claude/settings.json env field.`,
+    )
+  }
+  return value
 }
