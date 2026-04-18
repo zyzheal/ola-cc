@@ -17,7 +17,7 @@
  * Imports stay minimal: child_process + macOsKeychainHelpers.ts (NOT
  * macOsKeychainStorage.ts — that pulls in execa → human-signals →
  * cross-spawn, ~58ms of synchronous module init). The helpers file's own
- * import chain (envUtils, oauth constants, crypto) is already evaluated by
+ * import chain (envUtils, crypto) is already evaluated by
  * startupProfiler.ts at main.tsx:5, so no new module-init cost lands here.
  */
 

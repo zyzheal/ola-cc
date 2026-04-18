@@ -14,7 +14,7 @@ import {
 } from '../../utils/sessionStorage.js'
 import { jsonStringify } from '../../utils/slowOperations.js'
 import { redactSensitiveInfo } from '../Feedback.js'
-import { getEnvOrThrow } from '../../constants/oauth.js'
+import { getEnvOrThrow } from '../../utils/envUtils.js'
 
 type TranscriptShareResult = {
   success: boolean

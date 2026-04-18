@@ -74,6 +74,7 @@ export const CLAUDE_OPUS_4_6_CONFIG = {
   bedrock: 'us.anthropic.claude-opus-4-6-v1',
   vertex: 'claude-opus-4-6',
   foundry: 'claude-opus-4-6',
+  openai: process.env.CLAUDE_CODE_OPENAI_OPUS_MODEL ?? 'claude-opus-4-6',
 } as const satisfies ModelConfig
 
 export const CLAUDE_SONNET_4_6_CONFIG = {
@@ -81,6 +82,7 @@ export const CLAUDE_SONNET_4_6_CONFIG = {
   bedrock: 'us.anthropic.claude-sonnet-4-6',
   vertex: 'claude-sonnet-4-6',
   foundry: 'claude-sonnet-4-6',
+  openai: process.env.CLAUDE_CODE_OPENAI_SONNET_MODEL ?? 'claude-sonnet-4-6',
 } as const satisfies ModelConfig
 
 // @[MODEL LAUNCH]: Register the new config here.

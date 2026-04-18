@@ -1,5 +1,5 @@
 import axios, { type AxiosResponse } from 'axios'
-import { getEnvOrThrow } from '../../constants/oauth.js'
+import { getEnvOrThrow } from '../../utils/envUtils.js'
 import { LRUCache } from 'lru-cache'
 import {
   type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,

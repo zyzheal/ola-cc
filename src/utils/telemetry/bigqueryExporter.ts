@@ -18,7 +18,7 @@ import { getAuthHeaders } from '../http.js'
 import { logError } from '../log.js'
 import { jsonStringify } from '../slowOperations.js'
 import { getClaudeCodeUserAgent } from '../userAgent.js'
-import { getEnvOrThrow } from '../../constants/oauth.js'
+import { getEnvOrThrow } from '../../utils/envUtils.js'
 
 type DataPoint = {
   attributes: Record<string, string>

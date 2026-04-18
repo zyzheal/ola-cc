@@ -120,7 +120,11 @@ export function getDefaultSonnetModel(): ModelName {
   if (process.env.ANTHROPIC_DEFAULT_SONNET_MODEL) {
     return process.env.ANTHROPIC_DEFAULT_SONNET_MODEL
   }
-  // Default to Sonnet 4.5 for 3P since they may not have 4.6 yet
+  // OpenAI provider uses env-configurable model
+  if (getAPIProvider() === 'openai') {
+    return getModelStrings().sonnet46
+  }
+  // Default to Sonnet 4.5 for other 3P since they may not have 4.6 yet
   if (getAPIProvider() !== 'firstParty') {
     return getModelStrings().sonnet45
   }
