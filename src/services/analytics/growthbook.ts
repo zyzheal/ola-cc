@@ -24,6 +24,7 @@ import {
   is1PEventLoggingEnabled,
   logGrowthBookExperimentTo1P,
 } from './firstPartyEventLogger.js'
+import { getOauthConfig, getEnvOrThrow } from '../../constants/oauth.js'
 
 /**
  * User attributes sent to GrowthBook for targeting.
@@ -441,7 +442,10 @@ export function getApiBaseUrlHost(): string | undefined {
   if (!baseUrl) return undefined
   try {
     const host = new URL(baseUrl).host
-    if (host === 'api.anthropic.com') return undefined
+    const configHost = getOauthConfig().BASE_API_URL
+    try {
+      if (host === new URL(configHost).host) return undefined
+    } catch { /* ignore */ }
     return host
   } catch {
     return undefined
@@ -500,10 +504,7 @@ const getGrowthBookClient = memoize(
         `GrowthBook: Creating client with clientKey=${clientKey}, attributes: ${jsonStringify(attributes)}`,
       )
     }
-    const baseUrl =
-      process.env.USER_TYPE === 'ant'
-        ? process.env.CLAUDE_CODE_GB_BASE_URL || 'https://api.anthropic.com/'
-        : 'https://api.anthropic.com/'
+    const baseUrl = getEnvOrThrow('CLAUDE_GROWTHBOOK_BASE_URL')
 
     // Skip auth if trust hasn't been established yet
     // This prevents executing apiKeyHelper commands before the trust dialog
