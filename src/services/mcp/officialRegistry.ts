@@ -1,4 +1,5 @@
 import axios from 'axios'
+import { getOauthConfig } from '../../constants/oauth.js'
 import { logForDebugging } from '../../utils/debug.js'
 import { errorMessage } from '../../utils/errors.js'
 
@@ -37,7 +38,7 @@ export async function prefetchOfficialMcpUrls(): Promise<void> {
 
   try {
     const response = await axios.get<RegistryResponse>(
-      'https://api.anthropic.com/mcp-registry/v0/servers?version=latest&visibility=commercial',
+      `${getOauthConfig().BASE_API_URL}/mcp-registry/v0/servers?version=latest&visibility=commercial`,
       { timeout: 5000 },
     )
 
