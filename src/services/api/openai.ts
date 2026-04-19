@@ -259,7 +259,13 @@ async function fetchWithRetry(
   let lastError: Error | null = null
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
     try {
+      // Debug logging for fetch failed issue
+      console.error(`[fetchWithRetry] Attempt ${attempt + 1}/${maxRetries + 1}, URL: ${url}`)
+      console.error(`[fetchWithRetry] Headers:`, JSON.stringify(init.headers))
+
       const response = await fetchFn(url, { ...init, signal })
+
+      console.error(`[fetchWithRetry] Response status: ${response.status} ${response.statusText}`)
 
       if (response.ok) {
         return response
@@ -283,7 +289,7 @@ async function fetchWithRetry(
 
       if (attempt < maxRetries) {
         const delay = calculateBackoff(attempt, baseDelay, maxDelay)
-        // Wait with abort signal support
+        console.error(`[fetchWithRetry] Retrying in ${delay}ms`)
         await new Promise<void>((resolve, reject) => {
           const timeoutId = setTimeout(resolve, delay)
           signal?.addEventListener('abort', () => {
@@ -293,8 +299,20 @@ async function fetchWithRetry(
         })
       }
     } catch (err) {
+      console.error(`[fetchWithRetry] Caught error:`, err instanceof Error ? err.message : err)
+
+      // If the signal was aborted, do NOT retry — propagate immediately
+      if (signal?.aborted) {
+        throw signal.reason
+      }
+
       // Network errors (fetch throws) are retriable
       if (err instanceof OpenAIHttpError && !isRetriableError(err.status)) {
+        throw err
+      }
+
+      // Check if this is an abort error (including timeout)
+      if (err instanceof Error && (err.name === 'AbortError' || err.name === 'TimeoutError')) {
         throw err
       }
 
@@ -302,6 +320,7 @@ async function fetchWithRetry(
 
       if (attempt < maxRetries) {
         const delay = calculateBackoff(attempt, baseDelay, maxDelay)
+        console.error(`[fetchWithRetry] Retrying after error in ${delay}ms`)
         await new Promise<void>((resolve, reject) => {
           const timeoutId = setTimeout(resolve, delay)
           signal?.addEventListener('abort', () => {
@@ -313,6 +332,7 @@ async function fetchWithRetry(
     }
   }
 
+  console.error(`[fetchWithRetry] All attempts failed, throwing:`, lastError)
   throw lastError || new Error('Request failed after retries')
 }
 
