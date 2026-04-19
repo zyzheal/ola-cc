@@ -122,6 +122,7 @@ Claude Code 的配置存储在 `~/.claude/` 目录中。
 # 命令行直接传入
 OPENAI_BASE_URL="https://coding.dashscope.aliyuncs.com/v1" \
 OPENAI_API_KEY="your-api-key" \
+OPENAI_MODEL="qwen3.6-plus" \
 claude
 
 # 或在 ~/.claude/session.json 中配置
@@ -134,9 +135,17 @@ claude
 }
 ```
 
+**模型选择优先级：**
+
+1. `/model` 命令（会话中动态切换）
+2. `--model` 启动参数
+3. `ANTHROPIC_MODEL` 环境变量
+4. `OPENAI_MODEL` 环境变量
+5. `~/.claude/settings.json` 中的 `model` 字段
+6. 内置默认值
+
 **注意事项：**
-- 模型名称优先读取 `~/.claude/settings.json` 的 `model` 字段
-- 如果传入的模型名称以 `claude-` 开头，会自动使用 `OPENAI_MODEL` 环境变量作为 fallback
+- 推荐设置 `OPENAI_MODEL` 环境变量，它会作为模型选择的主要来源之一
 - 支持流式和非流式响应
 
 ### settings.json 配置示例
