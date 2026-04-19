@@ -9,6 +9,8 @@ const pkg = await Bun.file(new URL('../package.json', import.meta.url)).json() a
 const args = process.argv.slice(2)
 const compile = args.includes('--compile')
 const dev = args.includes('--dev')
+const nodejs = args.includes('--nodejs')
+const publish = args.includes('--publish')
 
 const fullExperimentalFeatures = [
   'AGENT_MEMORY_SNAPSHOT',
@@ -109,43 +111,77 @@ for (let i = 0; i < args.length; i += 1) {
 }
 const features = [...featureSet]
 
-const outfile = compile
-  ? dev
-    ? './dist/cli-dev'
-    : './dist/cli'
-  : dev
-    ? './cli-dev'
-    : './cli'
+const outfile = publish
+  ? './dist/publish/cli.js'
+  : compile
+    ? dev
+      ? './dist/cli-dev'
+      : nodejs
+        ? './dist/cli-nodejs'
+        : './dist/cli'
+    : dev
+      ? './cli-dev'
+      : nodejs
+        ? './cli-nodejs'
+        : './cli'
 const buildTime = new Date().toISOString()
 const version = dev ? getDevVersion(pkg.version) : pkg.version
 
 mkdirSync(dirname(outfile), { recursive: true })
 
-const externals = [
-  '@ant/*',
-  '@anthropic-ai/bedrock-sdk',
-  '@anthropic-ai/foundry-sdk',
-  '@anthropic-ai/vertex-sdk',
-  '@aws-sdk/client-bedrock',
-  '@aws-sdk/client-sts',
-  '@azure/identity',
-  '@opentelemetry/exporter-logs-otlp-grpc',
-  '@opentelemetry/exporter-logs-otlp-http',
-  '@opentelemetry/exporter-logs-otlp-proto',
-  '@opentelemetry/exporter-metrics-otlp-grpc',
-  '@opentelemetry/exporter-metrics-otlp-http',
-  '@opentelemetry/exporter-metrics-otlp-proto',
-  '@opentelemetry/exporter-prometheus',
-  '@opentelemetry/exporter-trace-otlp-grpc',
-  '@opentelemetry/exporter-trace-otlp-http',
-  '@opentelemetry/exporter-trace-otlp-proto',
-  'audio-capture-napi',
-  'image-processor-napi',
-  'modifiers-napi',
-  'sharp',
-  'turndown',
-  'url-handler-napi',
-]
+const externals = publish
+  ? [
+      // For npm publish build, externalize optional native deps
+      '@ant/*',
+      '@anthropic-ai/bedrock-sdk',
+      '@anthropic-ai/foundry-sdk',
+      '@anthropic-ai/vertex-sdk',
+      '@aws-sdk/client-bedrock',
+      '@aws-sdk/client-sts',
+      '@azure/identity',
+      '@opentelemetry/exporter-logs-otlp-grpc',
+      '@opentelemetry/exporter-logs-otlp-http',
+      '@opentelemetry/exporter-logs-otlp-proto',
+      '@opentelemetry/exporter-metrics-otlp-grpc',
+      '@opentelemetry/exporter-metrics-otlp-http',
+      '@opentelemetry/exporter-metrics-otlp-proto',
+      '@opentelemetry/exporter-prometheus',
+      '@opentelemetry/exporter-trace-otlp-grpc',
+      '@opentelemetry/exporter-trace-otlp-http',
+      '@opentelemetry/exporter-trace-otlp-proto',
+      'audio-capture-napi',
+      'image-processor-napi',
+      'modifiers-napi',
+      'sharp',
+      'turndown',
+      'url-handler-napi',
+      'bun:*',
+    ]
+  : [
+      '@ant/*',
+      '@anthropic-ai/bedrock-sdk',
+      '@anthropic-ai/foundry-sdk',
+      '@anthropic-ai/vertex-sdk',
+      '@aws-sdk/client-bedrock',
+      '@aws-sdk/client-sts',
+      '@azure/identity',
+      '@opentelemetry/exporter-logs-otlp-grpc',
+      '@opentelemetry/exporter-logs-otlp-http',
+      '@opentelemetry/exporter-logs-otlp-proto',
+      '@opentelemetry/exporter-metrics-otlp-grpc',
+      '@opentelemetry/exporter-metrics-otlp-http',
+      '@opentelemetry/exporter-metrics-otlp-proto',
+      '@opentelemetry/exporter-prometheus',
+      '@opentelemetry/exporter-trace-otlp-grpc',
+      '@opentelemetry/exporter-trace-otlp-http',
+      '@opentelemetry/exporter-trace-otlp-proto',
+      'audio-capture-napi',
+      'image-processor-napi',
+      'modifiers-napi',
+      'sharp',
+      'turndown',
+      'url-handler-napi',
+    ]
 
 const defines = {
   'process.env.USER_TYPE': JSON.stringify('external'),
@@ -176,19 +212,20 @@ const cmd = [
   'bun',
   'build',
   './src/entrypoints/cli.tsx',
-  '--compile',
+  ...(compile && !publish ? ['--compile'] : []),
   '--target',
-  'bun',
+  publish || nodejs ? 'node' : 'bun',
   '--format',
   'esm',
   '--outfile',
   outfile,
   '--minify',
-  '--bytecode',
+  ...(publish || nodejs ? [] : ['--bytecode']),
   '--packages',
   'bundle',
   '--conditions',
-  'bun',
+  publish || nodejs ? 'node' : 'bun',
+  ...(publish ? ['--external', 'bun:*'] : []),
   '--lazy',
 ]
 
@@ -213,6 +250,28 @@ const proc = Bun.spawnSync({
 
 if (proc.exitCode !== 0) {
   process.exit(proc.exitCode ?? 1)
+}
+
+// For publish build, add shebang and bun:bundle polyfill for Node.js compatibility
+if (publish && existsSync(outfile)) {
+  let cliContent = await Bun.file(outfile).text()
+
+  // Inject bun:bundle polyfill for feature() function
+  const bunPolyfill = `// Bun bundle feature polyfill for Node.js
+const __BUN_FEATURE_FALLBACK__ = () => false;
+globalThis.feature = globalThis.feature || __BUN_FEATURE_FALLBACK__;
+`
+
+  // Prepend shebang and polyfill (shebang must be first line)
+  cliContent = '#!/usr/bin/env node\n' + bunPolyfill + cliContent
+
+  // Remove any duplicate shebang from original content
+  cliContent = cliContent.replace(/(#!\/usr\/bin\/env node\r?\n)(#!\/usr\/bin\/env node\r?\n)/, '$1')
+
+  await Bun.write(outfile, cliContent)
+
+  const size = Bun.file(outfile).size
+  console.log(`Publish build: ${(size / 1024 / 1024).toFixed(2)} MB`)
 }
 
 if (existsSync(outfile)) {
