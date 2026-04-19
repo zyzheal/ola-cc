@@ -9,7 +9,6 @@ const pkg = await Bun.file(new URL('../package.json', import.meta.url)).json() a
 const args = process.argv.slice(2)
 const compile = args.includes('--compile')
 const dev = args.includes('--dev')
-const nodejs = args.includes('--nodejs')
 const publish = args.includes('--publish')
 
 const fullExperimentalFeatures = [
@@ -116,14 +115,10 @@ const outfile = publish
   : compile
     ? dev
       ? './dist/cli-dev'
-      : nodejs
-        ? './dist/cli-nodejs'
-        : './dist/cli'
+      : './dist/cli'
     : dev
       ? './cli-dev'
-      : nodejs
-        ? './cli-nodejs'
-        : './cli'
+      : './cli'
 const buildTime = new Date().toISOString()
 const version = dev ? getDevVersion(pkg.version) : pkg.version
 
@@ -215,17 +210,17 @@ const cmd = [
   './src/entrypoints/cli.tsx',
   ...(compile && !publish ? ['--compile'] : []),
   '--target',
-  publish || nodejs ? 'node' : 'bun',
+  publish ? 'node' : 'bun',
   '--format',
   'esm',
   '--outfile',
   outfile,
   '--minify',
-  ...(publish || nodejs ? [] : ['--bytecode']),
+  ...(publish ? [] : ['--bytecode']),
   '--packages',
   'bundle',
   '--conditions',
-  publish || nodejs ? 'node' : 'bun',
+  publish ? 'node' : 'bun',
   ...(publish ? ['--external', 'bun:*'] : []),
   '--lazy',
 ]
