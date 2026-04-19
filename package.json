@@ -21,7 +21,6 @@
     "build": "bun run ./scripts/build.ts",
     "build:dev": "bun run ./scripts/build.ts --dev",
     "build:dev:full": "bun run ./scripts/build.ts --dev --feature-set=dev-full",
-    "build:nodejs": "bun run ./scripts/build.ts --nodejs",
     "build:publish": "bun run ./scripts/build.ts --publish",
     "compile": "bun run ./scripts/build.ts --compile",
     "dev": "bun run ./src/dev-entry.ts",
