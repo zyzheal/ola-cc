@@ -259,7 +259,7 @@ async function fetchWithRetry(
   let lastError: Error | null = null
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
     try {
-      const response = await fetchFn(url, init)
+      const response = await fetchFn(url, { ...init, signal })
 
       if (response.ok) {
         return response
@@ -380,10 +380,8 @@ function convertAnthropicMessageToOpenAI(
       source?: { data?: string; media_type?: string; type?: string }
       cache_control?: { type: string }
     }>) {
-      // Warn about cache_control being dropped (OpenAI has no equivalent)
-      if (block.cache_control) {
-        warn(`cache_control on content block is not supported by OpenAI and will be ignored`)
-      }
+      // cache_control is intentionally dropped — OpenAI auto-caches based on
+      // prefix matching, no explicit cache marker needed
       if (block.type === 'text') {
         textParts.push(block.text ?? '')
       } else if (block.type === 'image') {
@@ -762,8 +760,11 @@ export function createOpenAICompatibleClient(options: OpenAICompatibleClientOpti
       /**
        * Create a chat completion (streaming or non-streaming).
        * Accepts Anthropic-style parameters and converts to OpenAI format.
+       *
+       * Returns a Promise-like object with a .withResponse() method for
+       * compatibility with the Anthropic SDK's APIPromise.
        */
-      create: async (
+      create: (
         params: {
           model: string
           messages: Array<{ role: string; content: unknown[] | string }>
@@ -868,323 +869,351 @@ export function createOpenAICompatibleClient(options: OpenAICompatibleClientOpti
           ? createTimeoutSignal(requestOptions.timeout, requestOptions?.signal)
           : requestOptions?.signal
 
-        // Non-streaming request — use retry with exponential backoff
-        if (!params.stream) {
-          const response = await fetchWithRetry(
+        // Internal async function that performs the actual request
+        async function doCreate() {
+          // Non-streaming request — use retry with exponential backoff
+          if (!params.stream) {
+            const response = await fetchWithRetry(
+              fetchFn,
+              url,
+              {
+                method: 'POST',
+                headers,
+                body: JSON.stringify(openaiParams),
+              },
+              maxRetries,
+              effectiveSignal,
+            )
+
+            if (!response.ok) {
+              const errorText = await response.text().catch(() => '')
+              throw new Error(
+                `OpenAI API error ${response.status}: ${errorText.slice(0, 500)}`,
+              )
+            }
+
+            const data = (await response.json()) as OpenAIChatCompletionResponse
+            const anthropicResponse = convertResponseToAnthropic(data)
+
+            // Create a stream-like object that returns the response for non-streaming
+            // This matches how the Anthropic SDK works with .withResponse()
+            return {
+              ...anthropicResponse,
+              // Simulate a stream for compatibility - yields just the final message
+              [Symbol.asyncIterator]: async function* () {
+                // Message start event
+                yield {
+                  type: 'message_start',
+                  message: {
+                    ...anthropicResponse,
+                    content: [],
+                  },
+                } as AnthropicStreamEvent
+
+                // Content block start for each block
+                for (let i = 0; i < anthropicResponse.content.length; i++) {
+                  yield {
+                    type: 'content_block_start',
+                    index: i,
+                    content_block: anthropicResponse.content[i],
+                  } as AnthropicStreamEvent
+
+                  // For text blocks, yield deltas
+                  const block = anthropicResponse.content[i]
+                  if (block.type === 'text' && block.text) {
+                    yield {
+                      type: 'content_block_delta',
+                      index: i,
+                      delta: {
+                        type: 'text_delta',
+                        text: block.text,
+                      },
+                    } as AnthropicStreamEvent
+                  }
+
+                  // Content block stop
+                  yield {
+                    type: 'content_block_stop',
+                    index: i,
+                  } as AnthropicStreamEvent
+                }
+
+                // Message delta with stop reason
+                yield {
+                  type: 'message_delta',
+                  delta: {
+                    stop_reason: anthropicResponse.stop_reason,
+                    stop_sequence: anthropicResponse.stop_sequence,
+                  },
+                  usage: { output_tokens: anthropicResponse.usage.output_tokens },
+                } as AnthropicStreamEvent
+
+                // Message stop
+                yield {
+                  type: 'message_stop',
+                } as AnthropicStreamEvent
+              },
+            }
+          }
+
+          // Streaming request — also uses retry for the initial fetch,
+          // and adds a timeout to prevent SSE connections from hanging
+          const streamingSignal = createTimeoutSignal(
+            STREAMING_TIMEOUT_MS,
+            requestOptions?.signal,
+          )
+
+          const fetchResponse = await fetchWithRetry(
             fetchFn,
             url,
             {
               method: 'POST',
-              headers,
-              body: JSON.stringify(openaiParams),
+              headers: {
+                ...headers,
+                Accept: 'text/event-stream',
+              },
+              body: JSON.stringify({ ...openaiParams, stream: true }),
             },
             maxRetries,
-            effectiveSignal,
+            streamingSignal,
           )
 
-          if (!response.ok) {
-            const errorText = await response.text().catch(() => '')
+          if (!fetchResponse.ok) {
+            const errorText = await fetchResponse.text().catch(() => '')
             throw new Error(
-              `OpenAI API error ${response.status}: ${errorText.slice(0, 500)}`,
+              `OpenAI API error ${fetchResponse.status}: ${errorText.slice(0, 500)}`,
             )
           }
 
-          const data = (await response.json()) as OpenAIChatCompletionResponse
-          const anthropicResponse = convertResponseToAnthropic(data)
+          // Create the streaming response object
+          const messageId = `msg_${randomUUID().slice(0, 24)}`
+          let contentBlockIndex = 0
 
-          // Create a stream-like object that returns the response for non-streaming
-          // This matches how the Anthropic SDK works with .withResponse()
+          // Track tool call state across chunks
+          const toolCallState: Map<
+            number,
+            { id: string; name: string; arguments: string }
+          > = new Map()
+
+          // Track all content block indices that were opened (text + tool_use)
+          // so we can emit content_block_stop for each one at stream end
+          const openedContentBlockIndices: Set<number> = new Set()
+
           return {
-            ...anthropicResponse,
-            // Simulate a stream for compatibility - yields just the final message
+            id: messageId,
+            type: 'message',
+            role: 'assistant',
+            model: resolvedModel,
+            content: [],
+            stop_reason: null,
+            stop_sequence: null,
+            usage: { input_tokens: 0, output_tokens: 0 },
             [Symbol.asyncIterator]: async function* () {
-              // Message start event
-              yield {
-                type: 'message_start',
-                message: {
-                  ...anthropicResponse,
-                  content: [],
-                },
-              } as AnthropicStreamEvent
-
-              // Content block start for each block
-              for (let i = 0; i < anthropicResponse.content.length; i++) {
-                yield {
-                  type: 'content_block_start',
-                  index: i,
-                  content_block: anthropicResponse.content[i],
-                } as AnthropicStreamEvent
-
-                // For text blocks, yield deltas
-                const block = anthropicResponse.content[i]
-                if (block.type === 'text' && block.text) {
-                  yield {
-                    type: 'content_block_delta',
-                    index: i,
-                    delta: {
-                      type: 'text_delta',
-                      text: block.text,
-                    },
-                  } as AnthropicStreamEvent
-                }
-
-                // Content block stop
-                yield {
-                  type: 'content_block_stop',
-                  index: i,
-                } as AnthropicStreamEvent
+              if (!fetchResponse.body) {
+                throw new Error('Response body is null for streaming request')
               }
 
-              // Message delta with stop reason
-              yield {
-                type: 'message_delta',
-                delta: {
-                  stop_reason: anthropicResponse.stop_reason,
-                  stop_sequence: anthropicResponse.stop_sequence,
-                },
-                usage: { output_tokens: anthropicResponse.usage.output_tokens },
-              } as AnthropicStreamEvent
+              const reader = fetchResponse.body.getReader()
+              const decoder = new TextDecoder()
+              let buffer = ''
+              let hasEmittedMessageStart = false
+              let hasEmittedUsage = false
 
-              // Message stop
-              yield {
-                type: 'message_stop',
-              } as AnthropicStreamEvent
+              try {
+                while (true) {
+                  const { done, value } = await reader.read()
+                  if (done) break
+
+                  buffer += decoder.decode(value, { stream: true })
+
+                  // Process complete lines from buffer
+                  const lines = buffer.split('\n')
+                  buffer = lines.pop() ?? '' // Keep incomplete line in buffer
+
+                  for (const line of lines) {
+                    const trimmed = line.trim()
+                    if (!trimmed || trimmed.startsWith(':')) continue
+                    if (!trimmed.startsWith('data: ')) continue
+
+                    const data = trimmed.slice(6)
+                    if (data === '[DONE]') continue
+
+                    let chunk: OpenAIChatCompletionResponse
+                    try {
+                      chunk = JSON.parse(data)
+                    } catch {
+                      continue
+                    }
+
+                    const choice = chunk.choices?.[0]
+                    if (!choice) continue
+
+                    // Emit message_start on first chunk
+                    if (!hasEmittedMessageStart) {
+                      hasEmittedMessageStart = true
+                      yield {
+                        type: 'message_start',
+                        message: {
+                          id: messageId,
+                          type: 'message',
+                          role: 'assistant',
+                          content: [],
+                          model: chunk.model ?? resolvedModel,
+                          stop_reason: null,
+                          stop_sequence: null,
+                          usage: { input_tokens: 0, output_tokens: 0 },
+                        },
+                      } as AnthropicStreamEvent
+                    }
+
+                    const delta = choice.delta
+
+                    // Handle text content
+                    if (delta?.content && delta.content !== 'null' && delta.content !== '') {
+                      // Ensure we have a content block for text
+                      let textBlockIndex = -1
+                      for (let i = 0; i < contentBlockIndex; i++) {
+                        // Look for existing text block (simplified: just use index 0)
+                        if (i === 0) textBlockIndex = 0
+                      }
+                      if (textBlockIndex === -1 && contentBlockIndex === 0) {
+                        // First text content - emit content_block_start
+                        const blockIdx = contentBlockIndex
+                        yield {
+                          type: 'content_block_start',
+                          index: blockIdx,
+                          content_block: {
+                            type: 'text',
+                            text: '',
+                          },
+                        } as AnthropicStreamEvent
+                        openedContentBlockIndices.add(blockIdx)
+                        contentBlockIndex = 1
+                        textBlockIndex = 0
+                      }
+
+                      yield {
+                        type: 'content_block_delta',
+                        index: textBlockIndex >= 0 ? textBlockIndex : 0,
+                        delta: {
+                          type: 'text_delta',
+                          text: delta.content,
+                        },
+                      } as AnthropicStreamEvent
+                    }
+
+                    // Handle tool calls
+                    if (delta?.tool_calls) {
+                      for (const tc of delta.tool_calls) {
+                        const idx = tc.index ?? 0
+                        let state = toolCallState.get(idx)
+
+                        if (!state) {
+                          // New tool call
+                          state = {
+                            id: tc.id ?? `tool_call_${idx}_${randomUUID().slice(0, 8)}`,
+                            name: tc.function?.name ?? '',
+                            arguments: tc.function?.arguments ?? '',
+                          }
+                          toolCallState.set(idx, state)
+
+                          // Emit content_block_start for tool_use
+                          const toolBlockIdx = contentBlockIndex++
+                          openedContentBlockIndices.add(toolBlockIdx)
+                          yield {
+                            type: 'content_block_start',
+                            index: toolBlockIdx,
+                            content_block: {
+                              type: 'tool_use',
+                              id: state.id,
+                              name: state.name,
+                              input: {},
+                            },
+                          } as AnthropicStreamEvent
+                        } else {
+                          // Accumulate arguments
+                          if (tc.function?.arguments) {
+                            state.arguments += tc.function.arguments
+                          }
+                        }
+
+                        // Emit input_json_delta
+                        if (tc.function?.arguments) {
+                          const toolBlockIdx = toolCallState.size - 1
+                          yield {
+                            type: 'content_block_delta',
+                            index: toolBlockIdx >= 0 ? toolBlockIdx : contentBlockIndex - 1,
+                            delta: {
+                              type: 'input_json_delta',
+                              partial_json: tc.function.arguments,
+                            },
+                          } as AnthropicStreamEvent
+                        }
+                      }
+                    }
+
+                    // Handle finish_reason (message_delta + message_stop)
+                    if (choice.finish_reason) {
+                      // Close all open content blocks (text + tool_use)
+                      for (const blockIdx of openedContentBlockIndices) {
+                        yield {
+                          type: 'content_block_stop',
+                          index: blockIdx,
+                        } as AnthropicStreamEvent
+                      }
+
+                      let stopReason = choice.finish_reason
+                      if (stopReason === 'stop') stopReason = 'end_turn'
+                      else if (stopReason === 'tool_calls') stopReason = 'tool_use'
+                      else if (stopReason === 'length') stopReason = 'max_tokens'
+                      else if (stopReason === 'content_filter') stopReason = 'end_turn'
+
+                      // Emit usage
+                      if (chunk.usage && !hasEmittedUsage) {
+                        hasEmittedUsage = true
+                      }
+
+                      yield {
+                        type: 'message_delta',
+                        delta: {
+                          stop_reason: stopReason as string | null,
+                          stop_sequence: null,
+                        },
+                        usage: {
+                          output_tokens: chunk.usage?.completion_tokens ?? 0,
+                        },
+                      } as AnthropicStreamEvent
+
+                      yield {
+                        type: 'message_stop',
+                      } as AnthropicStreamEvent
+                    }
+                  }
+                }
+              } finally {
+                reader.releaseLock()
+              }
             },
           }
         }
 
-        // Streaming request — also uses retry for the initial fetch,
-        // and adds a timeout to prevent SSE connections from hanging
-        const streamingSignal = createTimeoutSignal(
-          STREAMING_TIMEOUT_MS,
-          requestOptions?.signal,
-        )
-
-        const fetchResponse = await fetchWithRetry(
-          fetchFn,
-          url,
-          {
-            method: 'POST',
-            headers: {
-              ...headers,
-              Accept: 'text/event-stream',
-            },
-            body: JSON.stringify({ ...openaiParams, stream: true }),
-          },
-          maxRetries,
-          streamingSignal,
-        )
-
-        if (!fetchResponse.ok) {
-          const errorText = await fetchResponse.text().catch(() => '')
-          throw new Error(
-            `OpenAI API error ${fetchResponse.status}: ${errorText.slice(0, 500)}`,
-          )
-        }
-
-        // Create the streaming response object
-        const messageId = `msg_${randomUUID().slice(0, 24)}`
-        let contentBlockIndex = 0
-
-        // Track tool call state across chunks
-        const toolCallState: Map<
-          number,
-          { id: string; name: string; arguments: string }
-        > = new Map()
-
-        return {
-          id: messageId,
-          type: 'message',
-          role: 'assistant',
-          model: resolvedModel,
-          content: [],
-          stop_reason: null,
-          stop_sequence: null,
-          usage: { input_tokens: 0, output_tokens: 0 },
-          [Symbol.asyncIterator]: async function* () {
-            if (!fetchResponse.body) {
-              throw new Error('Response body is null for streaming request')
-            }
-
-            const reader = fetchResponse.body.getReader()
-            const decoder = new TextDecoder()
-            let buffer = ''
-            let hasEmittedMessageStart = false
-            let hasEmittedUsage = false
-
-            try {
-              while (true) {
-                const { done, value } = await reader.read()
-                if (done) break
-
-                buffer += decoder.decode(value, { stream: true })
-
-                // Process complete lines from buffer
-                const lines = buffer.split('\n')
-                buffer = lines.pop() ?? '' // Keep incomplete line in buffer
-
-                for (const line of lines) {
-                  const trimmed = line.trim()
-                  if (!trimmed || trimmed.startsWith(':')) continue
-                  if (!trimmed.startsWith('data: ')) continue
-
-                  const data = trimmed.slice(6)
-                  if (data === '[DONE]') continue
-
-                  let chunk: OpenAIChatCompletionResponse
-                  try {
-                    chunk = JSON.parse(data)
-                  } catch {
-                    continue
-                  }
-
-                  const choice = chunk.choices?.[0]
-                  if (!choice) continue
-
-                  // Emit message_start on first chunk
-                  if (!hasEmittedMessageStart) {
-                    hasEmittedMessageStart = true
-                    yield {
-                      type: 'message_start',
-                      message: {
-                        id: messageId,
-                        type: 'message',
-                        role: 'assistant',
-                        content: [],
-                        model: chunk.model ?? resolvedModel,
-                        stop_reason: null,
-                        stop_sequence: null,
-                        usage: { input_tokens: 0, output_tokens: 0 },
-                      },
-                    } as AnthropicStreamEvent
-                  }
-
-                  const delta = choice.delta
-
-                  // Handle text content
-                  if (delta?.content && delta.content !== 'null' && delta.content !== '') {
-                    // Ensure we have a content block for text
-                    let textBlockIndex = -1
-                    for (let i = 0; i < contentBlockIndex; i++) {
-                      // Look for existing text block (simplified: just use index 0)
-                      if (i === 0) textBlockIndex = 0
-                    }
-                    if (textBlockIndex === -1 && contentBlockIndex === 0) {
-                      // First text content - emit content_block_start
-                      yield {
-                        type: 'content_block_start',
-                        index: 0,
-                        content_block: {
-                          type: 'text',
-                          text: '',
-                        },
-                      } as AnthropicStreamEvent
-                      contentBlockIndex = 1
-                      textBlockIndex = 0
-                    }
-
-                    yield {
-                      type: 'content_block_delta',
-                      index: textBlockIndex >= 0 ? textBlockIndex : 0,
-                      delta: {
-                        type: 'text_delta',
-                        text: delta.content,
-                      },
-                    } as AnthropicStreamEvent
-                  }
-
-                  // Handle tool calls
-                  if (delta?.tool_calls) {
-                    for (const tc of delta.tool_calls) {
-                      const idx = tc.index ?? 0
-                      let state = toolCallState.get(idx)
-
-                      if (!state) {
-                        // New tool call
-                        state = {
-                          id: tc.id ?? `tool_call_${idx}_${randomUUID().slice(0, 8)}`,
-                          name: tc.function?.name ?? '',
-                          arguments: tc.function?.arguments ?? '',
-                        }
-                        toolCallState.set(idx, state)
-
-                        // Emit content_block_start for tool_use
-                        const toolBlockIdx = contentBlockIndex++
-                        yield {
-                          type: 'content_block_start',
-                          index: toolBlockIdx,
-                          content_block: {
-                            type: 'tool_use',
-                            id: state.id,
-                            name: state.name,
-                            input: {},
-                          },
-                        } as AnthropicStreamEvent
-                      } else {
-                        // Accumulate arguments
-                        if (tc.function?.arguments) {
-                          state.arguments += tc.function.arguments
-                        }
-                      }
-
-                      // Emit input_json_delta
-                      if (tc.function?.arguments) {
-                        const toolBlockIdx = toolCallState.size - 1
-                        yield {
-                          type: 'content_block_delta',
-                          index: toolBlockIdx >= 0 ? toolBlockIdx : contentBlockIndex - 1,
-                          delta: {
-                            type: 'input_json_delta',
-                            partial_json: tc.function.arguments,
-                          },
-                        } as AnthropicStreamEvent
-                      }
-                    }
-                  }
-
-                  // Handle finish_reason (message_delta + message_stop)
-                  if (choice.finish_reason) {
-                    // Close any open tool_use blocks
-                    for (const [idx, state] of toolCallState) {
-                      yield {
-                        type: 'content_block_stop',
-                        index: idx,
-                      } as AnthropicStreamEvent
-                    }
-
-                    let stopReason = choice.finish_reason
-                    if (stopReason === 'stop') stopReason = 'end_turn'
-                    else if (stopReason === 'tool_calls') stopReason = 'tool_use'
-                    else if (stopReason === 'length') stopReason = 'max_tokens'
-                    else if (stopReason === 'content_filter') stopReason = 'end_turn'
-
-                    // Emit usage
-                    if (chunk.usage && !hasEmittedUsage) {
-                      hasEmittedUsage = true
-                    }
-
-                    yield {
-                      type: 'message_delta',
-                      delta: {
-                        stop_reason: stopReason as string | null,
-                        stop_sequence: null,
-                      },
-                      usage: {
-                        output_tokens: chunk.usage?.completion_tokens ?? 0,
-                      },
-                    } as AnthropicStreamEvent
-
-                    yield {
-                      type: 'message_stop',
-                    } as AnthropicStreamEvent
-                  }
-                }
-              }
-            } finally {
-              reader.releaseLock()
+        // Return a Promise-like object that is both thenable and has .withResponse()
+        // This matches the Anthropic SDK's APIPromise behavior
+        const promise = doCreate()
+        const promiseWithResponse = {
+          then: (onfulfilled: any, onrejected: any) => promise.then(onfulfilled, onrejected),
+          catch: (onrejected: any) => promise.catch(onrejected),
+          finally: (onfinally: any) => promise.finally?.(onfinally),
+          withResponse: async () => {
+            const data = await promise
+            return {
+              data,
+              response: new Response(),
+              request_id: null,
             }
           },
         }
+        return promiseWithResponse
       },
     },
   }
