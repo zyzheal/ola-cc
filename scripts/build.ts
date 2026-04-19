@@ -1,4 +1,4 @@
-import { chmodSync, existsSync, mkdirSync } from 'fs'
+import { chmodSync, existsSync, mkdirSync, rmSync } from 'fs'
 import { dirname } from 'path'
 
 const pkg = await Bun.file(new URL('../package.json', import.meta.url)).json() as {
@@ -122,6 +122,11 @@ const outfile = publish
 const buildTime = new Date().toISOString()
 const version = dev ? getDevVersion(pkg.version) : pkg.version
 
+// Delete existing output to ensure a clean build
+if (existsSync(outfile)) {
+  rmSync(outfile, { force: true })
+}
+
 mkdirSync(dirname(outfile), { recursive: true })
 
 const externals = publish
@@ -242,6 +247,11 @@ const proc = Bun.spawnSync({
   cwd: process.cwd(),
   stdout: 'inherit',
   stderr: 'inherit',
+  env: {
+    ...process.env,
+    // Disable bundler cache for publish builds to ensure fresh output
+    ...(publish && { BUN_DISABLE_CACHE: '1' }),
+  },
 })
 
 if (proc.exitCode !== 0) {
