@@ -132,7 +132,8 @@ mkdirSync(dirname(outfile), { recursive: true })
 const externals = publish
   ? [
       // For npm publish build, externalize optional native deps
-      '@ant/*',
+      // NOTE: @ant/* shim packages are NOT externalized — they must be bundled
+      // because they only ship .ts source files, not compiled .js
       '@anthropic-ai/bedrock-sdk',
       '@anthropic-ai/foundry-sdk',
       '@anthropic-ai/vertex-sdk',
