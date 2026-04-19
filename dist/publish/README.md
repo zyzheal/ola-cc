@@ -95,6 +95,50 @@ Claude Code 的配置存储在 `~/.claude/` 目录中。
 - **name** — 模型名称，格式取决于代理服务的 API。本地 Ollama 代理通常为 `qwen/qwen3-235b-a22b` 或 `llama3.1`
 - **provider** — 提供商类型，本地 OpenAI 兼容代理填 `openai`，也支持 `bedrock`、`vertex` 等
 
+#### OpenAI 协议支持
+
+当设置 `OPENAI_BASE_URL` 或 `OPENAI_API_KEY` 时，CLI 会自动使用 OpenAI 兼容协议与 API 通信。
+
+**必填环境变量：**
+
+| 环境变量 | 说明 |
+|----------|------|
+| `OPENAI_API_KEY` | API 密钥（必填） |
+| `OPENAI_BASE_URL` | API 基础 URL（必填） |
+| `OPENAI_MODEL` | 模型名称（推荐，作为 `settings.json` 中 `model` 字段的默认值） |
+
+**支持的端点示例：**
+
+| 服务 | OPENAI_BASE_URL | 说明 |
+|------|----------------|------|
+| 阿里云百炼 DashScope | `https://coding.dashscope.aliyuncs.com/v1` | 支持通义千问系列模型 |
+| OpenAI 官方 API | `https://api.openai.com/v1` | GPT-4o、o1 等 |
+| Ollama (本地) | `http://127.0.0.1:11434/v1` | 本地部署的开源模型 |
+| vLLM | `http://localhost:8000/v1` | 兼容 OpenAI API 格式的推理服务 |
+
+**使用方式：**
+
+```bash
+# 命令行直接传入
+OPENAI_BASE_URL="https://coding.dashscope.aliyuncs.com/v1" \
+OPENAI_API_KEY="your-api-key" \
+claude
+
+# 或在 ~/.claude/session.json 中配置
+{
+  "env": {
+    "OPENAI_BASE_URL": "https://coding.dashscope.aliyuncs.com/v1",
+    "OPENAI_API_KEY": "your-api-key",
+    "OPENAI_MODEL": "qwen3.6-plus"
+  }
+}
+```
+
+**注意事项：**
+- 模型名称优先读取 `~/.claude/settings.json` 的 `model` 字段
+- 如果传入的模型名称以 `claude-` 开头，会自动使用 `OPENAI_MODEL` 环境变量作为 fallback
+- 支持流式和非流式响应
+
 ### settings.json 配置示例
 
 ```json
@@ -136,6 +180,9 @@ Claude Code 的配置存储在 `~/.claude/` 目录中。
 | 变量 | 说明 |
 |------|------|
 | `ANTHROPIC_API_KEY` | API 密钥 |
+| `CLAUDE_CODE_USE_OPENAI` | 启用 OpenAI 协议（1=启用） |
+| `OPENAI_API_KEY` | OpenAI API 密钥 |
+| `OPENAI_API_BASE` | OpenAI 兼容 API 基础 URL |
 | `CLAUDE_CODE_ENABLE_CFC` | 启用 Chrome 集成（1=启用，0=禁用） |
 | `CLAUDE_CHROME_HTTP` | 启用 Chrome HTTP 桥接模式（1=启用） |
 | `CLAUDE_CHROME_HTTP_PORT` | HTTP 服务器端口（默认 12306） |

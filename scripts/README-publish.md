@@ -97,19 +97,47 @@ Claude Code 的配置存储在 `~/.claude/` 目录中。
 
 #### OpenAI 协议支持
 
-当设置 `CLAUDE_CODE_USE_OPENAI=1` 时，CLI 将使用 OpenAI 兼容协议与 API 通信。支持以下配置：
+当设置 `OPENAI_BASE_URL` 或 `OPENAI_API_KEY` 时，CLI 会自动使用 OpenAI 兼容协议与 API 通信。
+
+**必填环境变量：**
 
 | 环境变量 | 说明 |
 |----------|------|
-| `CLAUDE_CODE_USE_OPENAI` | 启用 OpenAI 协议（设为 `1` 或 `true`） |
-| `OPENAI_API_KEY` | OpenAI API 密钥（必填） |
-| `OPENAI_API_BASE` | 自定义 API 基础 URL（可选，默认 `https://api.openai.com/v1`） |
-| `OPENAI_BASE_URL` | 同上，另一个可用的环境变量名 |
+| `OPENAI_API_KEY` | API 密钥（必填） |
+| `OPENAI_BASE_URL` | API 基础 URL（必填） |
+| `OPENAI_MODEL` | 模型名称（推荐，作为 `settings.json` 中 `model` 字段的默认值） |
 
-支持的端点示例：
-- **OpenAI API**: `OPENAI_API_BASE=https://api.openai.com/v1`
-- **Ollama (本地)**: `OPENAI_API_BASE=http://127.0.0.1:11434/v1`
-- **vLLM**: `OPENAI_API_BASE=http://localhost:8000/v1`
+**支持的端点示例：**
+
+| 服务 | OPENAI_BASE_URL | 说明 |
+|------|----------------|------|
+| 阿里云百炼 DashScope | `https://coding.dashscope.aliyuncs.com/v1` | 支持通义千问系列模型 |
+| OpenAI 官方 API | `https://api.openai.com/v1` | GPT-4o、o1 等 |
+| Ollama (本地) | `http://127.0.0.1:11434/v1` | 本地部署的开源模型 |
+| vLLM | `http://localhost:8000/v1` | 兼容 OpenAI API 格式的推理服务 |
+
+**使用方式：**
+
+```bash
+# 命令行直接传入
+OPENAI_BASE_URL="https://coding.dashscope.aliyuncs.com/v1" \
+OPENAI_API_KEY="your-api-key" \
+claude
+
+# 或在 ~/.claude/session.json 中配置
+{
+  "env": {
+    "OPENAI_BASE_URL": "https://coding.dashscope.aliyuncs.com/v1",
+    "OPENAI_API_KEY": "your-api-key",
+    "OPENAI_MODEL": "qwen3.6-plus"
+  }
+}
+```
+
+**注意事项：**
+- 模型名称优先读取 `~/.claude/settings.json` 的 `model` 字段
+- 如果传入的模型名称以 `claude-` 开头，会自动使用 `OPENAI_MODEL` 环境变量作为 fallback
+- 支持流式和非流式响应
 
 ### settings.json 配置示例
 
