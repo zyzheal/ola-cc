@@ -66,7 +66,11 @@ export function getUserSpecifiedModelSetting(): ModelSetting | undefined {
     specifiedModel = modelOverride
   } else {
     const settings = getSettings_DEPRECATED() || {}
-    specifiedModel = process.env.ANTHROPIC_MODEL || settings.model || undefined
+    // For OpenAI-compatible API users, OPENAI_MODEL serves as an alias for ANTHROPIC_MODEL
+    specifiedModel = process.env.ANTHROPIC_MODEL
+      || process.env.OPENAI_MODEL
+      || settings.model
+      || undefined
   }
 
   // Ignore the user-specified model if it's not in the availableModels allowlist.
