@@ -452,3 +452,135 @@ function convertMessagesToOpenAI(
 
   return { systemMessage: systemText, openaiMessages }
 }
+
+// -- Tool conversion
+
+function convertToolsToOpenAI(
+  tools?: Array<{
+    name: string
+    description: string
+    input_schema: { type: string; properties?: object; required?: string[] }
+  }>,
+): OpenAITool[] | undefined {
+  if (!tools || tools.length === 0) return undefined
+
+  return tools.map((tool) => ({
+    type: 'function' as const,
+    function: {
+      name: tool.name,
+      description: tool.description || '',
+      parameters: sanitizeSchemaForOpenAI(tool.input_schema),
+    },
+  }))
+}
+
+function convertToolChoice(
+  toolChoice?:
+    | 'auto'
+    | 'any'
+    | 'tool'
+    | { type: 'auto' }
+    | { type: 'any' }
+    | { type: 'tool'; name: string },
+): string | { type: 'function'; function: { name: string } } | undefined {
+  if (!toolChoice) return undefined
+
+  if (typeof toolChoice === 'string') {
+    if (toolChoice === 'auto') return 'auto'
+    if (toolChoice === 'any' || toolChoice === 'tool') return 'required'
+    return 'auto'
+  }
+
+  if (toolChoice.type === 'auto') return 'auto'
+  if (toolChoice.type === 'any') return 'required'
+  if (toolChoice.type === 'tool' && toolChoice.name) {
+    return { type: 'function', function: { name: toolChoice.name } }
+  }
+  return 'auto'
+}
+
+// -- Retry with exponential backoff
+
+function isRetriableError(status: number): boolean {
+  return status === 429 || (status >= 500 && status < 600) || status === 0
+}
+
+function calculateBackoff(attempt: number, baseMs: number, maxMs: number): number {
+  const base = Math.min(baseMs * Math.pow(2, attempt), maxMs)
+  const jitter = base * 0.25 * Math.random()
+  return base + jitter
+}
+
+class OpenAIHttpError extends Error {
+  status: number
+  constructor(status: number, message: string) {
+    super(message)
+    this.name = 'OpenAIHttpError'
+    this.status = status
+  }
+}
+
+async function fetchWithRetry(
+  fetchFn: typeof fetch,
+  url: string,
+  init: RequestInit,
+  maxRetries: number,
+  signal?: AbortSignal,
+): Promise<Response> {
+  const baseDelay = 1000
+  const maxDelay = 30000
+
+  let lastError: Error | null = null
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    try {
+      const response = await fetchFn(url, { ...init, signal })
+
+      if (response.ok) return response
+
+      if (!isRetriableError(response.status)) {
+        const errorText = await response.text().catch(() => '')
+        throw new OpenAIHttpError(
+          response.status,
+          `OpenAI API error ${response.status}: ${errorText.slice(0, 500)}`,
+        )
+      }
+
+      const errorText = await response.text().catch(() => '')
+      lastError = new OpenAIHttpError(
+        response.status,
+        `OpenAI API error ${response.status}: ${errorText.slice(0, 500)}`,
+      )
+
+      if (attempt < maxRetries) {
+        const delay = calculateBackoff(attempt, baseDelay, maxDelay)
+        await new Promise<void>((resolve, reject) => {
+          const timeoutId = setTimeout(resolve, delay)
+          signal?.addEventListener('abort', () => {
+            clearTimeout(timeoutId)
+            reject(signal.reason)
+          }, { once: true })
+        })
+      }
+    } catch (err) {
+      if (signal?.aborted) throw signal.reason
+
+      if (err instanceof OpenAIHttpError && !isRetriableError(err.status)) throw err
+      if (err instanceof Error && (err.name === 'AbortError' || err.name === 'TimeoutError')) throw err
+
+      lastError = err instanceof Error ? err : new Error(String(err))
+
+      if (attempt < maxRetries) {
+        const delay = calculateBackoff(attempt, baseDelay, maxDelay)
+        await new Promise<void>((resolve, reject) => {
+          const timeoutId = setTimeout(resolve, delay)
+          signal?.addEventListener('abort', () => {
+            clearTimeout(timeoutId)
+            reject(signal.reason)
+          }, { once: true })
+        })
+      }
+    }
+  }
+
+  throw lastError || new Error('Request failed after retries')
+}
