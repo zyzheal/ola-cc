@@ -274,6 +274,10 @@ function getUserSettingsFilePath(): string {
 export function getSettingsFilePathForSource(
   source: SettingSource,
 ): string | undefined {
+  // Support CLAUDE_CODE_SETTINGS_FILE to override the user settings file path
+  if (source === 'userSettings' && process.env.CLAUDE_CODE_SETTINGS_FILE) {
+    return resolve(process.env.CLAUDE_CODE_SETTINGS_FILE)
+  }
   switch (source) {
     case 'userSettings':
       return join(

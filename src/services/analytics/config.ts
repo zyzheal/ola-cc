@@ -13,7 +13,7 @@ import { isTelemetryDisabled } from '../../utils/privacyLevel.js'
  *
  * Analytics is disabled in the following cases:
  * - Test environment (NODE_ENV === 'test')
- * - Third-party cloud providers (Bedrock/Vertex)
+ * - Third-party cloud providers (Bedrock/Vertex/Foundry/OpenAI)
  * - Privacy level is no-telemetry or essential-traffic
  */
 export function isAnalyticsDisabled(): boolean {

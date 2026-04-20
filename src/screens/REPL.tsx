@@ -16,6 +16,7 @@ import { useSearchHighlight } from '../ink/hooks/use-search-highlight.js';
 import type { JumpHandle } from '../components/VirtualMessageList.js';
 import { renderMessagesToPlainText } from '../utils/exportRenderer.js';
 import { openFileInExternalEditor } from '../utils/editor.js';
+import { appendFileSync } from 'fs';
 import { writeFile } from 'fs/promises';
 import { Box, Text, useStdin, useTheme, useTerminalFocus, useTerminalTitle, useTabStatus } from '../ink.js';
 import type { TabStatusKind } from '../ink/hooks/use-tab-status.js';
@@ -599,6 +600,15 @@ class ReplRuntimeBoundary extends React.Component<{
   }
   override componentDidCatch(error: Error): void {
     const message = error?.stack ?? error?.message ?? String(error);
+    // Log to stderr so it's visible even when file logging is unavailable
+    // eslint-disable-next-line no-console
+    console.error('[REPL:boundary] Full error stack:', message);
+    // Also write to a temp file for easy retrieval
+    try {
+      appendFileSync('/tmp/claude-repl-error.log',
+        `[${new Date().toISOString()}]\nError: ${message}\n\n`
+      );
+    } catch { /* ignore */ }
     logForDebugging(`[REPL:boundary] ${message}`, {
       level: 'error'
     });

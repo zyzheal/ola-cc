@@ -6,9 +6,10 @@
  * - Message format conversion (Anthropic <-> OpenAI)
  * - Streaming response conversion
  * - Tool/function calling support
- * - System prompt handling
+ * - System prompt handling (merged for optimal prefix caching)
  * - Retry with exponential backoff for transient failures
  * - Model name mapping from Anthropic to OpenAI equivalents
+ * - Cache usage reporting for debugging
  *
  * Configuration via environment variables:
  * - OPENAI_API_KEY: Required. Your OpenAI API key
@@ -16,6 +17,19 @@
  *   (for Ollama, vLLM, or other OpenAI-compatible endpoints)
  * - OPENAI_MODEL: Optional. Default OpenAI model name to use when an
  *   Anthropic model name is passed (e.g., "gpt-4o").
+ * - OPENAI_EXTRA_BODY: Optional. JSON string of extra params to merge into
+ *   the request body. Used for backend-specific features like vLLM prefix
+ *   caching configuration.
+ *
+ * Prompt caching:
+ * OpenAI-compatible backends use automatic prefix caching (not Anthropic's
+ * explicit cache_control). To maximize cache hit rates:
+ * 1. All system prompt blocks are merged into a single system message,
+ *    forming a stable prefix that backends can cache reliably.
+ * 2. Message order is preserved across requests.
+ * 3. For vLLM, set `enable_prefix_caching: true` in your server config
+ *    and consider passing `extra_body` via OPENAI_EXTRA_BODY env var.
+ * 4. Cache usage is logged to stderr when available in the response.
  */
 import { randomUUID } from 'crypto'
 
@@ -578,6 +592,11 @@ function extractTextContent(
 /**
  * Convert the full message list from Anthropic format to OpenAI format.
  * Handles system message extraction and message conversion.
+ *
+ * For optimal prefix caching on OpenAI-compatible backends, all system prompt
+ * blocks are merged into a single consolidated system message. This ensures
+ * the system prompt forms a stable, consistent prefix that backend caches
+ * can reliably match across requests.
  */
 function convertMessagesToOpenAI(
   messages: Array<{ role: string; content: unknown[] | string }>,
@@ -586,7 +605,9 @@ function convertMessagesToOpenAI(
   systemMessage: string
   openaiMessages: OpenAIMessage[]
 } {
-  // Extract system messages
+  // Extract system messages — merge ALL system blocks into a single string
+  // to maximize prefix cache hit rate. Multiple system messages fragment
+  // the cache key, reducing the chance of cache hits.
   let systemText = ''
   if (systemParam) {
     systemText = extractTextContent(
@@ -596,7 +617,7 @@ function convertMessagesToOpenAI(
     )
   }
 
-  // Also check for system role messages in the array
+  // Also check for system role messages in the array and merge them
   const nonSystemMessages = messages.filter((m) => m.role !== 'system')
   const systemMessages = messages.filter((m) => m.role === 'system')
   if (systemMessages.length > 0) {
@@ -609,7 +630,7 @@ function convertMessagesToOpenAI(
     }
   }
 
-  // Convert remaining messages
+  // Convert remaining messages (non-system)
   const openaiMessages: OpenAIMessage[] = []
   for (let i = 0; i < nonSystemMessages.length; i++) {
     const msg = nonSystemMessages[i]
@@ -739,6 +760,60 @@ function makeEventId(): string {
   return `evt_${randomUUID().slice(0, 12)}`
 }
 
+// -- Helper: Parse extra body params from environment
+
+/**
+ * Parse OPENAI_EXTRA_BODY environment variable into an object.
+ * Supports both JSON and JSON-like strings.
+ * Used to pass backend-specific caching configuration (e.g., vLLM prefix caching).
+ */
+function parseExtraBodyEnv(): Record<string, unknown> {
+  const envValue = process.env.OPENAI_EXTRA_BODY
+  if (!envValue) return {}
+  try {
+    const parsed = JSON.parse(envValue)
+    if (parsed && typeof parsed === 'object') {
+      return parsed as Record<string, unknown>
+    }
+  } catch {
+    warn(`Failed to parse OPENAI_EXTRA_BODY: invalid JSON`)
+  }
+  return {}
+}
+
+// -- Helper: Log cache usage from response (debug only)
+
+/**
+ * Log cache token usage from API response for debugging.
+ * OpenAI-compatible backends may return cache_usage info in usage field.
+ */
+function logCacheUsage(response: OpenAIChatCompletionResponse): void {
+  const usage = response.usage
+  if (!usage) return
+
+  const cacheDetails: string[] = []
+  // OpenAI API returns these fields for prompt caching
+  if ('prompt_tokens_details' in usage && usage.prompt_tokens_details) {
+    const details = usage.prompt_tokens_details as { cached_tokens?: number }
+    if (details.cached_tokens) {
+      cacheDetails.push(`cached=${details.cached_tokens}`)
+    }
+  }
+  // vLLM and other backends may use custom fields
+  if ('cache_tokens' in usage) {
+    cacheDetails.push(`cache_tokens=${(usage as any).cache_tokens}`)
+  }
+  if ('cached_tokens' in usage) {
+    cacheDetails.push(`cached_tokens=${(usage as any).cached_tokens}`)
+  }
+
+  if (cacheDetails.length > 0) {
+    console.error(
+      `[OpenAI Cache] prompt=${usage.prompt_tokens}, completion=${usage.completion_tokens}, ${cacheDetails.join(', ')}`,
+    )
+  }
+}
+
 // -- The OpenAI-compatible client class
 
 /**
@@ -752,6 +827,14 @@ function makeEventId(): string {
  *   // Anthropic-style stream events
  * }
  * ```
+ *
+ * Prompt caching for OpenAI-compatible backends:
+ * Unlike Anthropic's explicit cache_control, OpenAI-compatible backends use
+ * automatic prefix caching. To maximize cache hit rates:
+ * 1. System prompt is merged into a single stable prefix message
+ * 2. OPENAI_EXTRA_BODY env var can pass backend-specific cache config
+ *    (e.g., vLLM's prefix caching params)
+ * 3. Message order is preserved for consistent cache keys
  */
 export function createOpenAICompatibleClient(options: OpenAICompatibleClientOptions) {
   const apiKey = options.apiKey || process.env.OPENAI_API_KEY || ''
@@ -773,6 +856,9 @@ export function createOpenAICompatibleClient(options: OpenAICompatibleClientOpti
 
   // Streaming timeout in milliseconds (default 5 minutes)
   const STREAMING_TIMEOUT_MS = 300_000
+
+  // Parse extra body params from env for backend-specific caching config
+  const parsedExtraBody = parseExtraBodyEnv()
 
   // Build the beta.messages interface
   const beta = {
@@ -869,6 +955,13 @@ export function createOpenAICompatibleClient(options: OpenAICompatibleClientOpti
           }
         }
 
+        // Merge env-level extra_body for backend-specific caching config
+        // e.g., vLLM prefix caching params, custom model routing
+        if (Object.keys(parsedExtraBody).length > 0) {
+          const existingExtra = openaiParams.extra_body as Record<string, unknown> | undefined
+          openaiParams.extra_body = { ...parsedExtraBody, ...existingExtra }
+        }
+
         // Map Anthropic's stop_sequences to OpenAI's stop parameter
         if ('stop_sequences' in params && params.stop_sequences !== undefined && !('stop' in params)) {
           // @ts-expect-error dynamic key assignment
@@ -914,6 +1007,9 @@ export function createOpenAICompatibleClient(options: OpenAICompatibleClientOpti
 
             const data = (await response.json()) as OpenAIChatCompletionResponse
             const anthropicResponse = convertResponseToAnthropic(data)
+
+            // Log cache usage for debugging (stderr only)
+            logCacheUsage(data)
 
             // Create a stream-like object that returns the response for non-streaming
             // This matches how the Anthropic SDK works with .withResponse()
@@ -1191,6 +1287,8 @@ export function createOpenAICompatibleClient(options: OpenAICompatibleClientOpti
                       // Emit usage
                       if (chunk.usage && !hasEmittedUsage) {
                         hasEmittedUsage = true
+                        // Log cache usage for debugging (stderr only)
+                        logCacheUsage(chunk)
                       }
 
                       yield {
