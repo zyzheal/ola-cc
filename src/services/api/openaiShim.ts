@@ -213,3 +213,66 @@ function extractTextContent(
     .filter(Boolean)
     .join('\n')
 }
+
+// -- JSON Schema sanitizer
+
+/**
+ * Sanitize a JSON Schema to ensure it's compatible with OpenAI's API.
+ * OpenAI requires that:
+ * 1. All properties in `required` must exist in `properties`
+ * 2. `properties` must be an object
+ * 3. Tool schemas must have type: 'object'
+ *
+ * This function:
+ * - Removes required fields that don't have matching properties
+ * - Adds missing properties as {type: 'string'} for required fields
+ * - Normalizes nested schemas recursively
+ */
+function sanitizeSchemaForOpenAI(schema: unknown): Record<string, unknown> {
+  if (!schema || typeof schema !== 'object') {
+    return { type: 'object', properties: {} }
+  }
+
+  const obj = schema as Record<string, unknown>
+  const result = { ...obj }
+
+  // Ensure type is object
+  if (result.type !== 'object') {
+    result.type = 'object'
+  }
+
+  // Ensure properties exists and is an object
+  if (!result.properties || typeof result.properties !== 'object') {
+    result.properties = {}
+  }
+
+  const properties = result.properties as Record<string, unknown>
+  const required = result.required
+
+  if (Array.isArray(required)) {
+    // Ensure all required fields have properties
+    for (const key of required) {
+      if (typeof key === 'string' && !(key in properties)) {
+        properties[key] = { type: 'string' }
+      }
+    }
+    // Remove required fields that aren't strings
+    result.required = required.filter((k) => typeof k === 'string')
+  }
+
+  // Recursively sanitize nested properties
+  for (const [key, value] of Object.entries(properties)) {
+    if (value && typeof value === 'object') {
+      const prop = value as Record<string, unknown>
+      if (prop.type === 'object' || prop.properties) {
+        properties[key] = sanitizeSchemaForOpenAI(prop)
+      }
+      // Handle array items
+      if (prop.type === 'array' && prop.items) {
+        prop.items = sanitizeSchemaForOpenAI(prop.items)
+      }
+    }
+  }
+
+  return result
+}
