@@ -276,3 +276,179 @@ function sanitizeSchemaForOpenAI(schema: unknown): Record<string, unknown> {
 
   return result
 }
+
+// -- Message conversion
+
+function convertAnthropicMessageToOpenAI(
+  msg: { role: string; content: unknown[] | string },
+  index: number,
+  allMessages: Array<{ role: string; content: unknown[] | string }>,
+): OpenAIMessage[] {
+  const role = msg.role
+
+  if (role === 'system') {
+    return [{ role: 'system', content: extractTextContent(msg.content) }]
+  }
+
+  if (role === 'user') {
+    if (typeof msg.content === 'string') {
+      return [{ role: 'user', content: msg.content }]
+    }
+
+    const textParts: string[] = []
+    const imageParts: Array<{ type: string; image_url: { url: string; detail?: string } }> = []
+    for (const block of msg.content as Array<{
+      type: string
+      text?: string
+      source?: { data?: string; media_type?: string; type?: string; url?: string }
+      cache_control?: { type: string }
+    }>) {
+      if (block.type === 'text') {
+        textParts.push(block.text ?? '')
+      } else if (block.type === 'image') {
+        if (block.source?.data && block.source?.media_type) {
+          imageParts.push({
+            type: 'image_url',
+            image_url: {
+              url: `data:${block.source.media_type};base64,${block.source.data}`,
+            },
+          })
+        } else if (block.source?.type === 'url' || block.source?.url) {
+          imageParts.push({
+            type: 'image_url',
+            image_url: { url: block.source.url ?? '' },
+          })
+        } else {
+          warn(`Image block at user message index ${index} has no usable source — skipping`)
+        }
+      } else if (block.type === 'document' || block.type === 'tool_result') {
+        warn(`Content block type "${block.type}" at user message index ${index} is not fully supported — extracting text only`)
+      }
+    }
+
+    if (imageParts.length > 0) {
+      const multimodalContent: Array<{ type: string; text?: string; image_url?: object }> = []
+      const joinedText = textParts.join('\n')
+      if (joinedText) multimodalContent.push({ type: 'text', text: joinedText })
+      multimodalContent.push(...imageParts)
+      return [{ role: 'user', content: multimodalContent }]
+    }
+
+    return [{ role: 'user', content: textParts.join('\n') || '(empty message)' }]
+  }
+
+  if (role === 'assistant') {
+    if (typeof msg.content === 'string') {
+      return [{ role: 'assistant', content: msg.content }]
+    }
+
+    const textParts: string[] = []
+    const toolCalls: Array<{ id: string; type: string; function: { name: string; arguments: string } }> = []
+
+    for (const block of msg.content as Array<{
+      type: string
+      text?: string
+      name?: string
+      input?: unknown
+      id?: string
+      thinking?: string
+      signature?: string
+      cache_control?: { type: string }
+    }>) {
+      if (block.type === 'text') {
+        textParts.push(block.text ?? '')
+      } else if (block.type === 'tool_use') {
+        toolCalls.push({
+          id: block.id ?? `tool_${index}`,
+          type: 'function',
+          function: {
+            name: block.name ?? 'unknown',
+            arguments: JSON.stringify(block.input ?? {}),
+          },
+        })
+      } else if (block.type === 'thinking') {
+        if (block.thinking) {
+          textParts.push(`[Thinking] ${block.thinking}`)
+        }
+      }
+    }
+
+    const result: OpenAIMessage = {
+      role: 'assistant',
+      ...(textParts.length > 0 && { content: textParts.join('\n') }),
+    }
+    if (toolCalls.length > 0) result.tool_calls = toolCalls
+    return [result]
+  }
+
+  if (role === 'tool' || role === 'tool_result') {
+    if (typeof msg.content === 'string') {
+      return [{ role: 'tool', tool_call_id: `tool_${index}`, content: msg.content }]
+    }
+
+    const results: OpenAIMessage[] = []
+    for (const block of msg.content as Array<{
+      type: string
+      tool_use_id?: string
+      content?: Array<{ type: string; text?: string }> | string
+      is_error?: boolean
+    }>) {
+      if (block.type === 'tool_result') {
+        let contentText = ''
+        if (typeof block.content === 'string') {
+          contentText = block.content
+        } else if (Array.isArray(block.content)) {
+          contentText = block.content
+            .map((b) => (b.type === 'text' ? b.text ?? '' : b.type === 'image' ? '[image]' : ''))
+            .filter(Boolean)
+            .join('\n')
+        }
+        if (block.is_error) contentText = `Error: ${contentText}`
+        results.push({
+          role: 'tool',
+          tool_call_id: block.tool_use_id ?? `tool_${index}`,
+          content: contentText || '(empty result)',
+        })
+      }
+    }
+    return results.length > 0 ? results : []
+  }
+
+  return [{
+    role: 'user',
+    content: typeof msg.content === 'string' ? msg.content : JSON.stringify(msg.content),
+  }]
+}
+
+function convertMessagesToOpenAI(
+  messages: Array<{ role: string; content: unknown[] | string }>,
+  systemParam?: string | Array<{ type: string; text: string }>,
+): { systemMessage: string; openaiMessages: OpenAIMessage[] } {
+  let systemText = ''
+  if (systemParam) {
+    systemText = extractTextContent(
+      typeof systemParam === 'string' ? systemParam : (systemParam as Array<{ type: string; text: string }>),
+    )
+  }
+
+  const nonSystemMessages = messages.filter((m) => m.role !== 'system')
+  const systemMessages = messages.filter((m) => m.role === 'system')
+  if (systemMessages.length > 0) {
+    const additionalSystem = systemMessages
+      .map((m) => extractTextContent(m.content))
+      .filter(Boolean)
+      .join('\n')
+    if (additionalSystem) {
+      systemText = systemText ? `${systemText}\n${additionalSystem}` : additionalSystem
+    }
+  }
+
+  const openaiMessages: OpenAIMessage[] = []
+  for (let i = 0; i < nonSystemMessages.length; i++) {
+    const msg = nonSystemMessages[i]
+    const converted = convertAnthropicMessageToOpenAI(msg, i, nonSystemMessages)
+    openaiMessages.push(...converted)
+  }
+
+  return { systemMessage: systemText, openaiMessages }
+}
