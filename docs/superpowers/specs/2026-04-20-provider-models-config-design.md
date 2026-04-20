@@ -71,8 +71,8 @@ OpenAI 协议同理：
 | 文件 | 改动 |
 |------|------|
 | `src/utils/config.ts` | GlobalConfig 新增 `model?: string` 和 `providerModels?: string[]`；ProjectConfig 同理 |
-| `src/utils/model/modelOptions.ts` | `getModelOptionsBase()` 优先检查 `providerModels`，有配置时替代内置列表；新增 `getProviderModelDefaultOption()` |
-| `src/utils/model/model.ts` | `getUserSpecifiedModelSetting()` 优先读取 `config.model` 作为默认；绕过 `isModelAllowed` 对 provider model 的检查 |
+| `src/utils/model/modelOptions.ts` | `getModelOptionsBase()` 开头优先检查 `providerModels`；新增 `resolveProviderConfig()` / `getProviderModelDefaultOption()` |
+| `src/utils/model/model.ts` | `getUserSpecifiedModelSetting()` 优先读取 `config.model`；绕过 `isModelAllowed` 对 provider model 的检查 |
 
 ### 核心逻辑
 
@@ -81,7 +81,7 @@ OpenAI 协议同理：
 ```typescript
 function getModelOptionsBase(fastMode = false): ModelOption[] {
   // 最高优先级：providerModels 配置
-  const models = resolveProviderModels()
+  const { models } = resolveProviderConfig()
   if (models?.length) {
     return [
       getProviderModelDefaultOption(),
@@ -103,12 +103,12 @@ function getModelOptionsBase(fastMode = false): ModelOption[] {
 
 ```typescript
 function getProviderModelDefaultOption(): ModelOption {
-  const configModel = resolveProviderModel()
+  const { model } = resolveProviderConfig()
   return {
     value: null,
     label: 'Default (recommended)',
-    description: configModel
-      ? `Use configured model (${configModel})`
+    description: model
+      ? `Use configured model (${model})`
       : 'Use the configured default model',
   }
 }
@@ -116,48 +116,53 @@ function getProviderModelDefaultOption(): ModelOption {
 
 **2. resolveProviderModels() — 项目级覆盖全局**
 
-```typescript
-function resolveProviderModels(): string[] | undefined {
-  const config = getGlobalConfig()
-  const projectPath = getProjectPathForConfig()
-  const projectConfig = config.projects?.[projectPath]
-  if (projectConfig?.providerModels !== undefined) {
-    return projectConfig.providerModels
-  }
-  return config.providerModels
-}
+两个字段共享相同的项目路径解析逻辑，合并为一个函数避免重复读取：
 
-// 单独获取默认模型（项目级同样覆盖全局）
-function resolveProviderModel(): string | undefined {
+```typescript
+function resolveProviderConfig(): {
+  models?: string[]
+  model?: string
+} {
   const config = getGlobalConfig()
   const projectPath = getProjectPathForConfig()
   const projectConfig = config.projects?.[projectPath]
-  return projectConfig?.model ?? config.model
+  // 项目级存在时完全覆盖全局
+  if (projectConfig?.providerModels !== undefined) {
+    return {
+      models: projectConfig.providerModels,
+      model: projectConfig.model,
+    }
+  }
+  return {
+    models: config.providerModels,
+    model: config.model,
+  }
 }
 ```
 
 **3. model.ts — 默认模型优先读取 config.model**
 
 ```typescript
-// getUserSpecifiedModelSetting() 新增优先级
+// getUserSpecifiedModelSetting() 重构优先级
 export function getUserSpecifiedModelSetting(): ModelSetting | undefined {
   // 1. 运行时 override（/model 命令已选择的）
   const modelOverride = getMainLoopModelOverride()
   if (modelOverride !== undefined) return modelOverride
 
   // 2. 新增：config.model 字段（项目级优先）
-  const configModel = resolveProviderModel()
+  const { model: configModel, models: providerModels } = resolveProviderConfig()
   if (configModel) return configModel
 
   // 3. 环境变量
-  specifiedModel = process.env.ANTHROPIC_MODEL
+  const specifiedModel = process.env.ANTHROPIC_MODEL
     || process.env.OPENAI_MODEL
-    // ... 现有逻辑
+    || (getSettings_DEPRECATED() || {}).model
+    || undefined
 
-  // 4. 现有 allowlist 检查：仅对非 provider model 生效
+  // 4. allowlist 检查：仅对非 provider model 生效
+  //    provider model 不在内置 allowlist 中是预期的，不应拦截
   if (specifiedModel && !isModelAllowed(specifiedModel)) {
-    // provider model 不在内置 allowlist 中是预期的，不应拦截
-    if (resolveProviderModels()?.includes(specifiedModel)) {
+    if (providerModels?.includes(specifiedModel)) {
       return specifiedModel
     }
     return undefined
@@ -175,7 +180,9 @@ export function getUserSpecifiedModelSetting(): ModelSetting | undefined {
 ├── providerModels: [...]          ← 可选列表
 └── env: { baseUrl, apiKey }       ← 连接信息
          ↓
-getUserSpecifiedModelSetting()     ← 读取默认模型
+resolveProviderConfig()            ← 统一解析项目级/全局配置
+         ↓
+getUserSpecifiedModelSetting()     ← 读取默认模型（绕过 allowlist）
 getModelOptionsBase()              ← 生成 /model 选择器列表
          ↓
 ModelPicker                        ← UI 展示
@@ -187,15 +194,21 @@ ModelPicker                        ← UI 展示
 
 ```
 config.ts        ← 新增字段定义 + 持久化（已有的 saveGlobalConfig 机制自动支持）
-modelOptions.ts  ← 读取 providerModels 生成选项
-model.ts         ← 读取 model 字段作为默认
+                 ← resolveProviderConfig() — 统一的项目/全局配置解析
+modelOptions.ts  ← getModelOptionsBase() 优先读取 providerModels 生成选项
+                 ← getProviderModelDefaultOption() — provider model 的 Default 选项
+model.ts         ← getUserSpecifiedModelSetting() 优先读取 config.model
+                 ← 绕过 isModelAllowed 对 provider model 的拦截
 ```
 
 无新增外部依赖。
+
+> **注意：** 不需要将新字段加入 `GLOBAL_CONFIG_KEYS` 数组。该数组用于 UI 展示和类型检查，持久化机制通过 `saveGlobalConfig` 写入整个对象，新可选字段会自动持久化。
 
 ## 边界情况
 
 1. **providerModels 为空数组 `[]`** — 视为未配置，回退到内置列表
 2. **providerModels 有值但 model 未设置** — `/model` 显示列表，Default 选项文案为 "Use the configured default model"
 3. **model 指向 providerModels 之外的模型** — 允许（视为自定义模型），不在列表中高亮
-4. **model 不在内置 allowlist 中** — provider model 预期不在 allowlist 中，不应被 `isModelAllowed()` 拦截
+4. **model 不在内置 allowlist 中** — provider model 预期不在 allowlist 中，`getUserSpecifiedModelSetting()` 应绕过 `isModelAllowed()` 拦截
+5. **provider model 与环境变量冲突** — `config.model` 优先级高于环境变量，环境变量不会被使用
