@@ -21,10 +21,22 @@ const pkg = await Bun.file(new URL('../package.json', import.meta.url)).json() a
 }
 
 const args = process.argv.slice(2)
+const compile = args.includes('--compile')
+const dev = args.includes('--dev')
+const publish = args.includes('--publish')
+const binaryMode = args.includes('--binary')
 
-// ─── Publish Version ─────────────────────────────────────────
-// Version is read from root package.json for single source of truth
-const publishVersion = pkg.version
+// Binary distribution mode: redirect to build-publish-bin.ts
+if (binaryMode) {
+  console.log('[publish] Redirecting to binary build mode...')
+  const result = Bun.spawnSync({
+    cmd: ['bun', 'run', './scripts/build-publish-bin.ts', ...args.filter(a => a !== '--binary')],
+    cwd: process.cwd(),
+    stdout: 'inherit',
+    stderr: 'inherit',
+  })
+  process.exit(result.exitCode ?? 1)
+}
 
 // ─── Feature Flags ───────────────────────────────────────────
 const defaultFeatures = ['VOICE_MODE', 'BUDDY']
@@ -100,6 +112,7 @@ const externals = [
 ]
 
 // ─── Build JS Bundle ────────────────────────────────────────
+const publishVersion = pkg.version
 const outfile = join(outDir, 'cli.js')
 const buildTime = new Date().toISOString()
 const version = publishVersion
