@@ -73,9 +73,10 @@ export function getUserSpecifiedModelSetting(): ModelSetting | undefined {
 
   // 3. Environment variables and settings
   const settings = getSettings_DEPRECATED() || {}
+  const settingsModel = typeof settings.model === 'string' ? settings.model.trim() || undefined : undefined
   const specifiedModel = process.env.ANTHROPIC_MODEL
     || process.env.OPENAI_MODEL
-    || settings.model
+    || settingsModel
     || undefined
 
   // 4. Allowlist check: provider models are exempt from allowlist
