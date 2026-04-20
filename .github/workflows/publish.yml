@@ -24,7 +24,9 @@ jobs:
           bun-version: latest
 
       - name: Install dependencies
-        run: bun install
+        run: |
+          bun config set registry https://registry.npmjs.org
+          bun install
 
       - name: Build wrapper
         run: bun run ./scripts/build-publish-bin.ts --only-wrapper
@@ -61,7 +63,9 @@ jobs:
           bun-version: latest
 
       - name: Install dependencies
-        run: bun install
+        run: |
+          bun config set registry https://registry.npmjs.org
+          bun install
 
       # musl Linux: build in Docker for musl libc
       - name: Build musl Linux binary (Docker)
