@@ -197,6 +197,7 @@ import {
   isDeferredTool,
   TOOL_SEARCH_TOOL_NAME,
 } from '../../tools/ToolSearchTool/prompt.js'
+import { rankTools, extractQueryFromMessages } from './toolRanker.js'
 import { count } from '../../utils/array.js'
 import { insertBlockAfterToolResults } from '../../utils/contentArray.js'
 import { validateBoundedIntEnvVar } from '../../utils/envValidation.js'
@@ -1196,6 +1197,25 @@ async function* queryModel(
     filteredTools = tools.filter(
       t => !toolMatchesName(t, TOOL_SEARCH_TOOL_NAME),
     )
+  }
+
+  // Progressive tool disclosure: rank tools by relevance to recent conversation
+  // context and limit to top-K. This saves tokens on long conversations where
+  // the full tool list can be 10K-30K tokens.
+  // Skip when tool search is active (it already does progressive disclosure)
+  // or when the tool count is already reasonable.
+  const TOOL_RANKING_THRESHOLD = 25
+  if (!useToolSearch && filteredTools.length > TOOL_RANKING_THRESHOLD) {
+    const query = extractQueryFromMessages(messages)
+    const rankedTools = await rankTools(filteredTools, query, {
+      getToolPermissionContext: options.getToolPermissionContext,
+      agents: options.agents,
+      allowedAgentTypes: options.allowedAgentTypes,
+    })
+    logForDebugging(
+      `Tool ranking: ${rankedTools.length}/${filteredTools.length} tools selected (query: "${query.slice(0, 80)}")`,
+    )
+    filteredTools = rankedTools
   }
 
   // Add tool search beta header if enabled - required for defer_loading to be accepted

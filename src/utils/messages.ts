@@ -750,7 +750,10 @@ export function normalizeMessages(messages: Message[]): NormalizedMessage[] {
     switch (message.type) {
       case 'assistant': {
         isNewChain = isNewChain || message.message.content.length > 1
-        return message.message.content.map((_, index) => {
+        // Filter out undefined/sparse content blocks before mapping — some API
+        // providers may return sparse arrays with gaps in content indices
+        const contentBlocks = message.message.content.filter(Boolean)
+        return contentBlocks.map((_, index) => {
           const uuid = isNewChain
             ? deriveUUID(message.uuid, index)
             : message.uuid
@@ -794,7 +797,9 @@ export function normalizeMessages(messages: Message[]): NormalizedMessage[] {
         }
         isNewChain = isNewChain || message.message.content.length > 1
         let imageIndex = 0
-        return message.message.content.map((_, index) => {
+        // Filter out undefined/sparse content blocks
+        const userContentBlocks = message.message.content.filter(Boolean)
+        return userContentBlocks.map((_, index) => {
           const isImage = _.type === 'image'
           // For image content blocks, extract just the ID for this image
           const imageId =
