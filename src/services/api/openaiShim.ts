@@ -694,3 +694,287 @@ function createTimeoutSignal(
 
   return controller.signal
 }
+
+// -- Client entry point
+
+export function createOpenAICompatibleShimClient(options: OpenAICompatibleClientOptions) {
+  const apiKey = options.apiKey || process.env.OPENAI_API_KEY || ''
+  const baseURL =
+    process.env.OPENAI_API_BASE ||
+    process.env.OPENAI_BASE_URL ||
+    'https://api.openai.com/v1'
+
+  if (!apiKey || apiKey.trim() === '') {
+    throw new Error(
+      'OpenAI API key is not set. Please set the OPENAI_API_KEY environment variable ' +
+      'or provide apiKey in the client options.',
+    )
+  }
+
+  const maxRetries = options.maxRetries ?? 2
+  const STREAMING_TIMEOUT_MS = 300_000
+  const parsedExtraBody = parseExtraBodyEnv()
+
+  const beta = {
+    messages: {
+      create: (
+        params: {
+          model: string
+          messages: Array<{ role: string; content: unknown[] | string }>
+          system?: string | Array<{ type: string; text: string }>
+          tools?: Array<{
+            name: string
+            description: string
+            input_schema: { type: string; properties?: object; required?: string[] }
+          }>
+          tool_choice?: unknown
+          max_tokens: number
+          temperature?: number
+          stream?: boolean
+          [key: string]: unknown
+        },
+        requestOptions?: {
+          signal?: AbortSignal
+          timeout?: number
+          headers?: Record<string, string>
+        },
+      ) => {
+        const { systemMessage, openaiMessages } = convertMessagesToOpenAI(
+          params.messages,
+          params.system,
+        )
+
+        const resolvedModel = resolveModelName(params.model)
+
+        const openaiParams: OpenAIChatCompletionParams = {
+          model: resolvedModel,
+          messages: openaiMessages,
+          max_tokens: params.max_tokens,
+          stream: params.stream ?? false,
+        }
+
+        if (systemMessage) {
+          if (!openaiMessages.some((m) => m.role === 'system')) {
+            openaiParams.messages = [
+              { role: 'system', content: systemMessage },
+              ...openaiParams.messages,
+            ]
+          }
+        }
+
+        if (params.temperature !== undefined) openaiParams.temperature = params.temperature
+        if (params.tools) openaiParams.tools = convertToolsToOpenAI(params.tools)
+        if (params.tool_choice) {
+          openaiParams.tool_choice = convertToolChoice(
+            params.tool_choice as Parameters<typeof convertToolChoice>[0],
+          )
+        }
+
+        for (const key of ['top_p', 'presence_penalty', 'frequency_penalty', 'seed', 'response_format', 'stop', 'logit_bias', 'parallel_tool_calls']) {
+          if (key in params && params[key] !== undefined) {
+            // @ts-expect-error dynamic key
+            openaiParams[key] = params[key]
+          }
+        }
+
+        if (Object.keys(parsedExtraBody).length > 0) {
+          const existingExtra = openaiParams.extra_body as Record<string, unknown> | undefined
+          openaiParams.extra_body = { ...parsedExtraBody, ...existingExtra }
+        }
+
+        if ('stop_sequences' in params && params.stop_sequences !== undefined && !('stop' in params)) {
+          // @ts-expect-error dynamic key
+          openaiParams.stop = params.stop_sequences
+        }
+
+        const fetchFn = options.fetchOverride ?? globalThis.fetch
+        const url = `${baseURL.replace(/\/+$/, '')}/chat/completions`
+
+        const headers: Record<string, string> = {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${apiKey}`,
+          ...(requestOptions?.headers ?? {}),
+        }
+
+        const effectiveSignal = requestOptions?.timeout
+          ? createTimeoutSignal(requestOptions.timeout, requestOptions?.signal)
+          : requestOptions?.signal
+
+        async function doCreate() {
+          if (!params.stream) {
+            const response = await fetchWithRetry(
+              fetchFn,
+              url,
+              { method: 'POST', headers, body: JSON.stringify(openaiParams) },
+              maxRetries,
+              effectiveSignal,
+            )
+
+            if (!response.ok) {
+              const errorText = await response.text().catch(() => '')
+              throw new Error(`OpenAI API error ${response.status}: ${errorText.slice(0, 500)}`)
+            }
+
+            const data = (await response.json()) as OpenAIChatCompletionResponse
+            const anthropicResponse = convertResponseToAnthropic(data)
+            logCacheUsage(data)
+
+            return {
+              ...anthropicResponse,
+              [Symbol.asyncIterator]: async function* () {
+                yield { type: 'message_start', message: { ...anthropicResponse, content: [] } } as AnthropicStreamEvent
+                for (let i = 0; i < anthropicResponse.content.length; i++) {
+                  yield { type: 'content_block_start', index: i, content_block: anthropicResponse.content[i] } as AnthropicStreamEvent
+                  const block = anthropicResponse.content[i]
+                  if (block.type === 'text' && block.text) {
+                    yield { type: 'content_block_delta', index: i, delta: { type: 'text_delta', text: block.text } } as AnthropicStreamEvent
+                  }
+                  yield { type: 'content_block_stop', index: i } as AnthropicStreamEvent
+                }
+                yield { type: 'message_delta', delta: { stop_reason: anthropicResponse.stop_reason, stop_sequence: null }, usage: { output_tokens: anthropicResponse.usage.output_tokens } } as AnthropicStreamEvent
+                yield { type: 'message_stop' } as AnthropicStreamEvent
+              },
+            }
+          }
+
+          const streamingSignal = createTimeoutSignal(STREAMING_TIMEOUT_MS, requestOptions?.signal)
+          const fetchResponse = await fetchWithRetry(
+            fetchFn,
+            url,
+            { method: 'POST', headers: { ...headers, Accept: 'text/event-stream' }, body: JSON.stringify({ ...openaiParams, stream: true }) },
+            maxRetries,
+            streamingSignal,
+          )
+
+          if (!fetchResponse.ok) {
+            const errorText = await fetchResponse.text().catch(() => '')
+            throw new Error(`OpenAI API error ${fetchResponse.status}: ${errorText.slice(0, 500)}`)
+          }
+
+          const messageId = `msg_${randomUUID().slice(0, 24)}`
+          let contentBlockIndex = 0
+          const toolCallState: Map<number, { id: string; name: string; arguments: string }> = new Map()
+          const openedContentBlockIndices: Set<number> = new Set()
+
+          return {
+            id: messageId,
+            type: 'message',
+            role: 'assistant',
+            model: resolvedModel,
+            content: [],
+            stop_reason: null,
+            stop_sequence: null,
+            usage: { input_tokens: 0, output_tokens: 0 },
+            [Symbol.asyncIterator]: async function* () {
+              if (!fetchResponse.body) throw new Error('Response body is null for streaming request')
+
+              const reader = fetchResponse.body.getReader()
+              const decoder = new TextDecoder()
+              let buffer = ''
+              let hasEmittedMessageStart = false
+              let hasEmittedUsage = false
+
+              try {
+                while (true) {
+                  const { done, value } = await reader.read()
+                  if (done) break
+
+                  buffer += decoder.decode(value, { stream: true })
+                  const lines = buffer.split('\n')
+                  buffer = lines.pop() ?? ''
+
+                  for (const line of lines) {
+                    const trimmed = line.trim()
+                    if (!trimmed || trimmed.startsWith(':') || !trimmed.startsWith('data: ')) continue
+
+                    const data = trimmed.slice(6)
+                    if (data === '[DONE]') continue
+
+                    let chunk: OpenAIChatCompletionResponse
+                    try { chunk = JSON.parse(data) } catch { continue }
+
+                    const choice = chunk.choices?.[0]
+                    if (!choice) continue
+
+                    if (!hasEmittedMessageStart) {
+                      hasEmittedMessageStart = true
+                      yield { type: 'message_start', message: { id: messageId, type: 'message', role: 'assistant', content: [], model: chunk.model ?? resolvedModel, stop_reason: null, stop_sequence: null, usage: { input_tokens: 0, output_tokens: 0 } } } as AnthropicStreamEvent
+                    }
+
+                    const delta = choice.delta
+
+                    if (delta?.content && delta.content !== 'null' && delta.content !== '') {
+                      let textBlockIndex = -1
+                      for (let i = 0; i < contentBlockIndex; i++) { if (i === 0) textBlockIndex = 0 }
+                      if (textBlockIndex === -1 && contentBlockIndex === 0) {
+                        const blockIdx = contentBlockIndex
+                        yield { type: 'content_block_start', index: blockIdx, content_block: { type: 'text', text: '' } } as AnthropicStreamEvent
+                        openedContentBlockIndices.add(blockIdx)
+                        contentBlockIndex = 1
+                        textBlockIndex = 0
+                      }
+                      yield { type: 'content_block_delta', index: textBlockIndex >= 0 ? textBlockIndex : 0, delta: { type: 'text_delta', text: delta.content } } as AnthropicStreamEvent
+                    }
+
+                    if (delta?.tool_calls) {
+                      for (const tc of delta.tool_calls) {
+                        const idx = tc.index ?? 0
+                        let state = toolCallState.get(idx)
+                        if (!state) {
+                          state = { id: tc.id ?? `tool_call_${idx}_${randomUUID().slice(0, 8)}`, name: tc.function?.name ?? '', arguments: tc.function?.arguments ?? '' }
+                          toolCallState.set(idx, state)
+                          const toolBlockIdx = contentBlockIndex++
+                          openedContentBlockIndices.add(toolBlockIdx)
+                          yield { type: 'content_block_start', index: toolBlockIdx, content_block: { type: 'tool_use', id: state.id, name: state.name, input: {} } } as AnthropicStreamEvent
+                        } else {
+                          if (tc.function?.arguments) state.arguments += tc.function.arguments
+                        }
+                        if (tc.function?.arguments) {
+                          const toolBlockIdx = toolCallState.size - 1
+                          yield { type: 'content_block_delta', index: toolBlockIdx >= 0 ? toolBlockIdx : contentBlockIndex - 1, delta: { type: 'input_json_delta', partial_json: tc.function.arguments } } as AnthropicStreamEvent
+                        }
+                      }
+                    }
+
+                    if (choice.finish_reason) {
+                      for (const blockIdx of openedContentBlockIndices) {
+                        yield { type: 'content_block_stop', index: blockIdx } as AnthropicStreamEvent
+                      }
+                      let stopReason = choice.finish_reason
+                      if (stopReason === 'stop') stopReason = 'end_turn'
+                      else if (stopReason === 'tool_calls') stopReason = 'tool_use'
+                      else if (stopReason === 'length') stopReason = 'max_tokens'
+                      else if (stopReason === 'content_filter') stopReason = 'end_turn'
+
+                      if (chunk.usage && !hasEmittedUsage) {
+                        hasEmittedUsage = true
+                        logCacheUsage(chunk)
+                      }
+                      yield { type: 'message_delta', delta: { stop_reason: stopReason as string | null, stop_sequence: null }, usage: { output_tokens: chunk.usage?.completion_tokens ?? 0 } } as AnthropicStreamEvent
+                      yield { type: 'message_stop' } as AnthropicStreamEvent
+                    }
+                  }
+                }
+              } finally {
+                reader.releaseLock()
+              }
+            },
+          }
+        }
+
+        const promise = doCreate()
+        return {
+          then: (onfulfilled: any, onrejected: any) => promise.then(onfulfilled, onrejected),
+          catch: (onrejected: any) => promise.catch(onrejected),
+          finally: (onfinally: any) => promise.finally?.(onfinally),
+          withResponse: async () => {
+            const data = await promise
+            return { data, response: new Response(), request_id: null }
+          },
+        }
+      },
+    },
+  }
+
+  return { beta }
+}
