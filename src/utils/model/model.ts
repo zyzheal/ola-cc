@@ -112,7 +112,7 @@ export function getDefaultOpusModel(): ModelName {
   }
   // OpenAI provider uses env-configurable model
   if (getAPIProvider() === 'openai') {
-    return process.env.OPENAI_MODEL || 'gpt-4o'
+    return process.env.OPENAI_MODEL ?? ''
   }
   // 3P providers (Bedrock, Vertex, Foundry) — kept as a separate branch
   // even when values match, since 3P availability lags firstParty and
@@ -130,7 +130,7 @@ export function getDefaultSonnetModel(): ModelName {
   }
   // OpenAI provider uses env-configurable model
   if (getAPIProvider() === 'openai') {
-    return process.env.OPENAI_MODEL || 'gpt-4o'
+    return process.env.OPENAI_MODEL ?? ''
   }
   // Default to Sonnet 4.5 for other 3P since they may not have 4.6 yet
   if (getAPIProvider() !== 'firstParty') {

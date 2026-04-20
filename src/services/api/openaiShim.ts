@@ -148,35 +148,23 @@ interface AnthropicStreamEvent {
   content_block?: AnthropicContentBlock
 }
 
-// -- Model name mapping
+// -- Model name resolution
 
-const ANTHROPIC_TO_OPENAI_MODEL_MAP: Record<string, string> = {
-  'claude-sonnet-4-20250514': 'gpt-4o',
-  'claude-opus-4-20250514': 'gpt-4o',
-  'claude-opus-4-1-20250805': 'gpt-4o',
-  'claude-sonnet-4-0-20250514': 'gpt-4o',
-  'claude-3-5-sonnet-20241022': 'gpt-4o',
-  'claude-3-5-sonnet-20240620': 'gpt-4o',
-  'claude-3-5-haiku-20241022': 'gpt-4o-mini',
-  'claude-3-opus-20240229': 'gpt-4o',
-  'claude-3-sonnet-20240229': 'gpt-4o',
-  'claude-3-haiku-20240307': 'gpt-4o-mini',
-  'claude-2.1': 'gpt-4o',
-  'claude-2.0': 'gpt-4o',
-  'claude-instant-1.2': 'gpt-4o-mini',
-}
-
-function resolveModelName(anthropicModel: string): string {
-  const mapped = ANTHROPIC_TO_OPENAI_MODEL_MAP[anthropicModel]
-  if (mapped) return mapped
-
-  if (anthropicModel.startsWith('claude-')) {
-    const fallback = process.env.OPENAI_MODEL
-    if (fallback) return fallback
-    return 'gpt-4o'
-  }
-
-  return anthropicModel
+/**
+ * Resolve the model name for OpenAI-compatible API calls.
+ *
+ * For OpenAI-compatible providers (DashScope, vLLM, Ollama, etc.),
+ * the model string is passed through verbatim — no Anthropic-to-OpenAI
+ * mapping is applied. The actual model is determined by:
+ * 1. The session model from settings.json (e.g., "qwen3.6-plus")
+ * 2. OPENAI_MODEL env var as override
+ * 3. The model string as-is if neither applies
+ */
+function resolveModelName(model: string): string {
+  // Prefer explicit OPENAI_MODEL override
+  if (process.env.OPENAI_MODEL) return process.env.OPENAI_MODEL
+  // Pass through verbatim for custom model names
+  return model
 }
 
 function asTrimmedString(value: unknown): string | undefined {

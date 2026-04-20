@@ -171,55 +171,23 @@ interface AnthropicStreamEvent {
   content_block?: AnthropicContentBlock
 }
 
-// -- Model name mapping: Anthropic -> OpenAI
+// -- Model name resolution
 
 /**
- * Default model mapping from Anthropic model names to OpenAI equivalents.
- * Users can override this by setting OPENAI_MODEL env var or passing
- * a model name directly that is already OpenAI-compatible.
+ * Resolve the model name for OpenAI-compatible API calls.
+ *
+ * For OpenAI-compatible providers (DashScope, vLLM, Ollama, etc.),
+ * the model string is passed through verbatim — no Anthropic-to-OpenAI
+ * mapping is applied. The actual model is determined by:
+ * 1. The session model from settings.json (e.g., "qwen3.6-plus")
+ * 2. OPENAI_MODEL env var as override
+ * 3. The model string as-is if neither applies
  */
-const ANTHROPIC_TO_OPENAI_MODEL_MAP: Record<string, string> = {
-  // Claude 4 family
-  'claude-sonnet-4-20250514': 'gpt-4o',
-  'claude-opus-4-20250514': 'gpt-4o',
-  'claude-opus-4-1-20250805': 'gpt-4o',
-  // Claude 3.5 family
-  'claude-sonnet-4-0-20250514': 'gpt-4o',
-  'claude-3-5-sonnet-20241022': 'gpt-4o',
-  'claude-3-5-sonnet-20240620': 'gpt-4o',
-  'claude-3-5-haiku-20241022': 'gpt-4o-mini',
-  // Claude 3 family
-  'claude-3-opus-20240229': 'gpt-4o',
-  'claude-3-sonnet-20240229': 'gpt-4o',
-  'claude-3-haiku-20240307': 'gpt-4o-mini',
-  // Legacy
-  'claude-2.1': 'gpt-4o',
-  'claude-2.0': 'gpt-4o',
-  'claude-instant-1.2': 'gpt-4o-mini',
-}
-
-/**
- * Convert an Anthropic model name to its OpenAI equivalent.
- * If the model name is not recognized as an Anthropic model,
- * it is passed through verbatim (allowing users to specify
- * their own OpenAI model names directly).
- * Falls back to OPENAI_MODEL env var if set, otherwise returns as-is.
- */
-function resolveModelName(anthropicModel: string): string {
-  // Direct mapping lookup
-  const mapped = ANTHROPIC_TO_OPENAI_MODEL_MAP[anthropicModel]
-  if (mapped) return mapped
-
-  // Prefix-based matching for models not in the exact map
-  if (anthropicModel.startsWith('claude-')) {
-    const fallback = process.env.OPENAI_MODEL
-    if (fallback) return fallback
-    // Default to gpt-4o for unknown Claude models
-    return 'gpt-4o'
-  }
-
-  // Not an Anthropic model name — pass through verbatim
-  return anthropicModel
+function resolveModelName(model: string): string {
+  // Prefer explicit OPENAI_MODEL override
+  if (process.env.OPENAI_MODEL) return process.env.OPENAI_MODEL
+  // Pass through verbatim for custom model names
+  return model
 }
 
 // -- Retry logic with exponential backoff
