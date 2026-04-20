@@ -580,6 +580,76 @@ CLAUDE_CODE_ENABLE_CFC=1 claude  # 通过环境变量启用
 }
 ```
 
+### Provider Models 配置
+
+通过 `~/.claude.json` 的 `model` 和 `providerModels` 字段，可以自定义 `/model` 命令的模型列表，替代内置的 Claude 模型。适用于 Anthropic 和 OpenAI 两种协议。
+
+#### 全局配置
+
+编辑 `~/.claude.json`：
+
+```json
+{
+  "env": {
+    "ANTHROPIC_BASE_URL": "https://your-provider.example.com",
+    "ANTHROPIC_API_KEY": "sk-xxx"
+  },
+  "model": "qwen3.6-plus",
+  "providerModels": ["qwen3.6-plus", "qwen3.5-plus", "glm-5", "kimi-k2.5"]
+}
+```
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `model` | `string` | 默认使用的模型 ID |
+| `providerModels` | `string[]` | `/model` 命令展示的可切换模型列表 |
+
+#### OpenAI 协议配置
+
+```json
+{
+  "env": {
+    "CLAUDE_CODE_USE_OPENAI": "1",
+    "OPENAI_BASE_URL": "https://api.deepseek.com/v1",
+    "OPENAI_API_KEY": "sk-xxx"
+  },
+  "model": "deepseek-chat",
+  "providerModels": ["deepseek-chat", "deepseek-reasoner"]
+}
+```
+
+#### 项目级配置
+
+在 `~/.claude.json` 的 `projects` 下为特定项目配置不同的模型：
+
+```json
+{
+  "projects": {
+    "/path/to/my-project": {
+      "model": "glm-5",
+      "providerModels": ["glm-5", "glm-4.7"]
+    }
+  }
+}
+```
+
+项目级配置存在时**完全覆盖**全局配置，不合并。
+
+#### 优先级
+
+模型选择优先级（从高到低）：
+
+1. 运行时 override（`/model` 命令已选择的）
+2. `config.model` 字段（项目级优先于全局）
+3. 环境变量（`ANTHROPIC_MODEL` / `OPENAI_MODEL`）
+4. 用户设置（`settings.model`）
+
+#### 边界情况
+
+- `providerModels` 为空数组 `[]` — 视为未配置，回退到内置 Claude 模型列表
+- `model` 指向 `providerModels` 之外的模型 — 允许（视为自定义模型）
+- 未配置 `providerModels` — 保持现有行为不变，显示内置 Claude 模型
+
 ### Hook 配置
 
 位置：`~/.claude/settings.json` 或 `.claude.local.json`
