@@ -6,6 +6,7 @@ import { logForDebugging } from '../../utils/debug.js'
 import { logForDiagnosticsNoPII } from '../../utils/diagLogs.js'
 import { isEnvTruthy } from '../../utils/envUtils.js'
 import { logError } from '../../utils/log.js'
+import { registerCleanup } from '../../utils/cleanupRegistry.js'
 import { sequential } from '../../utils/sequential.js'
 import { getSessionIngressAuthToken } from '../../utils/sessionIngressAuth.js'
 import { sleep } from '../../utils/sleep.js'
@@ -24,6 +25,12 @@ const lastUuidMap: Map<string, UUID> = new Map()
 
 const MAX_RETRIES = 10
 const BASE_DELAY_MS = 500
+
+// Session entry timestamps for TTL-based cleanup
+const sessionLastSeen = new Map<string, number>()
+
+// TTL for session entries: 30 minutes of inactivity
+const SESSION_TTL_MS = 30 * 60 * 1000
 
 // Per-session sequential wrappers to prevent concurrent log writes
 const sequentialAppendBySession: Map<
@@ -51,6 +58,8 @@ function getOrCreateSequentialAppend(sessionId: string) {
     )
     sequentialAppendBySession.set(sessionId, sequentialAppend)
   }
+  // Track last seen time for TTL cleanup
+  sessionLastSeen.set(sessionId, Date.now())
   return sequentialAppend
 }
 
@@ -502,6 +511,21 @@ function findLastUuid(logs: Entry[] | null): UUID | undefined {
 export function clearSession(sessionId: string): void {
   lastUuidMap.delete(sessionId)
   sequentialAppendBySession.delete(sessionId)
+  sessionLastSeen.delete(sessionId)
+}
+
+/**
+ * Evict session entries older than TTL. Called periodically during cleanup.
+ */
+function evictStaleSessions(): void {
+  const now = Date.now()
+  for (const [sessionId, lastSeen] of sessionLastSeen) {
+    if (now - lastSeen > SESSION_TTL_MS) {
+      lastUuidMap.delete(sessionId)
+      sequentialAppendBySession.delete(sessionId)
+      sessionLastSeen.delete(sessionId)
+    }
+  }
 }
 
 /**
@@ -511,4 +535,11 @@ export function clearSession(sessionId: string): void {
 export function clearAllSessions(): void {
   lastUuidMap.clear()
   sequentialAppendBySession.clear()
+  sessionLastSeen.clear()
 }
+
+// Periodic cleanup of stale session entries (every 10 minutes)
+// eslint-disable-next-line custom-rules/no-top-level-side-effects
+registerCleanup(async () => {
+  evictStaleSessions()
+})

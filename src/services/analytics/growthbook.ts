@@ -14,6 +14,7 @@ import { logForDebugging } from '../../utils/debug.js'
 import { toError } from '../../utils/errors.js'
 import { getAuthHeaders } from '../../utils/http.js'
 import { logError } from '../../utils/log.js'
+import { registerCleanup } from '../../utils/cleanupRegistry.js'
 import { createSignal } from '../../utils/signal.js'
 import { jsonStringify } from '../../utils/slowOperations.js'
 import {
@@ -88,7 +89,17 @@ const pendingExposures = new Set<string>()
 // Track features that have already had their exposure logged this session (dedup)
 // This prevents firing duplicate exposure events when getFeatureValue_CACHED_MAY_BE_STALE
 // is called repeatedly in hot paths (e.g., isAutoMemoryEnabled in render loops)
+// Bounded to 500 entries to prevent unbounded growth in long sessions.
+const MAX_LOGGED_EXPOSURES = 500
 const loggedExposures = new Set<string>()
+
+// Trim the Set to half its capacity when it grows too large
+function trimLoggedExposures(): void {
+  if (loggedExposures.size <= MAX_LOGGED_EXPOSURES) return
+  const entries = Array.from(loggedExposures)
+  loggedExposures.clear()
+  for (const e of entries.slice(-MAX_LOGGED_EXPOSURES / 2)) loggedExposures.add(e)
+}
 
 // Track re-initialization promise for security gate checks
 // When GrowthBook is re-initializing (e.g., after auth change), security gate checks
@@ -304,6 +315,7 @@ function logExposureForFeature(feature: string): void {
   const expData = experimentDataByFeature.get(feature)
   if (expData) {
     loggedExposures.add(feature)
+    trimLoggedExposures()
     logGrowthBookExperimentTo1P({
       experimentId: expData.experimentId,
       variationId: expData.variationId,
@@ -1155,3 +1167,9 @@ export function getDynamicConfig_CACHED_MAY_BE_STALE<T>(
 ): T {
   return getFeatureValue_CACHED_MAY_BE_STALE(configName, defaultValue)
 }
+
+// Periodic cleanup to trim loggedExposures in long sessions
+// eslint-disable-next-line custom-rules/no-top-level-side-effects
+registerCleanup(async () => {
+  trimLoggedExposures()
+})
