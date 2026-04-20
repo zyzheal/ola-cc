@@ -20,7 +20,7 @@
  * Skipped when:
  * - proxy/mTLS/unix socket configured (preconnect would use wrong transport —
  *   the SDK passes a custom dispatcher/agent that doesn't share the global pool)
- * - Bedrock/Vertex/Foundry (different endpoints, different auth)
+ * - Bedrock/Vertex/Foundry/OpenAI (different endpoints, different auth)
  */
 
 import { getOauthConfig } from '../constants/oauth.js'
@@ -36,7 +36,8 @@ export function preconnectAnthropicApi(): void {
   if (
     isEnvTruthy(process.env.CLAUDE_CODE_USE_BEDROCK) ||
     isEnvTruthy(process.env.CLAUDE_CODE_USE_VERTEX) ||
-    isEnvTruthy(process.env.CLAUDE_CODE_USE_FOUNDRY)
+    isEnvTruthy(process.env.CLAUDE_CODE_USE_FOUNDRY) ||
+    isEnvTruthy(process.env.CLAUDE_CODE_USE_OPENAI)
   ) {
     return
   }
@@ -56,8 +57,12 @@ export function preconnectAnthropicApi(): void {
   // Use configured base URL (staging, local, or custom gateway). Covers
   // ANTHROPIC_BASE_URL env + USE_STAGING_OAUTH + USE_LOCAL_OAUTH in one lookup.
   // NODE_EXTRA_CA_CERTS no longer a skip — init.ts applied it before this fires.
+  const oauthConfig = getOauthConfig()
   const baseUrl =
-    process.env.ANTHROPIC_BASE_URL || getOauthConfig().BASE_API_URL
+    process.env.ANTHROPIC_BASE_URL || oauthConfig?.BASE_API_URL
+
+  // Skip if no base URL is available
+  if (!baseUrl) return
 
   // Fire and forget. HEAD means no response body — the connection is eligible
   // for keep-alive pool reuse immediately after headers arrive. 10s timeout
