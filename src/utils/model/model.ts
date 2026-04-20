@@ -28,6 +28,7 @@ import { LIGHTNING_BOLT } from '../../constants/figures.js'
 import { isModelAllowed } from './modelAllowlist.js'
 import { type ModelAlias, isModelAlias } from './aliases.js'
 import { capitalize } from '../stringUtils.js'
+import { resolveProviderConfig } from '../config.js'
 
 export type ModelShortName = string
 export type ModelName = string
@@ -47,34 +48,42 @@ export function isNonCustomOpusModel(model: ModelName): boolean {
 }
 
 /**
- * Helper to get the model from /model (including via /config), the --model flag, environment variable,
+ * Helper to get the model from config.model, /model (including via /config), the --model flag, environment variable,
  * or the saved settings. The returned value can be a model alias if that's what the user specified.
  * Undefined if the user didn't configure anything, in which case we fall back to
  * the default (null).
  *
  * Priority order within this function:
- * 1. Model override during session (from /model command) - highest priority
- * 2. Model override at startup (from --model flag)
- * 3. ANTHROPIC_MODEL environment variable
+ * 1. Runtime override (from /model command during session) - highest priority
+ * 2. config.model (project-level via resolveProviderConfig)
+ * 3. Environment variables (ANTHROPIC_MODEL, OPENAI_MODEL)
  * 4. Settings (from user's saved settings)
+ *
+ * Note: Provider models (from config.models) bypass the isModelAllowed() allowlist check,
+ * since they are expected to be outside the built-in Claude model allowlist.
  */
 export function getUserSpecifiedModelSetting(): ModelSetting | undefined {
-  let specifiedModel: ModelSetting | undefined
-
+  // 1. Runtime override (from /model command during session)
   const modelOverride = getMainLoopModelOverride()
-  if (modelOverride !== undefined) {
-    specifiedModel = modelOverride
-  } else {
-    const settings = getSettings_DEPRECATED() || {}
-    // For OpenAI-compatible API users, OPENAI_MODEL serves as an alias for ANTHROPIC_MODEL
-    specifiedModel = process.env.ANTHROPIC_MODEL
-      || process.env.OPENAI_MODEL
-      || settings.model
-      || undefined
-  }
+  if (modelOverride !== undefined) return modelOverride
 
-  // Ignore the user-specified model if it's not in the availableModels allowlist.
+  // 2. Config model field (project-level takes precedence over global)
+  const { model: configModel, models: providerModels } = resolveProviderConfig()
+  if (configModel) return configModel
+
+  // 3. Environment variables and settings
+  const settings = getSettings_DEPRECATED() || {}
+  const specifiedModel = process.env.ANTHROPIC_MODEL
+    || process.env.OPENAI_MODEL
+    || settings.model
+    || undefined
+
+  // 4. Allowlist check: provider models are exempt from allowlist
+  // Provider models are expected to be outside the built-in allowlist
   if (specifiedModel && !isModelAllowed(specifiedModel)) {
+    if (providerModels?.includes(specifiedModel)) {
+      return specifiedModel
+    }
     return undefined
   }
 
