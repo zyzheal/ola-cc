@@ -153,12 +153,32 @@ export function formatOutput(content: string): {
     }
   }
 
-  const truncatedPart = content.slice(0, maxOutputLength)
-  const remainingLines = countCharInString(content, '\n', maxOutputLength) + 1
-  const truncated = `${truncatedPart}\n\n... [${remainingLines} lines truncated] ...`
+  // Graded truncation: head + tail strategy.
+  // Keep first 70% and last 30% of the budget so model sees both
+  // the command output start and the ending (often contains errors,
+  // summaries, or final state).
+  const headBudget = Math.floor(maxOutputLength * 0.7)
+  const tailBudget = maxOutputLength - headBudget
+  const totalLines = countCharInString(content, '\n') + 1
+
+  // Count how many lines were dropped from the middle
+  const headLines = countCharInString(content.slice(0, headBudget), '\n') + 1
+  const remainingAfterHead = totalLines - headLines
+  const tailLines = Math.min(
+    remainingAfterHead,
+    countCharInString(content.slice(-tailBudget), '\n') + 1,
+  )
+  const droppedLines = remainingAfterHead - tailLines
+
+  const headPart = content.slice(0, headBudget)
+  const tailPart = content.slice(-tailBudget)
+  const truncated =
+    droppedLines > 0
+      ? `${headPart}\n\n... [${droppedLines} lines omitted for brevity] ...\n\n${tailPart}`
+      : content.slice(0, maxOutputLength)
 
   return {
-    totalLines: countCharInString(content, '\n') + 1,
+    totalLines,
     truncatedContent: truncated,
     isImage,
   }
