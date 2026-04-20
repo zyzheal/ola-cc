@@ -1512,6 +1512,10 @@ export type InvokedSkillInfo = {
   agentId: string | null
 }
 
+// Maximum number of invoked skills to retain in memory. Beyond this, oldest
+// entries are evicted (FIFO) to prevent unbounded growth in long sessions.
+const MAX_INVOKED_SKILLS = 200
+
 export function addInvokedSkill(
   skillName: string,
   skillPath: string,
@@ -1526,6 +1530,11 @@ export function addInvokedSkill(
     invokedAt: Date.now(),
     agentId,
   })
+  // Evict oldest entries if over capacity
+  while (STATE.invokedSkills.size > MAX_INVOKED_SKILLS) {
+    const firstKey = STATE.invokedSkills.keys().next().value
+    if (firstKey) STATE.invokedSkills.delete(firstKey)
+  }
 }
 
 export function getInvokedSkills(): Map<string, InvokedSkillInfo> {
