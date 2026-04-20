@@ -285,10 +285,15 @@ function convertAnthropicMessageToOpenAI(
 
     const textParts: string[] = []
     const imageParts: Array<{ type: string; image_url: { url: string; detail?: string } }> = []
+    const toolResults: OpenAIMessage[] = []
+
     for (const block of msg.content as Array<{
       type: string
       text?: string
       source?: { data?: string; media_type?: string; type?: string; url?: string }
+      tool_use_id?: string
+      content?: Array<{ type: string; text?: string }> | string
+      is_error?: boolean
       cache_control?: { type: string }
     }>) {
       if (block.type === 'text') {
@@ -309,20 +314,51 @@ function convertAnthropicMessageToOpenAI(
         } else {
           warn(`Image block at user message index ${index} has no usable source — skipping`)
         }
-      } else if (block.type === 'document' || block.type === 'tool_result') {
+      } else if (block.type === 'tool_result') {
+        // Convert Anthropic tool_result to OpenAI tool response format
+        let contentText = ''
+        if (typeof block.content === 'string') {
+          contentText = block.content
+        } else if (Array.isArray(block.content)) {
+          contentText = block.content
+            .map((b) => {
+              if (b.type === 'text') return b.text ?? ''
+              if (b.type === 'image') return '[image]'
+              return ''
+            })
+            .filter(Boolean)
+            .join('\n')
+        }
+        if (block.is_error) {
+          contentText = `Error: ${contentText}`
+        }
+        if (contentText) {
+          toolResults.push({
+            role: 'tool',
+            tool_call_id: block.tool_use_id ?? `tool_${index}`,
+            content: contentText,
+          })
+        }
+      } else if (block.type === 'document') {
         warn(`Content block type "${block.type}" at user message index ${index} is not fully supported — extracting text only`)
       }
     }
 
+    // Build user message with non-tool_result content
+    const userMessages: OpenAIMessage[] = []
     if (imageParts.length > 0) {
       const multimodalContent: Array<{ type: string; text?: string; image_url?: object }> = []
       const joinedText = textParts.join('\n')
       if (joinedText) multimodalContent.push({ type: 'text', text: joinedText })
       multimodalContent.push(...imageParts)
-      return [{ role: 'user', content: multimodalContent }]
+      userMessages.push({ role: 'user', content: multimodalContent })
+    } else if (textParts.length > 0) {
+      userMessages.push({ role: 'user', content: textParts.join('\n') })
     }
 
-    return [{ role: 'user', content: textParts.join('\n') || '(empty message)' }]
+    // Return tool results first (OpenAI requires tool responses before next assistant message)
+    // then the user message (if any non-tool content exists)
+    return [...toolResults, ...userMessages]
   }
 
   if (role === 'assistant') {
@@ -370,36 +406,13 @@ function convertAnthropicMessageToOpenAI(
   }
 
   if (role === 'tool' || role === 'tool_result') {
+    // These should have been handled in the user message branch above.
+    // If we reach here as a top-level message, it's an edge case.
     if (typeof msg.content === 'string') {
       return [{ role: 'tool', tool_call_id: `tool_${index}`, content: msg.content }]
     }
-
-    const results: OpenAIMessage[] = []
-    for (const block of msg.content as Array<{
-      type: string
-      tool_use_id?: string
-      content?: Array<{ type: string; text?: string }> | string
-      is_error?: boolean
-    }>) {
-      if (block.type === 'tool_result') {
-        let contentText = ''
-        if (typeof block.content === 'string') {
-          contentText = block.content
-        } else if (Array.isArray(block.content)) {
-          contentText = block.content
-            .map((b) => (b.type === 'text' ? b.text ?? '' : b.type === 'image' ? '[image]' : ''))
-            .filter(Boolean)
-            .join('\n')
-        }
-        if (block.is_error) contentText = `Error: ${contentText}`
-        results.push({
-          role: 'tool',
-          tool_call_id: block.tool_use_id ?? `tool_${index}`,
-          content: contentText || '(empty result)',
-        })
-      }
-    }
-    return results.length > 0 ? results : []
+    // Not expected in normal flow — tool_results are converted inside user messages
+    return []
   }
 
   return [{
