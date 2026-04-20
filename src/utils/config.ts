@@ -133,6 +133,10 @@ export type ProjectConfig = {
   }
   /** Spawn mode for `claude remote-control` multi-session. Set by first-run dialog or `w` toggle. */
   remoteControlSpawnMode?: 'same-dir' | 'worktree'
+  /** Default model ID for this project. Overrides global config.model when set. */
+  model?: string
+  /** Model IDs available in the /model picker. Overrides global providerModels when set. */
+  providerModels?: string[]
 }
 
 const DEFAULT_PROJECT_CONFIG: ProjectConfig = {
@@ -570,6 +574,11 @@ export type GlobalConfig = {
     enabled: boolean
     timestamp: number
   }
+
+  /** Default model ID to use. Provider-agnostic (works with Anthropic and OpenAI protocols). */
+  model?: string
+  /** Model IDs available in the /model picker. When set, replaces built-in model list. */
+  providerModels?: string[]
 
   // Version of the last-applied migration set. When equal to
   // CURRENT_MIGRATION_VERSION, runMigrations() skips all sync migrations
@@ -1620,6 +1629,31 @@ export function getCurrentProjectConfig(): ProjectConfig {
   }
 
   return projectConfig
+}
+
+/**
+ * Resolve provider model config with project-level override.
+ * Returns both the model list and default model in a single call to avoid
+ * duplicate getGlobalConfig() + getProjectPathForConfig() reads.
+ */
+export function resolveProviderConfig(): {
+  models?: string[]
+  model?: string
+} {
+  const config = getGlobalConfig()
+  const projectPath = getProjectPathForConfig()
+  const projectConfig = config.projects?.[projectPath]
+  // Project-level config takes full precedence over global
+  if (projectConfig?.providerModels !== undefined) {
+    return {
+      models: projectConfig.providerModels,
+      model: projectConfig.model,
+    }
+  }
+  return {
+    models: config.providerModels,
+    model: config.model,
+  }
 }
 
 export function saveCurrentProjectConfig(
