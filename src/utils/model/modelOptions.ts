@@ -31,7 +31,7 @@ import {
   type ModelSetting,
 } from './model.js'
 import { has1mContext } from '../context.js'
-import { getGlobalConfig } from '../config.js'
+import { getGlobalConfig, resolveProviderConfig } from '../config.js'
 
 // @[MODEL LAUNCH]: Update all the available and default model option strings below.
 
@@ -40,6 +40,21 @@ export type ModelOption = {
   label: string
   description: string
   descriptionForModel?: string
+}
+
+/**
+ * Default option for provider models config.
+ * Unlike getDefaultOptionForUser(), this doesn't reference specific Claude models.
+ */
+function getProviderModelDefaultOption(): ModelOption {
+  const { model } = resolveProviderConfig()
+  return {
+    value: null,
+    label: 'Default (recommended)',
+    description: model
+      ? `Use configured model (${model})`
+      : 'Use the configured default model',
+  }
 }
 
 export function getDefaultOptionForUser(fastMode = false): ModelOption {
@@ -269,6 +284,20 @@ function getOpusPlanOption(): ModelOption {
 // @[MODEL LAUNCH]: Update the model picker lists below to include/reorder options for the new model.
 // Each user tier (ant, Max/Team Premium, Pro/Team Standard/Enterprise, PAYG 1P, PAYG 3P) has its own list.
 function getModelOptionsBase(fastMode = false): ModelOption[] {
+  // Highest priority: providerModels config (replaces built-in model list)
+  const { models } = resolveProviderConfig()
+  if (models?.length) {
+    return [
+      getProviderModelDefaultOption(),
+      ...models.map(id => ({
+        value: id,
+        label: id,
+        description: `Provider model (${id})`,
+      })),
+    ]
+  }
+
+  // Fall back to built-in logic (Anthropic/OpenAI/Bedrock etc.)
   if (process.env.USER_TYPE === 'ant') {
     // Build options from antModels config
     const antModelOptions: ModelOption[] = getAntModels().map(m => ({
@@ -460,6 +489,32 @@ function getKnownModelOption(model: string): ModelOption | null {
 
 export function getModelOptions(fastMode = false): ModelOption[] {
   const options = getModelOptionsBase(fastMode)
+
+  // When providerModels is configured, skip allowlist filtering
+  // since provider models are expected to be outside the built-in allowlist
+  const { models: providerModels } = resolveProviderConfig()
+  if (providerModels?.length) {
+    // Still add env custom model and cached options, but skip allowlist filter
+    const envCustomModel = process.env.ANTHROPIC_CUSTOM_MODEL_OPTION
+    if (
+      envCustomModel &&
+      !options.some(existing => existing.value === envCustomModel)
+    ) {
+      options.push({
+        value: envCustomModel,
+        label: process.env.ANTHROPIC_CUSTOM_MODEL_OPTION_NAME ?? envCustomModel,
+        description:
+          process.env.ANTHROPIC_CUSTOM_MODEL_OPTION_DESCRIPTION ??
+          `Custom model (${envCustomModel})`,
+      })
+    }
+    for (const opt of getGlobalConfig().additionalModelOptionsCache ?? []) {
+      if (!options.some(existing => existing.value === opt.value)) {
+        options.push(opt)
+      }
+    }
+    return options
+  }
 
   // Add the custom model from the ANTHROPIC_CUSTOM_MODEL_OPTION env var
   const envCustomModel = process.env.ANTHROPIC_CUSTOM_MODEL_OPTION
