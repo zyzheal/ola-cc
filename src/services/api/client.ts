@@ -32,6 +32,10 @@ import {
   createOpenAICompatibleClient,
   type OpenAICompatibleClientOptions,
 } from './openai.js'
+import {
+  createOpenAICompatibleShimClient,
+  type OpenAICompatibleClientOptions as ShimClientOptions,
+} from './openaiShim.js'
 
 /**
  * Environment variables for different client types:
@@ -303,16 +307,17 @@ export async function getAnthropicClient({
 
   if (isEnvTruthy(process.env.CLAUDE_CODE_USE_OPENAI)) {
     // OpenAI-compatible API provider (supports OpenAI API, Ollama, vLLM, etc.)
-    const openaiArgs: OpenAICompatibleClientOptions = {
+    // Use enhanced shim client with schema sanitization, better tool handling, and default retries
+    const openaiArgs: ShimClientOptions = {
       apiKey: apiKey || process.env.OPENAI_API_KEY,
       maxRetries,
       model,
       ...(fetchOverride && { fetch: fetchOverride }),
     }
     logForDebugging?.(
-      `[API:openai] Using OpenAI-compatible client, base=${process.env.OPENAI_API_BASE || process.env.OPENAI_BASE_URL || 'https://api.openai.com/v1'}`,
+      `[API:openai] Using OpenAI-compatible shim client, base=${process.env.OPENAI_API_BASE || process.env.OPENAI_BASE_URL || 'https://api.openai.com/v1'}`,
     )
-    return createOpenAICompatibleClient(openaiArgs) as unknown as Anthropic
+    return createOpenAICompatibleShimClient(openaiArgs) as unknown as Anthropic
   }
 
   // Determine authentication method based on available tokens
