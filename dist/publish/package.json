@@ -1,30 +1,39 @@
 {
   "name": "@zyzheal/ola-cc",
-  "version": "0.2.1",
-  "description": "Claude Code - AI coding assistant in your terminal",
+  "version": "0.3.0",
+  "description": "Ola CC - AI coding assistant in your terminal",
   "license": "SEE LICENSE IN LICENSE.md",
-  "type": "module",
+  "type": "commonjs",
   "bin": {
-    "ola-cc": "./cli.js"
+    "ola-cc": "./bin/ola-cc.exe"
+  },
+  "scripts": {
+    "postinstall": "node install.cjs",
+    "prepare": "node -e \"if (!process.env.AUTHORIZED) { console.error('ERROR: Direct publishing is not allowed.\\nPlease see the release workflow documentation to publish this package.'); process.exit(1); }\""
   },
   "repository": {
     "type": "git",
     "url": "https://github.com/zyzheal/ola-cc.git"
   },
   "engines": {
-    "bun": ">=1.3.5",
     "node": ">=18.0.0"
   },
-  "dependencies": {
-    "ws": "^8.18.0"
-  },
+  "dependencies": {},
   "optionalDependencies": {
-    "sharp": "*"
+    "@zyzheal/ola-cc-darwin-arm64": "0.3.0",
+    "@zyzheal/ola-cc-darwin-x64": "0.3.0",
+    "@zyzheal/ola-cc-linux-x64": "0.3.0",
+    "@zyzheal/ola-cc-linux-arm64": "0.3.0",
+    "@zyzheal/ola-cc-linux-x64-musl": "0.3.0",
+    "@zyzheal/ola-cc-linux-arm64-musl": "0.3.0",
+    "@zyzheal/ola-cc-win32-x64": "0.3.0",
+    "@zyzheal/ola-cc-win32-arm64": "0.3.0"
   },
   "files": [
-    "cli.js",
+    "bin/ola-cc.exe",
+    "install.cjs",
+    "cli-wrapper.cjs",
     "sdk-tools.d.ts",
-    "vendor/",
     "README.md",
     "LICENSE.md"
   ]
