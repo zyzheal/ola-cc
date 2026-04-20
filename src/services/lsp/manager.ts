@@ -160,6 +160,13 @@ export function initializeLspServerManager(): void {
 
   // Reset state for retry if previous initialization failed
   if (initializationState === 'failed') {
+    // Clean up the old instance's resources (interval, servers) before replacing
+    const oldInstance = lspManagerInstance
+    if (oldInstance) {
+      void oldInstance.shutdown().catch(e =>
+        logForDebugging(`[LSP MANAGER] Ignoring shutdown error on failed instance: ${e}`),
+      )
+    }
     lspManagerInstance = undefined
     initializationError = undefined
   }

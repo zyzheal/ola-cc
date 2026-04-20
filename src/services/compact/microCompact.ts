@@ -693,3 +693,162 @@ function maybeTimeBasedMicrocompact(
 
   return { messages: result }
 }
+
+/**
+ * Force-compact tool results when memory threshold is exceeded.
+ * Unlike time-based MC (which only fires after an idle gap), this
+ * runs regardless of time — it is the memory-pressure escape valve.
+ *
+ * @param messages - The message array to compact
+ * @param keepRecent - Number of recent tool results to preserve
+ * @param querySource - Optional query source for cache break detection
+ * @returns Compaction result with cleared messages, or null if nothing was cleared
+ */
+export function forceMemoryBasedMicrocompact(
+  messages: Message[],
+  keepRecent: number,
+  querySource?: QuerySource,
+): MicrocompactResult | null {
+  const compactableIds = collectCompactableToolIds(messages)
+  if (compactableIds.length <= keepRecent) {
+    return null
+  }
+
+  const keepSet = new Set(compactableIds.slice(-keepRecent))
+  const toolUseInfoMap = buildToolUseInfoMap(messages)
+
+  // Second pass: identify protected tool results
+  const protectedIds = new Set<string>()
+  for (const message of messages) {
+    if (message.type === 'user' && Array.isArray(message.message.content)) {
+      for (const block of message.message.content) {
+        if (block.type === 'tool_result' && compactableIds.includes(block.tool_use_id)) {
+          const toolInfo = toolUseInfoMap.get(block.tool_use_id)
+          if (toolInfo) {
+            const textContent = getToolResultTextContent(block)
+            if (shouldProtectToolResult(toolInfo.name, textContent, toolInfo.input)) {
+              protectedIds.add(block.tool_use_id)
+            }
+          }
+        }
+      }
+    }
+  }
+
+  const clearSet = new Set(
+    compactableIds.filter(
+      id => !keepSet.has(id) && !protectedIds.has(id),
+    ),
+  )
+
+  if (clearSet.size === 0) {
+    return null
+  }
+
+  let tokensSaved = 0
+  const result: Message[] = messages.map(message => {
+    if (message.type !== 'user' || !Array.isArray(message.message.content)) {
+      return message
+    }
+    let touched = false
+    const newContent = message.message.content.map(block => {
+      if (
+        block.type === 'tool_result' &&
+        clearSet.has(block.tool_use_id) &&
+        block.content !== TIME_BASED_MC_CLEARED_MESSAGE
+      ) {
+        tokensSaved += calculateToolResultTokens(block)
+        touched = true
+        return { ...block, content: TIME_BASED_MC_CLEARED_MESSAGE }
+      }
+      return block
+    })
+    if (!touched) return message
+    return {
+      ...message,
+      message: { ...message.message, content: newContent },
+    }
+  })
+
+  if (tokensSaved === 0) {
+    return null
+  }
+
+  logEvent('tengu_memory_based_microcompact', {
+    toolsCleared: clearSet.size,
+    toolsKept: keepSet.size,
+    toolsProtected: protectedIds.size,
+    keepRecent,
+    tokensSaved,
+  })
+
+  logForDebugging(
+    `[MEMORY-BASED MC] cleared ${clearSet.size} tool results (~${tokensSaved} tokens), kept last ${keepRecent}, protected ${protectedIds.size}`,
+  )
+
+  suppressCompactWarning()
+  resetMicrocompactState()
+  if (feature('PROMPT_CACHE_BREAK_DETECTION') && querySource) {
+    notifyCacheDeletion(querySource)
+  }
+
+  return { messages: result }
+}
+
+/**
+ * Clear old thinking blocks from assistant messages to free memory.
+ * Thinking blocks can be very large (up to 64K tokens) and are NOT
+ * touched by the standard tool-result micro-compact.
+ *
+ * @param messages - The message array
+ * @param keepRecent - Number of recent assistant messages to preserve thinking from
+ * @returns New message array with old thinking blocks cleared
+ */
+export function clearOldThinkingBlocks(
+  messages: Message[],
+  keepRecent: number = 3,
+): Message[] {
+  // Find indices of assistant messages from newest to oldest
+  const assistantIndices: number[] = []
+  for (let i = messages.length - 1; i >= 0; i--) {
+    if (messages[i].type === 'assistant') {
+      assistantIndices.push(i)
+    }
+  }
+
+  // Determine which assistant messages to clear thinking from
+  const clearIndices = new Set(
+    assistantIndices.slice(keepRecent),
+  )
+
+  if (clearIndices.size === 0) {
+    return messages
+  }
+
+  let anyTouched = false
+  const result = messages.map((message, idx) => {
+    if (!clearIndices.has(idx) || !Array.isArray(message.message.content)) {
+      return message
+    }
+    const newContent = message.message.content.filter(block => {
+      if (block.type === 'thinking' || block.type === 'redacted_thinking') {
+        anyTouched = true
+        return false // Remove the block entirely
+      }
+      return true
+    })
+    if (newContent.length === message.message.content.length) return message
+    return {
+      ...message,
+      message: { ...message.message, content: newContent },
+    }
+  })
+
+  if (anyTouched) {
+    logForDebugging(
+      `[THINKING CLEANUP] cleared thinking blocks from ${clearIndices.size} assistant messages`,
+    )
+  }
+
+  return result
+}
