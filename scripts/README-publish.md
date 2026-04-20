@@ -1,24 +1,60 @@
-# Claude Code
+# Ola CC (Ola Claude Code)
 
 AI 编码助手，运行在你的终端中。
+
+## 架构
+
+本项目参照 `@anthropic-ai/claude-code` 的 npm 分发架构，采用 **包装器 + 原生二进制分发** 模式：
+
+- **主包** `@zyzheal/ola-cc` — 仅包含安装脚本，安装时自动拉取对应平台的原生二进制
+- **平台子包** `@zyzheal/ola-cc-darwin-arm64` 等 — 每个平台一个独立包，仅含编译后的二进制
+
+### 支持的平台
+
+| 平台包名 | 操作系统 | CPU |
+|----------|----------|-----|
+| `@zyzheal/ola-cc-darwin-arm64` | macOS | Apple Silicon (M1/M2/M3/M4) |
+| `@zyzheal/ola-cc-darwin-x64` | macOS | Intel |
+| `@zyzheal/ola-cc-linux-x64` | Linux | x64 (glibc) |
+| `@zyzheal/ola-cc-linux-arm64` | Linux | ARM64 (glibc) |
+| `@zyzheal/ola-cc-linux-x64-musl` | Linux | x64 (musl/Alpine) |
+| `@zyzheal/ola-cc-linux-arm64-musl` | Linux | ARM64 (musl/Alpine) |
+| `@zyzheal/ola-cc-win32-x64` | Windows | x64 |
+| `@zyzheal/ola-cc-win32-arm64` | Windows | ARM64 |
 
 ## 安装
 
 ```bash
-npm install claude
-# 或
-bun add claude
+npm install -g @zyzheal/ola-cc
+```
+
+安装时 `postinstall` 脚本会自动检测平台并下载对应的原生二进制。安装完成后，`ola-cc` 命令直接执行原生二进制，不依赖 Node.js 运行时。
+
+### 安装流程
+
+```
+npm install @zyzheal/ola-cc
+    │
+    ├── 安装主包（wrapper 脚本）
+    ├── 通过 optionalDependencies 安装平台子包
+    └── postinstall 脚本将原生二进制复制到 bin/ola-cc.exe
+```
+
+如果使用了 `--ignore-scripts` 或 `--omit=optional`，可以使用降级启动器：
+
+```bash
+node node_modules/@zyzheal/ola-cc/cli-wrapper.cjs
 ```
 
 ## 使用
 
 ```bash
 # 启动交互式会话
-npx claude
+npx ola-cc
 
 # 或全局安装
-npm install -g claude
-claude
+npm install -g @zyzheal/ola-cc
+ola-cc
 ```
 
 ## 配置文件
@@ -165,6 +201,42 @@ claude
 }
 ```
 
+## 构建
+
+### 构建包装器包
+
+```bash
+bun run build:bin:wrapper
+# 输出: dist/publish/
+```
+
+### 构建平台二进制包（当前平台）
+
+```bash
+bun run build:bin:platform
+# 输出: dist/publish-bin/<platform>/
+```
+
+### 完整构建（包装器 + 当前平台二进制）
+
+```bash
+bun run build:bin
+```
+
+### 发布流程
+
+```bash
+# 1. 发布主包
+cd dist/publish
+npm publish
+
+# 2. 在各目标平台（或 CI 矩阵）构建并发布二进制包
+cd dist/publish-bin/darwin-arm64 && npm publish
+cd dist/publish-bin/darwin-x64 && npm publish
+cd dist/publish-bin/linux-x64 && npm publish
+# ... 其他平台
+```
+
 ## MCP 服务器配置
 
 在 `~/.claude/settings.json` 的 `mcpServers` 中添加 MCP 服务器：
@@ -197,6 +269,7 @@ claude
 | `CLAUDE_CHROME_HTTP_PORT` | HTTP 服务器端口（默认 12306） |
 | `ENABLE_TOOL_SEARCH` | 工具搜索模式：`tst`（默认）、`tst-auto`、`standard` |
 | `CLAUDE_CODE_EXTRA_BODY` | API 请求的额外 body 参数 |
+| `OLA_CC_INSTALLED_VIA_NPM_WRAPPER` | 通过 npm wrapper 安装时自动设置（内部使用） |
 
 ## 开启"宠物"功能
 

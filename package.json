@@ -28,7 +28,10 @@
     "start": "bun run ./src/dev-entry.ts",
     "version": "bun run ./src/dev-entry.ts --version",
     "publish:dry-run": "cd dist/publish && npm publish --dry-run",
-    "publish:npm": "cd dist/publish && npm publish"
+    "publish:npm": "cd dist/publish && npm publish",
+    "build:bin": "bun run ./scripts/build-publish-bin.ts",
+    "build:bin:wrapper": "bun run ./scripts/build-publish-bin.ts --only-wrapper",
+    "build:bin:platform": "bun run ./scripts/build-publish-bin.ts --only-bin"
   },
   "dependencies": {
     "@alcalzone/ansi-tokenize": "*",
