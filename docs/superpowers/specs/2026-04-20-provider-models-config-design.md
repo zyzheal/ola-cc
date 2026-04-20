@@ -16,6 +16,8 @@
 
 ## 配置格式
 
+### 全局配置（~/.claude.json）
+
 ```json
 {
   "env": {
@@ -26,6 +28,21 @@
   "providerModels": ["qwen3.6-plus", "qwen3.5-plus", "glm-5", "kimi-k2.5"]
 }
 ```
+
+### 项目级配置（~/.claude.json 的 projects 下）
+
+```json
+{
+  "projects": {
+    "/path/to/my-project": {
+      "model": "glm-5",
+      "providerModels": ["glm-5", "glm-4.7"]
+    }
+  }
+}
+```
+
+项目级配置存在时**完全覆盖**全局配置，不合并。
 
 | 字段 | 类型 | 说明 |
 |------|------|------|
@@ -54,8 +71,8 @@ OpenAI 协议同理：
 | 文件 | 改动 |
 |------|------|
 | `src/utils/config.ts` | GlobalConfig 新增 `model?: string` 和 `providerModels?: string[]`；ProjectConfig 同理 |
-| `src/utils/model/modelOptions.ts` | `getModelOptionsBase()` 优先检查 `providerModels`，有配置时替代内置列表 |
-| `src/utils/model/model.ts` | `getUserSpecifiedModelSetting()` 优先读取 `model` 字段作为默认 |
+| `src/utils/model/modelOptions.ts` | `getModelOptionsBase()` 优先检查 `providerModels`，有配置时替代内置列表；新增 `getProviderModelDefaultOption()` |
+| `src/utils/model/model.ts` | `getUserSpecifiedModelSetting()` 优先读取 `config.model` 作为默认；绕过 `isModelAllowed` 对 provider model 的检查 |
 
 ### 核心逻辑
 
@@ -67,7 +84,7 @@ function getModelOptionsBase(fastMode = false): ModelOption[] {
   const models = resolveProviderModels()
   if (models?.length) {
     return [
-      getDefaultOptionForUser(fastMode),
+      getProviderModelDefaultOption(),
       ...models.map(id => ({
         value: id,
         label: id,
@@ -82,15 +99,40 @@ function getModelOptionsBase(fastMode = false): ModelOption[] {
 }
 ```
 
+`getProviderModelDefaultOption()` 返回通用 Default 选项，不引用具体 Claude 模型名：
+
+```typescript
+function getProviderModelDefaultOption(): ModelOption {
+  const configModel = resolveProviderModel()
+  return {
+    value: null,
+    label: 'Default (recommended)',
+    description: configModel
+      ? `Use configured model (${configModel})`
+      : 'Use the configured default model',
+  }
+}
+```
+
 **2. resolveProviderModels() — 项目级覆盖全局**
 
 ```typescript
 function resolveProviderModels(): string[] | undefined {
-  const projectConfig = getCurrentProjectConfig()
-  if (projectConfig.providerModels !== undefined) {
+  const config = getGlobalConfig()
+  const projectPath = getProjectPathForConfig()
+  const projectConfig = config.projects?.[projectPath]
+  if (projectConfig?.providerModels !== undefined) {
     return projectConfig.providerModels
   }
-  return getGlobalConfig().providerModels
+  return config.providerModels
+}
+
+// 单独获取默认模型（项目级同样覆盖全局）
+function resolveProviderModel(): string | undefined {
+  const config = getGlobalConfig()
+  const projectPath = getProjectPathForConfig()
+  const projectConfig = config.projects?.[projectPath]
+  return projectConfig?.model ?? config.model
 }
 ```
 
@@ -103,8 +145,8 @@ export function getUserSpecifiedModelSetting(): ModelSetting | undefined {
   const modelOverride = getMainLoopModelOverride()
   if (modelOverride !== undefined) return modelOverride
 
-  // 2. 新增：~/.claude.json 的 model 字段
-  const configModel = getGlobalConfig().model
+  // 2. 新增：config.model 字段（项目级优先）
+  const configModel = resolveProviderModel()
   if (configModel) return configModel
 
   // 3. 环境变量
@@ -112,7 +154,16 @@ export function getUserSpecifiedModelSetting(): ModelSetting | undefined {
     || process.env.OPENAI_MODEL
     // ... 现有逻辑
 
-  // ... 现有 allowlist 检查保持不变
+  // 4. 现有 allowlist 检查：仅对非 provider model 生效
+  if (specifiedModel && !isModelAllowed(specifiedModel)) {
+    // provider model 不在内置 allowlist 中是预期的，不应拦截
+    if (resolveProviderModels()?.includes(specifiedModel)) {
+      return specifiedModel
+    }
+    return undefined
+  }
+
+  return specifiedModel
 }
 ```
 
@@ -145,5 +196,6 @@ model.ts         ← 读取 model 字段作为默认
 ## 边界情况
 
 1. **providerModels 为空数组 `[]`** — 视为未配置，回退到内置列表
-2. **providerModels 有值但 model 未设置** — `/model` 显示列表，但无默认选中（用户必须手动选择）
-3. **model 指向 providerModels 之外的模型** — 允许（视为自定义模型），但不在列表中高亮
+2. **providerModels 有值但 model 未设置** — `/model` 显示列表，Default 选项文案为 "Use the configured default model"
+3. **model 指向 providerModels 之外的模型** — 允许（视为自定义模型），不在列表中高亮
+4. **model 不在内置 allowlist 中** — provider model 预期不在 allowlist 中，不应被 `isModelAllowed()` 拦截
