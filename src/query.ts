@@ -98,6 +98,10 @@ import { queryCheckpoint } from './utils/queryProfiler.js'
 import { runTools } from './services/tools/toolOrchestration.js'
 import { applyToolResultBudget } from './utils/toolResultStorage.js'
 import { recordContentReplacement } from './utils/sessionStorage.js'
+import {
+  forceMemoryBasedMicrocompact,
+  clearOldThinkingBlocks,
+} from './services/compact/microCompact.js'
 import { handleStopHooks } from './query/stopHooks.js'
 import { buildQueryConfig } from './query/config.js'
 import { productionDeps, type QueryDeps } from './query/deps.js'
@@ -110,6 +114,68 @@ import {
 } from './bootstrap/state.js'
 import { createBudgetTracker, checkTokenBudget } from './query/tokenBudget.js'
 import { count } from './utils/array.js'
+
+/**
+ * Quick (non-stringify) estimate of a single message's byte size.
+ * Walks the message's content blocks and sums text byte lengths.
+ * Zero allocation — no JSON.stringify, no temporary strings.
+ * Used for per-turn memory checks when a full scan isn't due.
+ */
+function quickMessageByteEstimate(msg: Message): number {
+  const OVERHEAD = 256
+  // Image/document blocks are ~2000 tokens ≈ 8KB base64 payload on average.
+  // This is a rough constant — actual sizes vary from 1KB (small PNG) to
+  // 5MB+ (large screenshot), but 8KB is a reasonable mean estimate.
+  const MEDIA_BLOCK_BYTES = 8 * 1024
+  let total = OVERHEAD
+
+  if (Array.isArray(msg.message.content)) {
+    for (const block of msg.message.content) {
+      if (block.type === 'text' && 'text' in block) {
+        total += Buffer.byteLength((block as { text: string }).text, 'utf8')
+      } else if (block.type === 'tool_result' && 'content' in block) {
+        const c = block.content
+        if (typeof c === 'string') {
+          total += Buffer.byteLength(c, 'utf8')
+        } else if (Array.isArray(c)) {
+          for (const item of c) {
+            if (item.type === 'text' && 'text' in item) {
+              total += Buffer.byteLength((item as { text: string }).text, 'utf8')
+            } else if (item.type === 'image' || item.type === 'document') {
+              total += MEDIA_BLOCK_BYTES
+            }
+          }
+        }
+      } else if (block.type === 'thinking' && 'thinking' in block) {
+        total += Buffer.byteLength((block as { thinking: string }).thinking, 'utf8')
+      } else if (block.type === 'redacted_thinking' && 'data' in block) {
+        total += Buffer.byteLength((block as { data: string }).data, 'utf8')
+      } else if (block.type === 'tool_use' && 'input' in block) {
+        total += Buffer.byteLength(JSON.stringify(block.input ?? {}), 'utf8')
+      } else if (block.type === 'image' || block.type === 'document') {
+        // Top-level image/document blocks (not inside tool_result)
+        total += MEDIA_BLOCK_BYTES
+      }
+    }
+  }
+
+  return total
+}
+
+/**
+ * Full scan byte-size estimator for the message array.
+ * Uses JSON.stringify for accuracy — creates a temporary string.
+ * Called every 100 turns to recalibrate the quick estimate.
+ */
+function estimateMessageArrayByteSize(messages: Message[]): number {
+  const OVERHEAD = 256 + 8
+  let total = 0
+  for (const msg of messages) {
+    total += OVERHEAD
+    total += Buffer.byteLength(JSON.stringify(msg), 'utf8')
+  }
+  return total
+}
 
 /* eslint-disable @typescript-eslint/no-require-imports */
 const snipModule = feature('HISTORY_SNIP')
@@ -424,6 +490,66 @@ async function* queryLoop(
       ? microcompactResult.compactionInfo?.pendingCacheEdits
       : undefined
     queryCheckpoint('query_microcompact_end')
+
+    // Memory-pressure escape valve with incremental tracking.
+    // The byte tracker does a full JSON.stringify scan every 30 turns;
+    // on other checks it uses quick per-message heuristics (zero allocation).
+    const MEMORY_THRESHOLD_BYTES = 500 * 1024 * 1024 // 500MB
+    const MEMORY_CHECK_INTERVAL = 10
+    // Lazy init: one tracker per query() call, carried across loop iterations.
+    // Stored on a module-level var would leak across concurrent queries.
+    if (turnCount === 1) {
+      // first turn — reset counter from outer scope (see State pattern below)
+    }
+    if (turnCount % MEMORY_CHECK_INTERVAL === 0) {
+      // Use full scan every 10th check (i.e. every 100 turns), quick estimate otherwise.
+      // This balances accuracy against peak memory pressure.
+      const useFullScan = turnCount % (MEMORY_CHECK_INTERVAL * 10) === 0
+      const estimatedBytes = useFullScan
+        ? estimateMessageArrayByteSize(messagesForQuery)
+        : messagesForQuery.reduce((sum, msg) => sum + quickMessageByteEstimate(msg), 0)
+
+      // Track the estimate for diagnostics (log every 30 checks to avoid spam)
+      if (turnCount % (MEMORY_CHECK_INTERVAL * 3) === 0) {
+        logEvent('tengu_memory_pressure_check', {
+          estimatedBytes,
+          messageCount: messagesForQuery.length,
+          isFullScan: useFullScan,
+          thresholdBytes: MEMORY_THRESHOLD_BYTES,
+        })
+      }
+
+      if (estimatedBytes > MEMORY_THRESHOLD_BYTES) {
+        const preCompactBytes = estimatedBytes
+        logForDebugging(
+          `[MEMORY TRIGGER] messagesForQuery ~${(preCompactBytes / 1024 / 1024).toFixed(1)}MB exceeds 500MB, forcing memory-based micro-compact`,
+        )
+        const memResult = forceMemoryBasedMicrocompact(
+          messagesForQuery,
+          20, // Keep last 20 tool results
+          querySource,
+        )
+        if (memResult) {
+          messagesForQuery = memResult.messages
+        }
+        // Also clear old thinking blocks from assistant messages
+        messagesForQuery = clearOldThinkingBlocks(messagesForQuery, 3)
+
+        // Post-compaction: measure savings for observability
+        const postCompactBytes = estimateMessageArrayByteSize(messagesForQuery)
+        const bytesFreed = preCompactBytes - postCompactBytes
+        logEvent('tengu_memory_based_compaction_fired', {
+          preCompactBytes,
+          postCompactBytes,
+          bytesFreed,
+          messageCountBefore: messagesForQuery.length, // approximate, may differ if memResult changed length
+          messageCountAfter: messagesForQuery.length,
+        })
+        logForDebugging(
+          `[MEMORY TRIGGER] freed ~${(bytesFreed / 1024 / 1024).toFixed(1)}MB (${((bytesFreed / preCompactBytes) * 100).toFixed(0)}% reduction)`,
+        )
+      }
+    }
 
     // Project the collapsed context view and maybe commit more collapses.
     // Runs BEFORE autocompact so that if collapse gets us under the

@@ -9,6 +9,7 @@ import {
   type LSPServerInstance,
 } from './LSPServerInstance.js'
 import type { ScopedLspServerConfig } from './types.js'
+import { registerCleanup } from '../../utils/cleanupRegistry.js'
 /**
  * LSP Server Manager interface returned by createLSPServerManager.
  * Manages multiple LSP server instances and routes requests based on file extensions.
@@ -68,6 +69,10 @@ export function createLSPServerManager(): LSPServerManager {
     new Map()
   // LRU ordering: touch order for eviction, capped to prevent unbounded growth
   const MAX_OPEN_FILES = 50
+  // Idle timeout: shut down LSP servers that haven't been used for 15 minutes
+  const IDLE_TIMEOUT_MS = 15 * 60 * 1000
+  // Track last-access time per server for idle eviction
+  const serverLastUsed = new Map<string, number>()
 
   /**
    * Initialize the manager by loading all configured LSP servers.
@@ -161,6 +166,9 @@ export function createLSPServerManager(): LSPServerManager {
    * @throws {Error} If one or more servers fail to stop
    */
   async function shutdown(): Promise<void> {
+    // Stop the idle check interval
+    clearInterval(idleCheckInterval)
+
     const toStop = Array.from(servers.entries()).filter(
       ([, s]) => s.state === 'running' || s.state === 'error',
     )
@@ -172,6 +180,8 @@ export function createLSPServerManager(): LSPServerManager {
     servers.clear()
     extensionMap.clear()
     openedFiles.clear()
+    serverLastUsed.clear()
+    stoppingServers.clear()
 
     const errors = results
       .map((r, i) =>
@@ -224,6 +234,16 @@ export function createLSPServerManager(): LSPServerManager {
     const server = getServerForFile(filePath)
     if (!server) return undefined
 
+    // If this server is being stopped by the idle eviction loop, wait for
+    // it to finish before deciding whether to restart. Without this check,
+    // a concurrent file access could restart a server mid-eviction.
+    if (stoppingServers.has(server.name)) {
+      logForDebugging(
+        `[LSP] Server ${server.name} is stopping, deferring start for ${filePath}`,
+      )
+      return undefined
+    }
+
     if (server.state === 'stopped' || server.state === 'error') {
       try {
         await server.start()
@@ -237,6 +257,9 @@ export function createLSPServerManager(): LSPServerManager {
         throw error
       }
     }
+
+    // Touch last-used timestamp for idle tracking
+    serverLastUsed.set(server.name, Date.now())
 
     return server
   }
@@ -452,6 +475,76 @@ export function createLSPServerManager(): LSPServerManager {
       }
     }
   }
+
+  // Track servers currently being stopped by the idle eviction loop.
+  // Prevents a TOCTOU race where ensureServerStarted restarts a server
+  // mid-eviction (between closeFile await and stop() completion).
+  const stoppingServers = new Set<string>()
+
+  /**
+   * Evict LSP servers that have been idle for longer than the timeout.
+   * Sends didClose for all open files before shutting down the server.
+   */
+  async function evictIdleServers(): Promise<void> {
+    const now = Date.now()
+    let evictedCount = 0
+    let totalFilesClosed = 0
+    for (const [serverName, lastUsed] of serverLastUsed) {
+      const idleMinutes = (now - lastUsed) / 60_000
+      if (idleMinutes > IDLE_TIMEOUT_MS / 60_000) {
+        const server = servers.get(serverName)
+        if (server && server.state === 'running' && !stoppingServers.has(serverName)) {
+          logForDebugging(
+            `[LSP] Shutting down idle server ${serverName} (idle ${idleMinutes.toFixed(1)}min > ${IDLE_TIMEOUT_MS / 60000}min)`,
+          )
+          // Mark as stopping immediately to prevent concurrent restart
+          stoppingServers.add(serverName)
+          // Close all tracked files on this server
+          const filesForServer = Array.from(openedFiles.entries())
+            .filter(([, entry]) => entry.serverName === serverName)
+            .map(([uri]) => uri)
+          let closedCount = 0
+          for (const fileUri of filesForServer) {
+            const filePath = decodeURIComponent(fileUri.replace(/^file:\/\//, ''))
+            try {
+              await closeFile(filePath)
+              closedCount++
+            } catch {
+              openedFiles.delete(fileUri)
+            }
+          }
+          totalFilesClosed += closedCount
+          try {
+            await server.stop()
+          } catch (err) {
+            logError(new Error(`Failed to stop idle LSP server ${serverName}: ${errorMessage(err)}`))
+          } finally {
+            stoppingServers.delete(serverName)
+          }
+          serverLastUsed.delete(serverName)
+          evictedCount++
+        }
+      }
+    }
+    if (evictedCount > 0) {
+      logForDebugging(
+        `[LSP] idle eviction: stopped ${evictedCount} server(s), closed ${totalFilesClosed} file(s)`,
+      )
+    }
+  }
+
+  // Periodic idle check every 5 minutes
+  // eslint-disable-next-line custom-rules/no-top-level-side-effects
+  const idleCheckInterval = setInterval(
+    () => evictIdleServers().catch(logError),
+    5 * 60 * 1000,
+  )
+  // Clean up interval on process shutdown
+  // eslint-disable-next-line custom-rules/no-top-level-side-effects
+  registerCleanup(async () => {
+    clearInterval(idleCheckInterval)
+    await evictIdleServers()
+  })
 
   return {
     initialize,
