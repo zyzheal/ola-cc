@@ -584,3 +584,113 @@ async function fetchWithRetry(
 
   throw lastError || new Error('Request failed after retries')
 }
+
+// -- Response conversion
+
+function convertResponseToAnthropic(
+  response: OpenAIChatCompletionResponse,
+): AnthropicMessage {
+  const choice = response.choices[0]
+  const message = choice.message
+  const content: AnthropicContentBlock[] = []
+
+  if (message) {
+    if (message.content && message.content !== 'null') {
+      content.push({ type: 'text', text: message.content })
+    }
+    if (message.tool_calls && message.tool_calls.length > 0) {
+      for (const tc of message.tool_calls) {
+        content.push({
+          type: 'tool_use',
+          id: tc.id,
+          name: tc.function.name,
+          input: safeJsonParse(tc.function.arguments || '{}', {}) as Record<string, unknown>,
+        })
+      }
+    }
+  }
+
+  if (content.length === 0) content.push({ type: 'text', text: '' })
+
+  let stopReason: string | null = choice.finish_reason ?? null
+  if (stopReason === 'stop') stopReason = 'end_turn'
+  else if (stopReason === 'tool_calls') stopReason = 'tool_use'
+  else if (stopReason === 'length') stopReason = 'max_tokens'
+  else if (stopReason === 'content_filter') stopReason = 'end_turn'
+
+  return {
+    id: response.id,
+    type: 'message',
+    role: 'assistant',
+    content,
+    model: response.model,
+    stop_reason: stopReason,
+    stop_sequence: null,
+    usage: {
+      input_tokens: response.usage?.prompt_tokens ?? 0,
+      output_tokens: response.usage?.completion_tokens ?? 0,
+    },
+  }
+}
+
+// -- Extra body parsing
+
+function parseExtraBodyEnv(): Record<string, unknown> {
+  const envValue = process.env.OPENAI_EXTRA_BODY
+  if (!envValue) return {}
+  try {
+    const parsed = JSON.parse(envValue)
+    if (parsed && typeof parsed === 'object') return parsed as Record<string, unknown>
+  } catch {
+    warn(`Failed to parse OPENAI_EXTRA_BODY: invalid JSON`)
+  }
+  return {}
+}
+
+function logCacheUsage(response: OpenAIChatCompletionResponse): void {
+  const usage = response.usage
+  if (!usage) return
+
+  const cacheDetails: string[] = []
+  if ('prompt_tokens_details' in usage && usage.prompt_tokens_details) {
+    const details = usage.prompt_tokens_details as { cached_tokens?: number }
+    if (details.cached_tokens) cacheDetails.push(`cached=${details.cached_tokens}`)
+  }
+  if ('cache_tokens' in usage) cacheDetails.push(`cache_tokens=${(usage as any).cache_tokens}`)
+  if ('cached_tokens' in usage) cacheDetails.push(`cached_tokens=${(usage as any).cached_tokens}`)
+
+  if (cacheDetails.length > 0) {
+    console.error(
+      `[OpenAI Shim Cache] prompt=${usage.prompt_tokens}, completion=${usage.completion_tokens}, ${cacheDetails.join(', ')}`,
+    )
+  }
+}
+
+function makeEventId(): string {
+  return `evt_${randomUUID().slice(0, 12)}`
+}
+
+function createTimeoutSignal(
+  timeoutMs: number,
+  originalSignal?: AbortSignal,
+): AbortSignal {
+  const controller = new AbortController()
+  const timeoutId = setTimeout(() => {
+    controller.abort(new DOMException('Request timeout', 'TimeoutError'))
+  }, timeoutMs)
+
+  if (originalSignal) {
+    if (originalSignal.aborted) {
+      clearTimeout(timeoutId)
+      controller.abort(originalSignal.reason)
+      return originalSignal
+    }
+    originalSignal.addEventListener(
+      'abort',
+      () => { clearTimeout(timeoutId); controller.abort(originalSignal.reason) },
+      { once: true },
+    )
+  }
+
+  return controller.signal
+}
