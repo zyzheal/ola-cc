@@ -126,7 +126,9 @@ jobs:
 
       - name: Publish wrapper package
         run: |
+          echo "//registry.npmjs.org/:_authToken=${NODE_AUTH_TOKEN}" >> .npmrc
           cd dist/publish
+          echo "//registry.npmjs.org/:_authToken=${NODE_AUTH_TOKEN}" >> .npmrc
           AUTHORIZED=1 npm publish --access public
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
@@ -136,6 +138,7 @@ jobs:
           for dir in dist/publish-bin/*/; do
             cd "$dir"
             echo "Publishing $(pwd)..."
+            echo "//registry.npmjs.org/:_authToken=${NODE_AUTH_TOKEN}" >> .npmrc
             AUTHORIZED=1 npm publish --access public
             cd "$GITHUB_WORKSPACE"
           done
