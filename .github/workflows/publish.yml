@@ -45,7 +45,6 @@ jobs:
       matrix:
         platform:
           - { label: darwin-arm64,   runner: macos-14,       key: darwin-arm64 }
-          - { label: darwin-x64,     runner: macos-13,       key: darwin-x64 }
           - { label: linux-x64,      runner: ubuntu-22.04,   key: linux-x64 }
           - { label: linux-arm64,    runner: ubuntu-24.04-arm, key: linux-arm64 }
           - { label: linux-x64-musl, runner: ubuntu-22.04,   key: linux-x64-musl, musl: true }
