@@ -104,6 +104,7 @@ const externals = [
   'audio-capture-napi',
   'image-processor-napi',
   'modifiers-napi',
+  'node-pty',
   'sharp',
   'turndown',
   'url-handler-napi',
