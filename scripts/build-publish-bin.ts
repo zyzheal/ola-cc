@@ -321,7 +321,7 @@ function buildBinPackages() {
   // Bun-compiled binaries are unstable on Windows (segfault issues).
   // The JS bundle runs reliably under Node.js on Windows.
   if (currentPlatform === 'win32') {
-    buildWindowsPackage(platformDir, currentKey)
+    buildWindowsPackage(platformDir, currentKey, currentArch)
   } else {
     // macOS/Linux: compile native binary
     const compiledBinary = compileBinary()
@@ -372,7 +372,7 @@ function buildBinPackages() {
 }
 
 // ─── Windows Package (JS bundle + .cmd wrapper) ────────────
-function buildWindowsPackage(platformDir: string, currentKey: string) {
+function buildWindowsPackage(platformDir: string, currentKey: string, currentArch: string) {
   // Copy JS bundle from the publish build
   const cliBundleSrc = join(process.cwd(), 'dist', 'publish', 'cli.js')
   const cliBundleDest = join(platformDir, 'cli.js')
