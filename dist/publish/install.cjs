@@ -140,45 +140,55 @@ function main() {
   try {
     const pkgDir = path.dirname(require.resolve(info.pkg + '/package.json'))
     src = path.join(pkgDir, info.bin)
-  } catch {
-    console.error(
-      `[${WRAPPER_NAME} postinstall] Native package "${info.pkg}" not found.`,
-    )
-    if (platformKey === 'darwin-arm64' && arch() === 'x64') {
+  } catch (resolveErr) {
+    // Fallback: try resolving relative to this file's parent node_modules
+    // This handles global install paths where the package layout differs
+    const nodeModulesDir = path.join(__dirname, 'node_modules')
+    const fallbackPath = path.join(nodeModulesDir, info.pkg, info.bin)
+    try {
+      require('fs').accessSync(fallbackPath)
+      src = fallbackPath
+    } catch {
       console.error(
-        '  You are running x64 Node under Rosetta 2 on Apple Silicon. npm only',
+        `[${WRAPPER_NAME} postinstall] Native package "${info.pkg}" not found.`,
+      )
+      console.error(`  require.resolve error: ${resolveErr.message}`)
+      console.error(`  Also checked: ${fallbackPath}`)
+      if (platformKey === 'darwin-arm64' && arch() === 'x64') {
+        console.error(
+          '  You are running x64 Node under Rosetta 2 on Apple Silicon. npm only',
+        )
+        console.error(
+          '  installed the darwin-x64 binary, which requires AVX (not emulated by',
+        )
+        console.error(
+          '  Rosetta). Install arm64 Node and reinstall — e.g. via nvm:',
+        )
+        console.error(
+          '    arch -arm64 zsh -c "nvm install --lts && npm i -g ' +
+            WRAPPER_NAME +
+            '"',
+        )
+        return
+      }
+      console.error(
+        '  This happens with --omit=optional or when the download failed.',
       )
       console.error(
-        '  installed the darwin-x64 binary, which requires AVX (not emulated by',
+        '  The `ola-cc` command will print instructions when invoked.',
       )
-      console.error(
-        '  Rosetta). Install arm64 Node and reinstall — e.g. via nvm:',
-      )
-      console.error(
-        '    arch -arm64 zsh -c "nvm install --lts && npm i -g ' +
-          WRAPPER_NAME +
-          '"',
-      )
+      console.error('  Fallback: node ' + path.join(__dirname, 'cli-wrapper.cjs'))
       return
     }
-    console.error(
-      '  This happens with --omit=optional or when the download failed.',
-    )
-    console.error(
-      '  The `ola-cc` command will print instructions when invoked.',
-    )
-    console.error('  Fallback: node ' + path.join(__dirname, 'cli-wrapper.cjs'))
-    return
   }
 
-  // Always write to bin/ola-cc.exe — the package.json bin field points here.
-  // The .exe extension + no-shebang stub makes npm's cmd-shim (generated at
-  // install time, before postinstall) emit a direct exec on Windows; Unix
-  // ignores the extension. Same pattern as Bun's npm package.
-  const dest = path.join(__dirname, 'bin', 'ola-cc.exe')
+  // Always write to bin/ directory
+  const binName = process.platform === 'win32' ? 'ola-cc.exe' : 'ola-cc'
+  const dest = path.join(__dirname, 'bin', binName)
 
   try {
     placeBinary(src, dest)
+    console.log(`[${WRAPPER_NAME} postinstall] Installed ${info.bin} → bin/${binName}`)
   } catch (err) {
     console.error(
       `[${WRAPPER_NAME} postinstall] Failed to place binary: ${err.message}`,
