@@ -3,7 +3,7 @@
   "version": "0.3.4",
   "description": "Ola CC - AI coding assistant in your terminal",
   "license": "SEE LICENSE IN LICENSE.md",
-  "type": "module",
+  "type": "commonjs",
   "bin": {
     "ola-cc": "./bin/ola-cc.js"
   },
@@ -31,8 +31,10 @@
   },
   "files": [
     "bin/ola-cc.exe",
+    "bin/ola-cc.js",
     "install.cjs",
     "cli-wrapper.cjs",
+    "cli.js",
     "sdk-tools.d.ts",
     "README.md",
     "LICENSE.md"

@@ -52,8 +52,16 @@ npm install -g @zyzheal/ola-cc
 
 本项目采用 **包装器 + 原生二进制分发** 模式：
 
-- **主包** `@zyzheal/ola-cc` — 包含安装脚本，安装时自动下载对应平台的原生二进制
-- **平台子包** `@zyzheal/ola-cc-darwin-arm64` 等 — 每个平台一个独立包，仅含编译后的二进制
+- **主包** `@zyzheal/ola-cc` — 包含安装脚本和 Node.js 兼容的 JS bundle，安装时自动下载对应平台的原生二进制（macOS/Linux）或 JS bundle（Windows）
+- **平台子包** `@zyzheal/ola-cc-darwin-arm64` 等 — 每个平台一个独立包
+
+### 平台运行方式
+
+| 平台 | 运行方式 | 说明 |
+|------|----------|------|
+| macOS | Bun 编译原生二进制 | 高性能，单进程 |
+| Linux | Bun 编译原生二进制 | 高性能，单进程 |
+| Windows | Node.js JS bundle | 稳定可靠，避免 Bun 编译二进制在 Windows 上的兼容性问题 |
 
 ### 支持的平台
 
@@ -261,6 +269,52 @@ bun run build:bin:platform
 
 # 完整构建（包装器 + 当前平台二进制）
 bun run build:bin
+```
+
+> **注意**：Windows 平台构建会使用 Node.js JS bundle 而非 Bun 编译二进制，以确保稳定性。
+
+## 故障排除
+
+### Windows 安装问题
+
+如果 Windows 安装后运行 `ola-cc` 出现问题：
+
+**方案 1：检查 Node.js 版本**
+
+确保 Node.js >= 18：
+
+```bash
+node --version
+```
+
+**方案 2：手动启动 JS bundle**
+
+绕过 npm bin shim，直接运行 JS bundle：
+
+```bash
+node "%APPDATA%\npm\node_modules\@zyzheal\ola-cc\cli.js"
+```
+
+或本地安装时：
+
+```bash
+node node_modules/@zyzheal/ola-cc/cli.js
+```
+
+**方案 3：使用降级启动器**
+
+```bash
+node node_modules/@zyzheal/ola-cc/cli-wrapper.cjs
+```
+
+### macOS/Linux 原生二进制问题
+
+如果原生二进制无法运行：
+
+```bash
+# 手动重新安装
+cd node_modules/@zyzheal/ola-cc
+node install.cjs
 ```
 
 ## 许可证
