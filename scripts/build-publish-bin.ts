@@ -173,6 +173,7 @@ function compileBinary(target?: string): string | null {
   }
 
   // bun --compile outputs to the outfile path directly on the current platform
+  // On Windows, bun appends .exe automatically
   const currentPlatform = process.platform
   const currentArch = process.arch
   const isMusl = detectMusl()
@@ -180,9 +181,13 @@ function compileBinary(target?: string): string | null {
     ? `linux-${currentArch}${isMusl ? '-musl' : ''}`
     : `${currentPlatform}-${currentArch}`
 
-  const binaryPath = outfile // bun --compile writes directly here
+  let binaryPath = outfile
   if (!existsSync(binaryPath)) {
-    console.error(`[publish-bin] Compiled binary not found at ${binaryPath}`)
+    // Try with .exe extension (Windows)
+    binaryPath = outfile + '.exe'
+  }
+  if (!existsSync(binaryPath)) {
+    console.error(`[publish-bin] Compiled binary not found at ${outfile} or ${outfile}.exe`)
     return null
   }
 
