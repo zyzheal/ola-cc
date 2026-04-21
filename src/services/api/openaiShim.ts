@@ -762,10 +762,11 @@ export function createOpenAICompatibleShimClient(options: OpenAICompatibleClient
     'https://api.openai.com/v1'
 
   if (!apiKey || apiKey.trim() === '') {
-    throw new Error(
-      'OpenAI API key is not set. Please set the OPENAI_API_KEY environment variable ' +
-      'or provide apiKey in the client options.',
+    console.error(
+      'Error: OpenAI API key is not set. Please set the OPENAI_API_KEY environment variable ' +
+      'or configure it in your settings file.',
     )
+    process.exit(1)
   }
 
   const maxRetries = options.maxRetries ?? 2
