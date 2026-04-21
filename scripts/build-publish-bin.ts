@@ -48,6 +48,7 @@ const packageName = '@zyzheal/ola-cc'
 // ─── Platform Definitions ──────────────────────────────────
 const PLATFORMS = [
   { key: 'darwin-arm64',   binName: 'ola-cc' },
+  { key: 'darwin-x64',     binName: 'ola-cc' },
   { key: 'linux-x64',      binName: 'ola-cc' },
   { key: 'linux-arm64',    binName: 'ola-cc' },
   { key: 'linux-x64-musl', binName: 'ola-cc' },
@@ -239,6 +240,7 @@ function buildWrapper() {
     dependencies: {},
     optionalDependencies: {
       [`${packageName}-darwin-arm64`]: publishVersion,
+      [`${packageName}-darwin-x64`]: publishVersion,
       [`${packageName}-linux-x64`]: publishVersion,
       [`${packageName}-linux-arm64`]: publishVersion,
       [`${packageName}-linux-x64-musl`]: publishVersion,
