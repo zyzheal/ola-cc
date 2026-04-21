@@ -121,7 +121,7 @@ jobs:
       - name: Publish wrapper package
         run: |
           cd dist/publish
-          npm publish --access public
+          AUTHORIZED=1 npm publish --access public
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
@@ -130,7 +130,7 @@ jobs:
           for dir in dist/publish-bin/*/; do
             cd "$dir"
             echo "Publishing $(pwd)..."
-            npm publish --access public
+            AUTHORIZED=1 npm publish --access public
             cd "$GITHUB_WORKSPACE"
           done
         env:
