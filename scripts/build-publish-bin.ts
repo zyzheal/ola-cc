@@ -251,8 +251,10 @@ function buildWrapper() {
     },
     files: [
       'bin/ola-cc.exe',
+      'bin/ola-cc.js',
       'install.cjs',
       'cli-wrapper.cjs',
+      'cli.js',
       'sdk-tools.d.ts',
       'README.md',
       'LICENSE.md',
@@ -297,13 +299,6 @@ function buildBinPackages() {
   const binOutDir = './dist/publish-bin'
   mkdirSync(binOutDir, { recursive: true })
 
-  // Compile binary for current platform (this is what we can build locally)
-  const compiledBinary = compileBinary()
-  if (!compiledBinary) {
-    console.error('[publish-bin] Failed to compile binary, skipping platform packages')
-    return
-  }
-
   // Determine current platform key
   const currentPlatform = process.platform
   const currentArch = process.arch
@@ -322,34 +317,98 @@ function buildBinPackages() {
   const platformDir = join(binOutDir, currentKey)
   mkdirSync(platformDir, { recursive: true })
 
-  // Copy compiled binary
-  const destBinary = join(platformDir, currentPlatformInfo.binName)
-  copyFileSync(compiledBinary, destBinary)
-  chmodSync(destBinary, 0o755)
+  // Windows: use JS bundle (cli.js) instead of compiled Bun binary.
+  // Bun-compiled binaries are unstable on Windows (segfault issues).
+  // The JS bundle runs reliably under Node.js on Windows.
+  if (currentPlatform === 'win32') {
+    buildWindowsPackage(platformDir, currentKey)
+  } else {
+    // macOS/Linux: compile native binary
+    const compiledBinary = compileBinary()
+    if (!compiledBinary) {
+      console.error('[publish-bin] Failed to compile binary, skipping platform packages')
+      return
+    }
+
+    // Copy compiled binary
+    const destBinary = join(platformDir, currentPlatformInfo.binName)
+    copyFileSync(compiledBinary, destBinary)
+    chmodSync(destBinary, 0o755)
+
+    // Generate platform package.json
+    const platformPkg = {
+      name: `${packageName}-${currentKey}`,
+      version: publishVersion,
+      description: `Ola CC native binary for ${currentKey}`,
+      license: 'SEE LICENSE IN LICENSE.md',
+      os: [currentPlatform],
+      cpu: [currentArch],
+      files: [
+        currentPlatformInfo.binName,
+      ],
+    }
+
+    // Fix os/cpu fields for musl
+    if (currentKey.includes('musl')) {
+      platformPkg.os = ['linux']
+      platformPkg.cpu = [currentKey.includes('x64') ? 'x64' : 'arm64']
+      platformPkg.libc = ['musl']
+    }
+
+    writeFileSync(
+      join(platformDir, 'package.json'),
+      JSON.stringify(platformPkg, null, 2) + '\n',
+    )
+
+    const binSize = Bun.file(destBinary).size
+    console.log(`[publish-bin] Platform package: ${currentKey}`)
+    console.log(`  Output: ${platformDir}/`)
+    console.log(`  Binary: ${(binSize / 1024 / 1024).toFixed(2)} MB`)
+    console.log(`  To publish: cd ${platformDir} && npm publish`)
+  }
+
+  // Generate helper script for building all platforms
+  generateBuildAllsScript()
+}
+
+// ─── Windows Package (JS bundle + .cmd wrapper) ────────────
+function buildWindowsPackage(platformDir: string, currentKey: string) {
+  // Copy JS bundle from the publish build
+  const cliBundleSrc = join(process.cwd(), 'dist', 'publish', 'cli.js')
+  const cliBundleDest = join(platformDir, 'cli.js')
+
+  if (!existsSync(cliBundleSrc)) {
+    console.error('[publish-bin] cli.js not found. Run `bun run build:publish` first.')
+    return
+  }
+
+  copyFileSync(cliBundleSrc, cliBundleDest)
+  const jsSize = Bun.file(cliBundleDest).size
+  console.log(`[publish-bin] JS bundle: ${(jsSize / 1024 / 1024).toFixed(2)} MB`)
+
+  // Generate .cmd wrapper for convenience (running directly from package dir)
+  const cmdWrapper = join(platformDir, 'ola-cc.cmd')
+  writeFileSync(cmdWrapper,
+    `@echo off\r\n` +
+    `node "%~dp0cli.js" %*\r\n`
+  )
+  chmodSync(cmdWrapper, 0o755)
 
   // Generate platform package.json
   const platformPkg = {
     name: `${packageName}-${currentKey}`,
     version: publishVersion,
-    description: `Ola CC native binary for ${currentKey}`,
+    description: `Ola CC (Node.js bundle) for ${currentKey}`,
     license: 'SEE LICENSE IN LICENSE.md',
-    os: [currentPlatform === 'linux-x64-musl' || currentPlatform === 'linux-arm64-musl' ? 'linux' : currentPlatform],
-    cpu: [currentArch === 'x64-musl' || currentArch === 'arm64-musl'
-      ? currentArch.split('-')[0]
-      : currentArch],
+    os: ['win32'],
+    cpu: [currentArch],
+    bin: {
+      'ola-cc': './cli.js',
+    },
     files: [
-      currentPlatformInfo.binName,
+      'cli.js',
+      'ola-cc.cmd',
     ],
-  }
-
-  // Fix os/cpu fields for musl
-  if (currentKey.includes('musl')) {
-    platformPkg.os = ['linux']
-    platformPkg.cpu = [currentKey.includes('x64') ? 'x64' : 'arm64']
-    platformPkg.libc = ['musl']
-  } else {
-    platformPkg.os = [currentPlatform]
-    platformPkg.cpu = [currentArch]
   }
 
   writeFileSync(
@@ -357,14 +416,10 @@ function buildBinPackages() {
     JSON.stringify(platformPkg, null, 2) + '\n',
   )
 
-  const binSize = Bun.file(destBinary).size
-  console.log(`[publish-bin] Platform package: ${currentKey}`)
+  console.log(`[publish-bin] Windows platform package: ${currentKey}`)
   console.log(`  Output: ${platformDir}/`)
-  console.log(`  Binary: ${(binSize / 1024 / 1024).toFixed(2)} MB`)
+  console.log(`  JS bundle: ${(jsSize / 1024 / 1024).toFixed(2)} MB`)
   console.log(`  To publish: cd ${platformDir} && npm publish`)
-
-  // Generate helper script for building all platforms
-  generateBuildAllsScript()
 }
 
 function generateBuildAllsScript() {
