@@ -1,247 +1,267 @@
-# Claude Code
+# Ola CC (Ola Claude Code)
 
 AI 编码助手，运行在你的终端中。
 
-## 安装
+## 快速开始
+
+### 安装
 
 ```bash
-npm install claude
-# 或
-bun add claude
+npm install -g @zyzheal/ola-cc
 ```
 
-## 使用
+安装完成后，终端中运行 `ola-cc` 即可启动。
 
-```bash
-# 启动交互式会话
-npx claude
+### 首次使用
 
-# 或全局安装
-npm install -g claude
-claude
-```
+1. **配置 API 密钥** — 选择以下任一方式：
 
-## 配置文件
+   **方式 A：通过 session.json（推荐）**
 
-Claude Code 的配置存储在 `~/.claude/` 目录中。
+   创建 `~/.claude/session.json`：
+
+   ```bash
+   mkdir -p ~/.claude
+   cat > ~/.claude/session.json << 'EOF'
+   {
+     "env": {
+       "OPENAI_API_KEY": "你的API密钥",
+       "OPENAI_BASE_URL": "https://api.openai.com/v1",
+       "OPENAI_MODEL": "gpt-4o"
+     }
+   }
+   EOF
+   ```
+
+   **方式 B：通过环境变量**
+
+   ```bash
+   export OPENAI_API_KEY="你的API密钥"
+   export OPENAI_BASE_URL="https://api.openai.com/v1"
+   export OPENAI_MODEL="gpt-4o"
+   ola-cc
+   ```
+
+2. **启动 Ola CC**
+
+   ```bash
+   ola-cc
+   ```
+
+## 架构说明
+
+本项目采用 **包装器 + 原生二进制分发** 模式：
+
+- **主包** `@zyzheal/ola-cc` — 包含安装脚本，安装时自动下载对应平台的原生二进制
+- **平台子包** `@zyzheal/ola-cc-darwin-arm64` 等 — 每个平台一个独立包，仅含编译后的二进制
+
+### 支持的平台
+
+| 平台包名 | 操作系统 | CPU |
+|----------|----------|-----|
+| `@zyzheal/ola-cc-darwin-arm64` | macOS | Apple Silicon (M1/M2/M3/M4) |
+| `@zyzheal/ola-cc-darwin-x64` | macOS | Intel |
+| `@zyzheal/ola-cc-linux-x64` | Linux | x64 (glibc) |
+| `@zyzheal/ola-cc-linux-arm64` | Linux | ARM64 (glibc) |
+| `@zyzheal/ola-cc-linux-x64-musl` | Linux | x64 (musl/Alpine) |
+| `@zyzheal/ola-cc-linux-arm64-musl` | Linux | ARM64 (musl/Alpine) |
+| `@zyzheal/ola-cc-win32-x64` | Windows | x64 |
+| `@zyzheal/ola-cc-win32-arm64` | Windows | ARM64 |
+
+## 配置文件详解
+
+Ola CC 的配置存储在 `~/.claude/` 目录中。
 
 ### 配置目录结构
 
 ```
 ~/.claude/
 ├── settings.json           # 用户设置（MCP 服务器、偏好等）
-├── session.json            # 会话级环境配置（API 密钥、模型、环境变量）
+├── session.json            # 会话级环境配置（API 密钥、模型、环境变量等）
 ├── CLAUDE.md               # 项目级指令文件
 └── chrome/                 # Chrome 扩展原生主机文件
     ├── chrome-native-host  # Unix: 包装脚本
     └── chrome-native-host.bat  # Windows: 包装脚本
 ```
 
-### 读取优先级
+### 配置读取优先级
 
-配置文件的读取优先级如下（从高到低）：
+| 优先级 | 来源 | 说明 |
+|--------|------|------|
+| 1 | 命令行参数 | 启动时 `--` 传入的参数 |
+| 2 | 环境变量 | 当前 shell 环境中的变量 |
+| 3 | `~/.claude/session.json` | 会话级配置（API 密钥、模型、环境变量等） |
+| 4 | `~/.claude/settings.json` | 用户级持久化设置（MCP 服务器、偏好设置等） |
+| 5 | `.claude/CLAUDE.md` | 项目级指令（仅影响当前项目） |
 
-1. **命令行参数** — 启动时传入的 `--` 参数，优先级最高
-2. **环境变量** — 当前 shell 环境中设置的变量
-3. **`~/.claude/session.json`** — 会话级配置，包含 API 密钥、模型选择、环境变量等
-4. **`~/.claude/settings.json`** — 用户级持久化设置，包含 MCP 服务器、偏好设置等
-5. **项目根目录 `.claude/CLAUDE.md`** — 项目级指令，仅影响当前项目的行为
+> 高优先级的配置会覆盖低优先级的同名设置。
 
-> **注意**：`session.json` 中的配置会覆盖 `settings.json` 中的同名设置，但不会覆盖命令行参数和系统环境变量。
+### session.json 配置（会话级）
 
-### session.json 配置详解
+`~/.claude/session.json` 用于配置会话级别的环境变量和模型设置。
 
-`~/.claude/session.json` 用于配置会话级别的环境变量和模型设置。典型结构如下：
+#### 完整示例
 
 ```json
 {
   "env": {
-    "ANTHROPIC_API_KEY": "sk-ant-api03-REDACTED-xxxxx...xxxxx",
-    "API_BASE_URL": "http://127.0.0.1:11434",
+    "OPENAI_API_KEY": "sk-xxx",
+    "OPENAI_BASE_URL": "https://api.openai.com/v1",
+    "OPENAI_MODEL": "gpt-4o",
     "CLAUDE_CODE_FORCE_FULL_LOGO": "true"
   },
   "model": {
-    "name": "qwen/qwen3-235b-a22b",
+    "name": "gpt-4o",
     "provider": "openai"
   }
 }
 ```
 
-#### env 字段
+#### env 字段 — 环境变量注入
 
 `env` 对象中的键值对会在会话启动时注入为环境变量。常用配置：
 
-| 变量 | 说明 |
-|------|------|
-| `ANTHROPIC_API_KEY` | API 密钥（必填），使用远程代理时填代理服务的 key |
-| `API_BASE_URL` | API 代理地址，使用本地模型时指向本地代理端口 |
-| `CLAUDE_CODE_ENABLE_CFC` | 启用 Chrome 集成（1=启用，0=禁用） |
-| `CLAUDE_CHROME_HTTP` | 启用 Chrome HTTP 桥接模式（1=启用） |
-| `CLAUDE_CHROME_HTTP_PORT` | HTTP 服务器端口（默认 12306） |
+| 变量 | 说明 | 必填 |
+|------|------|------|
+| `OPENAI_API_KEY` | API 密钥 | 是 |
+| `OPENAI_BASE_URL` | API 基础 URL | 是 |
+| `OPENAI_MODEL` | 模型名称 | 推荐 |
+| `CLAUDE_CODE_USE_OPENAI` | 启用 OpenAI 协议（设为 `1`） | 是 |
+| `CLAUDE_CODE_ENABLE_CFC` | 启用 Chrome 集成（1=启用，0=禁用） | 否 |
+| `CLAUDE_CHROME_HTTP` | 启用 Chrome HTTP 桥接（1=启用） | 否 |
+| `CLAUDE_CHROME_HTTP_PORT` | HTTP 桥接端口（默认 12306） | 否 |
 
-#### model 字段
-
-`model` 对象用于指定使用的模型。使用本地模型代理时的参考配置：
+#### model 字段 — 模型选择
 
 ```json
 {
   "model": {
-    "name": "qwen/qwen3-235b-a22b",
+    "name": "gpt-4o",
     "provider": "openai"
   }
 }
 ```
 
-- **name** — 模型名称，格式取决于代理服务的 API。本地 Ollama 代理通常为 `qwen/qwen3-235b-a22b` 或 `llama3.1`
-- **provider** — 提供商类型，本地 OpenAI 兼容代理填 `openai`，也支持 `bedrock`、`vertex` 等
+- **name** — 模型名称，取决于你的 API 服务
+- **provider** — 提供商类型：`openai`、`bedrock`、`vertex` 等
 
-#### OpenAI 协议支持
+### settings.json 配置（用户级）
 
-当设置 `OPENAI_BASE_URL` 或 `OPENAI_API_KEY` 时，CLI 会自动使用 OpenAI 兼容协议与 API 通信。
+`~/.claude/settings.json` 用于持久化用户设置。
 
-**必填环境变量：**
+#### MCP 服务器配置
 
-| 环境变量 | 说明 |
-|----------|------|
-| `OPENAI_API_KEY` | API 密钥（必填） |
-| `OPENAI_BASE_URL` | API 基础 URL（必填） |
-| `OPENAI_MODEL` | 模型名称（推荐，作为 `settings.json` 中 `model` 字段的默认值） |
+```json
+{
+  "mcpServers": {
+    "filesystem": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-filesystem", "/path/to/allowed/dir"]
+    },
+    "github": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-github"]
+    }
+  }
+}
+```
 
-**支持的端点示例：**
+#### 宠物（SprocketDudot）配置
+
+```json
+{
+  "sprocketDudot": {
+    "enabled": true
+  }
+}
+```
+
+### CLAUDE.md 配置（项目级）
+
+在项目根目录创建 `.claude/CLAUDE.md`，用于定义项目特定的指令和行为：
+
+```markdown
+# 项目指令
+
+你正在协助开发一个 Node.js 项目。请遵循以下规则：
+
+- 使用 TypeScript
+- 遵循 ESLint 规范
+- 编写单元测试
+```
+
+## OpenAI 协议支持
+
+当设置 `CLAUDE_CODE_USE_OPENAI=1` 时，CLI 使用 OpenAI 兼容协议与 API 通信。
+
+### 支持的 API 端点
 
 | 服务 | OPENAI_BASE_URL | 说明 |
 |------|----------------|------|
-| 阿里云百炼 DashScope | `https://coding.dashscope.aliyuncs.com/v1` | 支持通义千问系列模型 |
-| OpenAI 官方 API | `https://api.openai.com/v1` | GPT-4o、o1 等 |
-| Ollama (本地) | `http://127.0.0.1:11434/v1` | 本地部署的开源模型 |
-| vLLM | `http://localhost:8000/v1` | 兼容 OpenAI API 格式的推理服务 |
+| OpenAI 官方 | `https://api.openai.com/v1` | GPT-4o、o1 等 |
+| 阿里云百炼 DashScope | `https://coding.dashscope.aliyuncs.com/v1` | 通义千问系列 |
+| Ollama (本地) | `http://127.0.0.1:11434/v1` | 本地开源模型 |
+| vLLM | `http://localhost:8000/v1` | 兼容 OpenAI 格式 |
 
-**使用方式：**
+### 使用示例
 
 ```bash
-# 命令行直接传入
-OPENAI_BASE_URL="https://coding.dashscope.aliyuncs.com/v1" \
-OPENAI_API_KEY="your-api-key" \
-OPENAI_MODEL="qwen3.6-plus" \
-claude
+# OpenAI 官方 API
+OPENAI_API_KEY="sk-xxx" OPENAI_BASE_URL="https://api.openai.com/v1" OPENAI_MODEL="gpt-4o" ola-cc
 
-# 或在 ~/.claude/session.json 中配置
-{
-  "env": {
-    "OPENAI_BASE_URL": "https://coding.dashscope.aliyuncs.com/v1",
-    "OPENAI_API_KEY": "your-api-key",
-    "OPENAI_MODEL": "qwen3.6-plus"
-  }
-}
+# 阿里云百炼
+OPENAI_API_KEY="your-key" OPENAI_BASE_URL="https://coding.dashscope.aliyuncs.com/v1" OPENAI_MODEL="qwen3.6-plus" ola-cc
+
+# Ollama 本地模型
+OPENAI_BASE_URL="http://127.0.0.1:11434/v1" OPENAI_MODEL="llama3.1" ola-cc
 ```
 
-**模型选择优先级：**
+### 模型选择优先级
 
-1. `/model` 命令（会话中动态切换）
-2. `--model` 启动参数
-3. `ANTHROPIC_MODEL` 环境变量
-4. `OPENAI_MODEL` 环境变量
-5. `~/.claude/settings.json` 中的 `model` 字段
-6. 内置默认值
+| 优先级 | 来源 |
+|--------|------|
+| 1 | `/model` 命令（会话中动态切换） |
+| 2 | `--model` 启动参数 |
+| 3 | `ANTHROPIC_MODEL` 环境变量 |
+| 4 | `OPENAI_MODEL` 环境变量 |
+| 5 | `~/.claude/settings.json` 中的 `model` 字段 |
+| 6 | 内置默认值 |
 
-**注意事项：**
-- 推荐设置 `OPENAI_MODEL` 环境变量，它会作为模型选择的主要来源之一
-- 支持流式和非流式响应
-
-### settings.json 配置示例
-
-```json
-{
-  "mcpServers": {
-    "filesystem": {
-      "command": "npx",
-      "args": ["-y", "@modelcontextprotocol/server-filesystem", "/path/to/allowed/dir"]
-    },
-    "github": {
-      "command": "npx",
-      "args": ["-y", "@modelcontextprotocol/server-github"]
-    }
-  }
-}
-```
-
-## MCP 服务器配置
-
-在 `~/.claude/settings.json` 的 `mcpServers` 中添加 MCP 服务器：
-
-```json
-{
-  "mcpServers": {
-    "filesystem": {
-      "command": "npx",
-      "args": ["-y", "@modelcontextprotocol/server-filesystem", "/path/to/allowed/dir"]
-    },
-    "github": {
-      "command": "npx",
-      "args": ["-y", "@modelcontextprotocol/server-github"]
-    }
-  }
-}
-```
-
-## 环境变量
+## 环境变量总览
 
 | 变量 | 说明 |
 |------|------|
-| `ANTHROPIC_API_KEY` | API 密钥 |
-| `CLAUDE_CODE_USE_OPENAI` | 启用 OpenAI 协议（1=启用） |
 | `OPENAI_API_KEY` | OpenAI API 密钥 |
-| `OPENAI_API_BASE` | OpenAI 兼容 API 基础 URL |
-| `CLAUDE_CODE_ENABLE_CFC` | 启用 Chrome 集成（1=启用，0=禁用） |
-| `CLAUDE_CHROME_HTTP` | 启用 Chrome HTTP 桥接模式（1=启用） |
-| `CLAUDE_CHROME_HTTP_PORT` | HTTP 服务器端口（默认 12306） |
-| `ENABLE_TOOL_SEARCH` | 工具搜索模式：`tst`（默认）、`tst-auto`、`standard` |
+| `OPENAI_BASE_URL` | OpenAI 兼容 API 基础 URL |
+| `OPENAI_MODEL` | 模型名称 |
+| `CLAUDE_CODE_USE_OPENAI` | 启用 OpenAI 协议（1=启用） |
+| `ANTHROPIC_API_KEY` | Anthropic API 密钥（直连 Anthropic 时使用） |
+| `CLAUDE_CODE_ENABLE_CFC` | 启用 Chrome 集成（1=启用） |
+| `CLAUDE_CHROME_HTTP` | 启用 Chrome HTTP 桥接（1=启用） |
+| `CLAUDE_CHROME_HTTP_PORT` | HTTP 桥接端口（默认 12306） |
 | `CLAUDE_CODE_EXTRA_BODY` | API 请求的额外 body 参数 |
-
-## 开启"宠物"功能
-
-"宠物"（SprocketDudot）是 Claude Code 的伴随功能。开启方式：
-
-1. **通过 session.json 配置**：
-
-   在 `~/.claude/session.json` 的 `env` 中添加：
-
-   ```json
-   {
-     "env": {
-       "SPROCKET_DUDOT_ENABLED": "1"
-     }
-   }
-   ```
-
-2. **通过环境变量**：
-
-   在启动 Claude Code 前设置环境变量：
-
-   ```bash
-   export SPROCKET_DUDOT_ENABLED=1
-   claude
-   ```
-
-3. **通过 settings.json 配置**：
-
-   在 `~/.claude/settings.json` 中添加：
-
-   ```json
-   {
-     "sprocketDudot": {
-       "enabled": true
-     }
-   }
-   ```
+| `SPROCKET_DUDOT_ENABLED` | 开启宠物功能（1=启用） |
 
 ## Chrome 扩展（可选）
 
 浏览器自动化需要安装 Claude in Chrome 扩展：
 
-1. Claude Code 会自动安装原生主机清单
+1. Ola CC 会自动安装原生主机清单
 2. 从 Chrome 应用商店安装扩展
 3. 设置 `CLAUDE_CODE_ENABLE_CFC=1` 或使用 `--chrome` 参数
+
+## 构建
+
+```bash
+# 构建包装器包
+bun run build:bin:wrapper
+
+# 构建平台二进制包（当前平台）
+bun run build:bin:platform
+
+# 完整构建（包装器 + 当前平台二进制）
+bun run build:bin
+```
 
 ## 许可证
 
