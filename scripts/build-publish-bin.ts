@@ -223,7 +223,7 @@ function buildWrapper() {
     license: 'SEE LICENSE IN LICENSE.md',
     type: 'commonjs',
     bin: {
-      'ola-cc': './bin/ola-cc.exe',
+      'ola-cc': './bin/ola-cc.js',
     },
     scripts: {
       postinstall: 'node install.cjs',

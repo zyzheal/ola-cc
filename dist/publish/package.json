@@ -5,7 +5,7 @@
   "license": "SEE LICENSE IN LICENSE.md",
   "type": "commonjs",
   "bin": {
-    "ola-cc": "./bin/ola-cc.exe"
+    "ola-cc": "./bin/ola-cc.js"
   },
   "scripts": {
     "postinstall": "node install.cjs",
@@ -30,7 +30,7 @@
     "@zyzheal/ola-cc-win32-arm64": "0.3.0"
   },
   "files": [
-    "bin/ola-cc.exe",
+    "bin/",
     "install.cjs",
     "cli-wrapper.cjs",
     "sdk-tools.d.ts",
