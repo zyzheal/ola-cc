@@ -205,15 +205,64 @@ function extractTextContent(
 // -- JSON Schema sanitizer
 
 /**
- * Sanitize a JSON Schema to ensure it's compatible with OpenAI's API.
- * OpenAI requires that:
- * 1. All properties in `required` must exist in `properties`
- * 2. `properties` must be an object
- * 3. Tool schemas must have type: 'object'
+ * Sanitize a nested JSON Schema (properties, array items, additionalProperties).
+ * Does NOT force type: 'object' — that is only for top-level tool schemas.
+ */
+function sanitizeNestedSchema(schema: unknown): Record<string, unknown> {
+  if (!schema || typeof schema !== 'object') {
+    return schema as Record<string, unknown>
+  }
+
+  const result = { ...(schema as Record<string, unknown>) }
+
+  // Convert 'integer' to 'number' for OpenAI compatibility
+  if (result.type === 'integer') {
+    result.type = 'number'
+  }
+
+  // Remove polymorphism
+  delete (result as Record<string, unknown>).anyOf
+  delete (result as Record<string, unknown>).oneOf
+  delete (result as Record<string, unknown>).allOf
+
+  // Handle malformed required field (non-array → delete)
+  if (result.required !== undefined && !Array.isArray(result.required)) {
+    delete result.required
+  }
+
+  // Recurse into object properties
+  if (result.properties && typeof result.properties === 'object') {
+    const properties = result.properties as Record<string, unknown>
+    for (const [key, value] of Object.entries(properties)) {
+      if (value && typeof value === 'object') {
+        properties[key] = sanitizeNestedSchema(value)
+      }
+    }
+  }
+
+  // Recurse into array items
+  if (result.type === 'array' && result.items && typeof result.items === 'object') {
+    result.items = sanitizeNestedSchema(result.items)
+  }
+
+  // Recurse into additionalProperties
+  if (result.additionalProperties && typeof result.additionalProperties === 'object') {
+    result.additionalProperties = sanitizeNestedSchema(result.additionalProperties)
+  }
+
+  return result
+}
+
+/**
+ * Sanitize a top-level tool JSON Schema for OpenAI API compatibility.
+ * OpenAI requires that tool schemas have type: 'object'.
  *
  * This function:
+ * - Forces type: 'object' (top-level tool schemas must be objects)
+ * - Converts 'integer' to 'number' for nested schemas
  * - Removes required fields that don't have matching properties
  * - Adds missing properties as {type: 'string'} for required fields
+ * - Removes anyOf/oneOf/allOf (not supported in tool schemas)
  * - Normalizes nested schemas recursively
  */
 function sanitizeSchemaForOpenAI(schema: unknown): Record<string, unknown> {
@@ -224,14 +273,22 @@ function sanitizeSchemaForOpenAI(schema: unknown): Record<string, unknown> {
   const obj = schema as Record<string, unknown>
   const result = { ...obj }
 
-  // Ensure type is object
-  if (result.type !== 'object') {
-    result.type = 'object'
-  }
+  // Ensure type is object (top-level tool schemas must be type: 'object')
+  result.type = 'object'
 
   // Ensure properties exists and is an object
   if (!result.properties || typeof result.properties !== 'object') {
     result.properties = {}
+  }
+
+  // Remove anyOf/oneOf/allOf — OpenAI tool schemas don't support polymorphism
+  delete result.anyOf
+  delete result.oneOf
+  delete result.allOf
+
+  // Handle malformed required field (non-array → delete)
+  if (result.required !== undefined && !Array.isArray(result.required)) {
+    delete result.required
   }
 
   const properties = result.properties as Record<string, unknown>
@@ -241,6 +298,7 @@ function sanitizeSchemaForOpenAI(schema: unknown): Record<string, unknown> {
     // Ensure all required fields have properties
     for (const key of required) {
       if (typeof key === 'string' && !(key in properties)) {
+        warn(`Schema has required field "${key}" not in properties — adding as {type: 'string'}`)
         properties[key] = { type: 'string' }
       }
     }
@@ -251,15 +309,13 @@ function sanitizeSchemaForOpenAI(schema: unknown): Record<string, unknown> {
   // Recursively sanitize nested properties
   for (const [key, value] of Object.entries(properties)) {
     if (value && typeof value === 'object') {
-      const prop = value as Record<string, unknown>
-      if (prop.type === 'object' || prop.properties) {
-        properties[key] = sanitizeSchemaForOpenAI(prop)
-      }
-      // Handle array items
-      if (prop.type === 'array' && prop.items) {
-        prop.items = sanitizeSchemaForOpenAI(prop.items)
-      }
+      properties[key] = sanitizeNestedSchema(value)
     }
+  }
+
+  // Sanitize additionalProperties if present
+  if (result.additionalProperties && typeof result.additionalProperties === 'object') {
+    result.additionalProperties = sanitizeNestedSchema(result.additionalProperties)
   }
 
   return result
