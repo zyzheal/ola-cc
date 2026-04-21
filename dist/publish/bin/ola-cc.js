@@ -27,13 +27,16 @@ function main() {
         stdio: 'inherit',
         env: process.env,
       })
-      if (!result.error) {
-        if (result.signal) {
-          const signum = constants.signals[result.signal] || 0
-          process.exit(128 + signum)
-        }
-        process.exit(result.status || 0)
+      if (result.error) {
+        console.error(`Error: Failed to start Node.js: ${result.error.message}`)
+        console.error('Ensure Node.js is installed and in your PATH.')
+        process.exit(1)
       }
+      if (result.signal) {
+        const signum = constants.signals[result.signal] || 0
+        process.exit(128 + signum)
+      }
+      process.exit(result.status || 0)
     } catch (_) {
       // cli.js not found, fall through to wrapper
     }
