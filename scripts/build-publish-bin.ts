@@ -140,6 +140,7 @@ function compileBinary(target?: string): string | null {
     'audio-capture-napi',
     'image-processor-napi',
     'modifiers-napi',
+    'node-pty',
     'sharp',
     'turndown',
     'url-handler-napi',
