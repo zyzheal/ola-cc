@@ -86,7 +86,14 @@ function getPlatformKey() {
 }
 
 function placeBinary(src, dest) {
-  // Try hardlink first (instant, zero extra disk for a ~500MB binary; src and
+  // Windows: always copy to avoid symlink permission issues.
+  // Hard links on Windows may require elevated privileges.
+  if (process.platform === 'win32') {
+    copyFileSync(src, dest)
+    return
+  }
+
+  // macOS/Linux: Try hardlink first (instant, zero extra disk for a ~500MB binary; src and
   // dest are both under node_modules/ so same-filesystem is the common case).
   // We attempt the link BEFORE touching dest — if src is missing (partial
   // extraction) the first linkSync throws ENOENT and the fallback stub stays.
@@ -125,6 +132,13 @@ function placeBinary(src, dest) {
 }
 
 function main() {
+  // Windows: uses JS bundle (cli.js) directly — no native binary needed.
+  // The cli.js bundle is already included in the main package.
+  if (process.platform === 'win32') {
+    console.log(`[${WRAPPER_NAME} postinstall] Windows: using bundled JS bundle (cli.js)`)
+    return
+  }
+
   const platformKey = getPlatformKey()
   const info = PLATFORMS[platformKey]
 
