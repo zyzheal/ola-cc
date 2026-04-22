@@ -23,7 +23,14 @@ export function semanticBoolean<T extends z.ZodType>(
   inner: T = z.boolean() as unknown as T,
 ) {
   return z.preprocess(
-    (v: unknown) => (v === 'true' ? true : v === 'false' ? false : v),
+    (v: unknown) => {
+      if (typeof v === 'string') {
+        const lower = v.toLowerCase()
+        if (lower === 'true') return true
+        if (lower === 'false') return false
+      }
+      return v
+    },
     inner,
   )
 }

@@ -10,7 +10,7 @@ import type {
   SystemFileSnapshotMessage,
   UserMessage,
 } from 'src/types/message.js'
-import { getPlanSlugCache, getSessionId } from '../bootstrap/state.js'
+import { getPlanSlugCache, getSessionId, setPlanSlugCacheEntry } from '../bootstrap/state.js'
 import { EXIT_PLAN_MODE_V2_TOOL_NAME } from '../tools/ExitPlanModeTool/constants.js'
 import { getCwd } from './cwd.js'
 import { logForDebugging } from './debug.js'
@@ -52,7 +52,7 @@ export function getPlanSlug(sessionId?: SessionId): string {
  * Set a specific plan slug for a session (used when resuming a session)
  */
 export function setPlanSlug(sessionId: SessionId, slug: string): void {
-  getPlanSlugCache().set(sessionId, slug)
+  setPlanSlugCacheEntry(sessionId, slug)
 }
 
 /**

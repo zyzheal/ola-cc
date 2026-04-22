@@ -7,6 +7,9 @@ import { MessageResponse } from '../MessageResponse.js';
 import { OffscreenFreeze } from '../OffscreenFreeze.js';
 import { ShellTimeDisplay } from './ShellTimeDisplay.js';
 
+/** Shared label for a running Bash command — used in both ShellProgressMessage and BashTool UI. */
+export const BASH_RUNNING_LABEL = '[running] Running…'
+
 type Props = {
   output: string;
   fullOutput: string;
@@ -66,7 +69,7 @@ export function ShellProgressMessage(t0) {
     let runningText: React.ReactNode;
     if ($[7] === Symbol.for("react.memo_cache_sentinel")) {
       // Use a pulsing indicator to clearly show the command is still running
-      runningText = <Text dimColor={true}>[running] Running… </Text>;
+      runningText = <Text dimColor={true}>{BASH_RUNNING_LABEL} </Text>;
       $[7] = runningText;
     } else {
       runningText = $[7];

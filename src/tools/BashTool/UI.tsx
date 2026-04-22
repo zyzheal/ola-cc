@@ -5,6 +5,7 @@ import { KeyboardShortcutHint } from '../../components/design-system/KeyboardSho
 import { FallbackToolUseErrorMessage } from '../../components/FallbackToolUseErrorMessage.js';
 import { MessageResponse } from '../../components/MessageResponse.js';
 import { ShellProgressMessage } from '../../components/shell/ShellProgressMessage.js';
+import { BASH_RUNNING_LABEL } from '../../components/shell/ShellProgressMessage.js';
 import { Box, Text } from '../../ink.js';
 import { useKeybinding } from '../../keybindings/useKeybinding.js';
 import { useShortcutDisplay } from '../../keybindings/useShortcutDisplay.js';
@@ -145,7 +146,7 @@ export function renderToolUseProgressMessage(progressMessagesForMessage: Progres
   const lastProgress = progressMessagesForMessage.at(-1);
   if (!lastProgress || !lastProgress.data) {
     return <MessageResponse height={1}>
-        <Text dimColor>[running] Running…</Text>
+        <Text dimColor>{BASH_RUNNING_LABEL}</Text>
       </MessageResponse>;
   }
   const data = lastProgress.data;

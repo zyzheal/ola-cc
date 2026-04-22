@@ -2,7 +2,7 @@ import { mkdirSync, readFileSync, writeFileSync } from 'fs'
 import { mkdir, readFile, rm, writeFile } from 'fs/promises'
 import { join } from 'path'
 import { z } from 'zod/v4'
-import { addSessionCreatedTeam, getSessionCreatedTeams, removeSessionCreatedTeam } from '../../bootstrap/state.js'
+import { addSessionCreatedTeam, getSessionCreatedTeams, MAX_SESSION_CREATED_TEAMS, removeSessionCreatedTeam } from '../../bootstrap/state.js'
 import { logForDebugging } from '../debug.js'
 import { getTeamsDir } from '../envUtils.js'
 import { errorMessage, getErrnoCode } from '../errors.js'
@@ -556,8 +556,25 @@ async function destroyWorktree(worktreePath: string): Promise<void> {
  * call unregisterTeamForSessionCleanup to prevent double-cleanup.
  * Backing Set lives in bootstrap/state.ts so resetStateForTests()
  * clears it between tests (avoids the PR #17615 cross-shard leak class).
+ *
+ * If the session team tracking is at capacity, evicts and cleans up the
+ * oldest team to prevent orphaned directories on disk.
  */
 export function registerTeamForSessionCleanup(teamName: string): void {
+  const teams = getSessionCreatedTeams()
+  if (teams.size >= MAX_SESSION_CREATED_TEAMS) {
+    // Evict oldest team with full cleanup before adding the new one
+    const oldestTeam = teams.values().next().value
+    if (oldestTeam) {
+      removeSessionCreatedTeam(oldestTeam)
+      // Best-effort cleanup — don't block team creation if this fails
+      void cleanupTeamDirectories(oldestTeam).catch(() => {
+        logForDebugging(
+          `registerTeamForSessionCleanup: failed to cleanup evicted team ${oldestTeam}`,
+        )
+      })
+    }
+  }
   addSessionCreatedTeam(teamName)
 }
 
