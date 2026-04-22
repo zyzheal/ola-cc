@@ -343,6 +343,48 @@ function buildBinPackages() {
     copyFileSync(compiledBinary, destBinary)
     chmodSync(destBinary, 0o755)
 
+    // Copy platform-specific ripgrep binary
+    // The compiled binary uses builtin mode (not embedded), so it needs rg from vendor/
+    const rgVendorSrc = join(process.cwd(), 'src', 'utils', 'vendor', 'ripgrep')
+    const rgPlatformDir = currentPlatform === 'linux'
+      ? `${currentArch}-${currentPlatform}${isMusl ? '-musl' : ''}`
+      : `${currentArch}-${currentPlatform}`
+
+    // Map to vendor directory naming convention
+    // vendor/ripgrep uses: arm64-darwin, x64-darwin, x64-win32
+    // but linux musl uses: aarch64-unknown-linux-gnu, x86_64-unknown-linux-musl
+    const rgVendorMap: Record<string, string> = {
+      'arm64-darwin': 'arm64-darwin',
+      'x64-darwin': 'x64-darwin',
+      'arm64-linux': 'aarch64-unknown-linux-gnu',
+      'x64-linux': 'x64-linux-gnu', // fallback, may not exist
+      'arm64-linux-musl': 'aarch64-unknown-linux-gnu', // same gnu binary works
+      'x64-linux-musl': 'x86_64-unknown-linux-musl',
+      'arm64-win32': 'arm64-win32', // hypothetical
+      'x64-win32': 'x64-win32',
+    }
+    const rgDirName = rgVendorMap[rgPlatformDir] || rgPlatformDir
+    const rgSrcDir = join(rgVendorSrc, rgDirName)
+
+    if (existsSync(rgSrcDir)) {
+      const rgDestDir = join(platformDir, 'vendor', 'ripgrep', rgDirName)
+      mkdirSync(rgDestDir, { recursive: true })
+
+      const rgBinName = currentPlatform === 'win32' ? 'rg.exe' : 'rg'
+      const rgSrcBin = join(rgSrcDir, rgBinName)
+      const rgDestBin = join(rgDestDir, rgBinName)
+
+      if (existsSync(rgSrcBin)) {
+        copyFileSync(rgSrcBin, rgDestBin)
+        chmodSync(rgDestBin, 0o755)
+        console.log(`[publish-bin] Copied ripgrep: ${rgDirName}/${rgBinName}`)
+      } else {
+        console.warn(`[publish-bin] Warning: ripgrep binary not found at ${rgSrcBin}`)
+      }
+    } else {
+      console.warn(`[publish-bin] Warning: ripgrep vendor dir not found: ${rgSrcDir}`)
+    }
+
     // Generate platform package.json
     const platformPkg = {
       name: `${packageName}-${currentKey}`,
@@ -353,6 +395,7 @@ function buildBinPackages() {
       cpu: [currentArch],
       files: [
         currentPlatformInfo.binName,
+        'vendor/', // include ripgrep
       ],
     }
 

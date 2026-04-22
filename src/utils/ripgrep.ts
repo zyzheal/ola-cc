@@ -1,5 +1,6 @@
 import type { ChildProcess, ExecFileException } from 'child_process'
 import { execFile, spawn } from 'child_process'
+import { existsSync } from 'fs'
 import memoize from 'lodash-es/memoize.js'
 import { homedir } from 'os'
 import * as path from 'path'
@@ -16,6 +17,47 @@ import { countCharInString } from './stringUtils.js'
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
+
+/**
+ * Platform to vendor directory name mapping.
+ * Vendor directory naming follows ripgrep's release naming convention.
+ */
+const RG_PLATFORM_MAP: Record<string, string> = {
+  'arm64-darwin': 'arm64-darwin',
+  'x64-darwin': 'x64-darwin',
+  'arm64-linux': 'aarch64-unknown-linux-gnu',
+  'x64-linux': 'x86_64-unknown-linux-gnu', // Note: this binary doesn't exist in vendor
+  'arm64-linux-musl': 'aarch64-unknown-linux-gnu', // Use gnu binary for musl (works on most systems)
+  'x64-linux-musl': 'x86_64-unknown-linux-musl',
+  'arm64-win32': 'arm64-win32', // Note: this binary doesn't exist in vendor
+  'x64-win32': 'x64-win32',
+}
+
+/**
+ * Detect if running on Linux with musl libc.
+ */
+function detectMusl(): boolean {
+  if (process.platform !== 'linux') return false
+  const report = typeof process.report?.getReport === 'function'
+    ? process.report.getReport()
+    : null
+  return report != null && report.header?.glibcVersionRuntime === undefined
+}
+
+/**
+ * Get the vendor directory name for the current platform.
+ */
+function getRgVendorDirName(): string {
+  const platform = process.platform
+  const arch = process.arch
+  const isMusl = detectMusl()
+
+  const key = platform === 'linux'
+    ? `${arch}-linux${isMusl ? '-musl' : ''}`
+    : `${arch}-${platform}`
+
+  return RG_PLATFORM_MAP[key] || key
+}
 
 type RipgrepConfig = {
   mode: 'system' | 'builtin' | 'embedded'
@@ -40,6 +82,32 @@ const getRipgrepConfig = memoize((): RipgrepConfig => {
     }
   }
 
+  // When running inside a Bun-compiled binary (or child process spawned from
+  // one), __dirname may resolve to the $bunfs virtual filesystem which cannot
+  // be accessed by posix_spawn on macOS/Linux. Check this FIRST before any
+  // path-based logic, as it applies to both bundled mode and spawned children.
+  // Note: __dirname may be "/$bunfs/root" (with leading slash) or "$bunfs/..."
+  // depending on the Bun version and context.
+  if (__dirname.includes('$bunfs')) {
+    // In compiled binary, vendor/ripgrep is placed next to the binary itself.
+    // Use process.execPath to find the real vendor location.
+    const execDir = path.dirname(process.execPath)
+    const rgRootFromExec = path.resolve(execDir, 'vendor', 'ripgrep')
+    const vendorDirName = getRgVendorDirName()
+    const rgPath =
+      process.platform === 'win32'
+        ? path.resolve(rgRootFromExec, vendorDirName, 'rg.exe')
+        : path.resolve(rgRootFromExec, vendorDirName, 'rg')
+
+    // Check if vendor rg exists at the expected location
+    if (existsSync(rgPath)) {
+      return { mode: 'builtin', command: rgPath, args: [] }
+    }
+
+    // Fallback to system ripgrep if vendor not found
+    return { mode: 'system', command: 'rg', args: [] }
+  }
+
   // In bundled (native) mode, ripgrep is statically compiled into bun-internal
   // and dispatches based on argv[0]. We spawn ourselves with argv0='rg'.
   if (isInBundledMode()) {
@@ -51,13 +119,21 @@ const getRipgrepConfig = memoize((): RipgrepConfig => {
     }
   }
 
+  // For development mode, use vendor/ripgrep relative to __dirname
   const rgRoot = path.resolve(__dirname, 'vendor', 'ripgrep')
+  const vendorDirName = getRgVendorDirName()
   const command =
     process.platform === 'win32'
-      ? path.resolve(rgRoot, `${process.arch}-win32`, 'rg.exe')
-      : path.resolve(rgRoot, `${process.arch}-${process.platform}`, 'rg')
+      ? path.resolve(rgRoot, vendorDirName, 'rg.exe')
+      : path.resolve(rgRoot, vendorDirName, 'rg')
 
-  return { mode: 'builtin', command, args: [] }
+  // Check if vendor binary exists, fallback to system rg if not
+  if (existsSync(command)) {
+    return { mode: 'builtin', command, args: [] }
+  }
+
+  // Fallback to system ripgrep
+  return { mode: 'system', command: 'rg', args: [] }
 })
 
 export function ripgrepCommand(): {
