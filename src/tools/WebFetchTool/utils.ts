@@ -128,6 +128,11 @@ const MAX_REDIRECTS = 10
 // Truncate to not spend too many tokens
 export const MAX_MARKDOWN_LENGTH = 100_000
 
+// Truncate HTML BEFORE turndown conversion to prevent hangs on超大 pages.
+// Turndown builds a full DOM tree (3-5x HTML size in memory) — even 10MB
+// of HTML can cause OOM or multi-minute hangs.
+const MAX_HTML_BEFORE_TURNDOWN = 500_000 // ~500KB
+
 export function isPreapprovedUrl(url: string): boolean {
   try {
     const parsedUrl = new URL(url)
@@ -450,12 +455,17 @@ export async function getURLMarkdownContent(
   }
 
   const bytes = rawBuffer.length
-  const htmlContent = rawBuffer.toString('utf-8')
+  const rawHtml = rawBuffer.toString('utf-8')
 
   let markdownContent: string
   let contentBytes: number
   if (contentType.includes('text/html')) {
-    markdownContent = (await getTurndownService()).turndown(htmlContent)
+    // Truncate BEFORE turndown to prevent DOM-tree OOM on超大 HTML pages
+    const htmlToConvert =
+      rawHtml.length > MAX_HTML_BEFORE_TURNDOWN
+        ? rawHtml.slice(0, MAX_HTML_BEFORE_TURNDOWN)
+        : rawHtml
+    markdownContent = (await getTurndownService()).turndown(htmlToConvert)
     contentBytes = Buffer.byteLength(markdownContent)
   } else {
     // It's not HTML - just use it raw. The decoded string's UTF-8 byte
