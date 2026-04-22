@@ -1474,8 +1474,37 @@ export function getPlanSlugCache(): Map<string, string> {
   return STATE.planSlugCache
 }
 
+function evictPlanSlugCache(): void {
+  while (STATE.planSlugCache.size > MAX_PLAN_SLUG_CACHE) {
+    const firstKey = STATE.planSlugCache.keys().next().value
+    if (firstKey) STATE.planSlugCache.delete(firstKey)
+  }
+}
+
+// Internal wrapper that enforces bounded eviction
+export function setPlanSlugCacheEntry(sessionId: string, wordSlug: string): void {
+  STATE.planSlugCache.set(sessionId, wordSlug)
+  evictPlanSlugCache()
+}
+
 export function getSessionCreatedTeams(): Set<string> {
   return STATE.sessionCreatedTeams
+}
+
+function evictSessionCreatedTeams(): void {
+  while (STATE.sessionCreatedTeams.size > MAX_SESSION_CREATED_TEAMS) {
+    const firstKey = STATE.sessionCreatedTeams.values().next().value
+    if (firstKey) STATE.sessionCreatedTeams.delete(firstKey)
+  }
+}
+
+export function addSessionCreatedTeam(teamId: string): void {
+  STATE.sessionCreatedTeams.add(teamId)
+  evictSessionCreatedTeams()
+}
+
+export function removeSessionCreatedTeam(teamId: string): void {
+  STATE.sessionCreatedTeams.delete(teamId)
 }
 
 // Teleported session tracking for reliability logging
@@ -1515,6 +1544,19 @@ export type InvokedSkillInfo = {
 // Maximum number of invoked skills to retain in memory. Beyond this, oldest
 // entries are evicted (FIFO) to prevent unbounded growth in long sessions.
 const MAX_INVOKED_SKILLS = 200
+
+// Maximum number of plan slugs to retain. Only the current session's slug is
+// ever read, but session switching and regeneration can accumulate entries.
+const MAX_PLAN_SLUG_CACHE = 50
+
+// Maximum number of system prompt section cache entries. Covers tool docs,
+// CLAUDE.md sections, etc. Evicted FIFO to prevent unbounded growth.
+const MAX_SYSTEM_PROMPT_CACHE = 100
+
+// Maximum number of team IDs tracked per session. Teams are created by
+// subagents and cleaned up on shutdown; this cap prevents unbounded growth
+// if many subagents are spawned in long sessions.
+const MAX_SESSION_CREATED_TEAMS = 100
 
 export function addInvokedSkill(
   skillName: string,
@@ -1666,11 +1708,19 @@ export function getSystemPromptSectionCache(): Map<string, string | null> {
   return STATE.systemPromptSectionCache
 }
 
+function evictSystemPromptSectionCache(): void {
+  while (STATE.systemPromptSectionCache.size > MAX_SYSTEM_PROMPT_CACHE) {
+    const firstKey = STATE.systemPromptSectionCache.keys().next().value
+    if (firstKey) STATE.systemPromptSectionCache.delete(firstKey)
+  }
+}
+
 export function setSystemPromptSectionCacheEntry(
   name: string,
   value: string | null,
 ): void {
   STATE.systemPromptSectionCache.set(name, value)
+  evictSystemPromptSectionCache()
 }
 
 export function clearSystemPromptSectionState(): void {
