@@ -77,6 +77,18 @@ export function getAgentModel(
 
   const agentModelWithExp = agentModel ?? getDefaultSubagentModel()
 
+  // When parent model is a non-Claude model (3P provider like qwen, llama, etc.),
+  // all Claude aliases (sonnet/opus/haiku) would resolve to claude-* models
+  // that the 3P provider doesn't support. Always inherit the parent model.
+  const parentCanonical = getCanonicalName(parentModel)
+  if (!parentCanonical.includes('claude')) {
+    return getRuntimeMainLoopModel({
+      permissionMode: permissionMode ?? 'default',
+      mainLoopModel: parentModel,
+      exceeds200kTokens: false,
+    })
+  }
+
   if (agentModelWithExp === 'inherit') {
     // Apply runtime model resolution for inherit to get the effective model
     // This ensures agents using 'inherit' get opusplan→Opus resolution in plan mode
