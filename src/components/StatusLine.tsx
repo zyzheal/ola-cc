@@ -1,6 +1,7 @@
 import { feature } from 'bun:bundle';
 import * as React from 'react';
 import { memo, useCallback, useEffect, useRef } from 'react';
+import { useInterval } from 'usehooks-ts';
 import { logEvent } from 'src/services/analytics/index.js';
 import { useAppState, useSetAppState } from 'src/state/AppState.js';
 import type { PermissionMode } from 'src/utils/permissions/PermissionMode.js';
@@ -302,6 +303,16 @@ function StatusLineInner({
     // eslint-disable-next-line react-hooks/exhaustive-deps
     // biome-ignore lint/correctness/useExhaustiveDependencies: intentional
   }, []); // Only run once on mount, not when doUpdate changes
+
+  // Periodic update for statusline commands that display dynamic data (e.g., memory, PID)
+  // Updates every 10 seconds to refresh time-based or process metrics without excessive overhead
+  const statusLineConfigured = settings?.statusLine !== undefined;
+  useInterval(
+    () => {
+      void doUpdate();
+    },
+    statusLineConfigured ? 10_000 : null, // Only poll when statusline is configured
+  );
 
   // Get padding from settings or default to 0
   const paddingX = settings?.statusLine?.padding ?? 0;
