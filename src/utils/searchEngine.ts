@@ -1,10 +1,23 @@
 // src/utils/searchEngine.ts
 // Translate ripgrep CLI args to ugrep CLI args
 
+import { logForDebugging } from './debug.js'
+
 /**
  * Translate ripgrep CLI args to ugrep CLI args.
+ *
  * Only handles flags that GrepTool actually sends (verified from GrepTool.ts).
- * Unsupported flags are silently dropped.
+ * Unsupported flags are dropped with a debug log entry.
+ *
+ * Key mapping decisions:
+ * - ugrep needs explicit `-r` for recursion (ripgrep recurses by default)
+ * - `--no-ignore` maps to ugrep's own `--no-ignore` (both tools support this flag)
+ * - `--sort=modified` is dropped — sorting is done in GrepTool post-processing
+ * - `--max-columns` is dropped — ugrep handles long lines natively
+ * - `-U` (multiline) is dropped — ugrep supports multiline by default
+ *
+ * @param rgArgs - Array of ripgrep CLI arguments (flags, values, and search pattern)
+ * @returns Array of ugrep CLI arguments, always starting with `-r` for recursion
  */
 export function translateRgToUgrep(rgArgs: string[]): string[] {
   const ugrepArgs: string[] = []
@@ -58,7 +71,7 @@ export function translateRgToUgrep(rgArgs: string[]): string[] {
       }
 
       case '--no-ignore':
-        ugrepArgs.push('--ignore-files')
+        ugrepArgs.push('--no-ignore')
         break
 
       case '-c':
@@ -92,7 +105,7 @@ export function translateRgToUgrep(rgArgs: string[]): string[] {
         if (!arg.startsWith('-')) {
           ugrepArgs.push(arg)
         } else {
-          console.warn(`[searchEngine] unknown ripgrep flag: ${arg}`)
+          logForDebugging(`[searchEngine] unknown ripgrep flag: ${arg}`)
         }
     }
     i++
