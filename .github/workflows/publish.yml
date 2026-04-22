@@ -125,6 +125,19 @@ jobs:
           ./dist/publish-bin/${{ matrix.platform.key }}/ola-cc --version
         shell: bash
 
+      # Verify ugrep binary is included in wrapper package (Windows x64 only)
+      - name: Verify ugrep in package
+        if: matrix.platform.key == 'win32-x64'
+        run: |
+          echo "Checking ugrep binary in wrapper package..."
+          if [[ -f "vendor/ugrep/x64-win32/ugrep.exe" ]]; then
+            echo "ugrep binary found in vendor directory"
+          else
+            echo "ERROR: ugrep binary not found!"
+            exit 1
+          fi
+        shell: bash
+
       # Integration test: wrapper + binary in a clean npm workspace
       - name: Test wrapper + binary integration
         run: |
