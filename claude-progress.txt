@@ -20,6 +20,28 @@
 - bun run ./scripts/build-publish.ts - SUCCESS
 
 ## Next Steps
+- Task 2+: Continue building Windows x64 ugrep integration
 - End-to-end testing with a real OpenAI-compatible endpoint
 - Consider adding structured outputs support for response_format
 - Consider adding image/multimodal support for vision-capable models
+
+### ugrepBinary Spawner (2026-04-22) - DONE
+- Added getUgrepPath() and ugrepBinary() to src/utils/searchEngine.ts
+- getUgrepPath() resolves vendor/ugrep/x64-win32/ugrep.exe for Windows x64
+- ugrepBinary() spawns ugrep with translated args via translateRgToUgrep()
+- Mirrors ripGrepRaw spawn patterns: timeout handling, SIGTERM/SIGKILL escalation,
+  buffer size limits (20MB), AbortSignal support
+- Build verification: bun build succeeded
+
+### Next Steps
+- Task 4+: Continue Windows x64 ugrep integration
+- Integrate unifiedSearch into GrepTool execution path
+- End-to-end testing with ugrep on Windows x64
+
+### unifiedSearch Entry Point (2026-04-22) - DONE
+- Added canUseUgrep() to check platform support (Windows x64 only)
+- Added logEngineFallback() for analytics tracking of engine fallbacks
+- Added unifiedSearch() as unified entry point: tries ugrep first on
+  Windows x64, falls back to ripgrep on any error; uses ripgrep
+  directly on all other platforms
+- Build verification: bun build succeeded (386 modules bundled)
