@@ -269,6 +269,28 @@ try {
   console.warn('[publish-build] ripgrep not found, skipping')
 }
 
+// 1b. ugrep binary (Windows x64 only) — unifiedSearch fallback engine
+//     Runtime reads from vendor/ugrep/x64-win32/ugrep.exe (see searchEngine.ts)
+const ugrepDir = 'vendor/ugrep'
+try {
+  const destUgrepDir = join(outDir, 'vendor', 'ugrep')
+  mkdirSync(destUgrepDir, { recursive: true })
+  const platforms = Bun.spawnSync({ cmd: ['ls', ugrepDir], stdout: 'pipe' }).stdout.toString().trim().split('\n').filter(Boolean)
+  for (const platform of platforms) {
+    const srcPlatform = join(ugrepDir, platform)
+    const destPlatform = join(destUgrepDir, platform)
+    mkdirSync(destPlatform, { recursive: true })
+    const files = Bun.spawnSync({ cmd: ['ls', srcPlatform], stdout: 'pipe' }).stdout.toString().trim().split('\n').filter(Boolean)
+    for (const f of files) {
+      cpSync(join(srcPlatform, f), join(destPlatform, f))
+      vendorCount++
+      console.log(`[publish-build] vendor/ugrep/${platform}/${f}`)
+    }
+  }
+} catch {
+  console.warn('[publish-build] ugrep not found, skipping')
+}
+
 // 2. Seccomp filter files (Linux sandbox) — arm64 + x64
 //    Used by @anthropic-ai/sandbox-runtime for Linux container security.
 //    Runtime reads from vendor/seccomp/{arch}/apply-seccomp + unix-block.bpf
