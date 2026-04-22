@@ -63,11 +63,26 @@ function buildStatusLineCommandInput(permissionMode: PermissionMode, exceeds200k
       }
     })
   };
+
+  // Get process metrics for statusline display (memory, PID)
+  const memoryUsage = process.memoryUsage();
+  const processInfo: StatusLineCommandInput['process'] = {
+    pid: process.pid,
+    memory: {
+      rss: memoryUsage.rss,
+      heap_total: memoryUsage.heapTotal,
+      heap_used: memoryUsage.heapUsed,
+      external: memoryUsage.external,
+      array_buffers: memoryUsage.arrayBuffers,
+    },
+  };
+
   return {
     ...createBaseHookInput(),
     ...(sessionName && {
       session_name: sessionName
     }),
+    process: processInfo,
     model: {
       id: runtimeModel,
       display_name: renderModelName(runtimeModel)
