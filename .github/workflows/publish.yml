@@ -4,6 +4,8 @@ on:
   push:
     tags:
       - 'v*'
+    branches:
+      - 'feature-openai-bin'
   workflow_dispatch:
     inputs:
       publish:
