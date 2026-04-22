@@ -1,7 +1,16 @@
 // src/utils/searchEngine.ts
-// Translate ripgrep CLI args to ugrep CLI args
+// Translate ripgrep CLI args to ugrep CLI args and spawn ugrep binary
 
+import { spawn } from 'child_process'
+import { join, resolve } from 'path'
+import { fileURLToPath } from 'url'
 import { logForDebugging } from './debug.js'
+import { getPlatform } from './platform.js'
+
+const __filename = fileURLToPath(import.meta.url)
+const __dirname = resolve(__filename, '..')
+
+const MAX_BUFFER_SIZE = 20_000_000 // 20MB, same as ripgrep.ts
 
 /**
  * Translate ripgrep CLI args to ugrep CLI args.
@@ -112,4 +121,106 @@ export function translateRgToUgrep(rgArgs: string[]): string[] {
   }
 
   return ugrepArgs
+}
+
+/**
+ * Get the path to the ugrep binary for the current platform.
+ * Returns null if ugrep is not available for this platform/arch.
+ */
+function getUgrepPath(): string | null {
+  const ugRoot = resolve(__dirname, 'vendor', 'ugrep')
+
+  if (process.platform === 'win32' && process.arch === 'x64') {
+    const p = join(ugRoot, 'x64-win32', 'ugrep.exe')
+    return p
+  }
+  return null
+}
+
+/**
+ * Spawn ugrep binary with translated args.
+ * Returns array of output lines (same format as ripGrep).
+ */
+export async function ugrepBinary(
+  rgArgs: string[],
+  target: string,
+  abortSignal: AbortSignal,
+): Promise<string[]> {
+  const ugrepPath = getUgrepPath()
+  if (!ugrepPath) {
+    throw new Error('ugrep binary not available for this platform')
+  }
+
+  const ugrepArgs = translateRgToUgrep(rgArgs)
+
+  return new Promise((resolve, reject) => {
+    const defaultTimeout = getPlatform() === 'wsl' ? 60_000 : 20_000
+    const parsedSeconds = parseInt(process.env.CLAUDE_CODE_GLOB_TIMEOUT_SECONDS || '', 10) || 0
+    const timeout = parsedSeconds > 0 ? parsedSeconds * 1000 : defaultTimeout
+
+    const child = spawn(ugrepPath, [...ugrepArgs, target], {
+      signal: abortSignal,
+      windowsHide: true,
+    })
+
+    let stdout = ''
+    let stderr = ''
+    let stdoutTruncated = false
+    let stderrTruncated = false
+
+    child.stdout?.on('data', (data: Buffer) => {
+      if (!stdoutTruncated) {
+        stdout += data.toString()
+        if (stdout.length > MAX_BUFFER_SIZE) {
+          stdout = stdout.slice(0, MAX_BUFFER_SIZE)
+          stdoutTruncated = true
+        }
+      }
+    })
+
+    child.stderr?.on('data', (data: Buffer) => {
+      if (!stderrTruncated) {
+        stderr += data.toString()
+        if (stderr.length > MAX_BUFFER_SIZE) {
+          stderr = stderr.slice(0, MAX_BUFFER_SIZE)
+          stderrTruncated = true
+        }
+      }
+    })
+
+    const timeoutId = setTimeout(() => {
+      if (process.platform === 'win32') {
+        child.kill()
+      } else {
+        child.kill('SIGTERM')
+        setTimeout(() => child.kill('SIGKILL'), 5_000)
+      }
+    }, timeout)
+
+    let settled = false
+    child.on('close', (code) => {
+      if (settled) return
+      settled = true
+      clearTimeout(timeoutId)
+
+      if (code === 0 || code === 1) {
+        resolve(
+          stdout
+            .trim()
+            .split('\n')
+            .map(line => line.replace(/\r$/, ''))
+            .filter(Boolean),
+        )
+      } else {
+        reject(new Error(`ugrep exited with code ${code}: ${stderr}`))
+      }
+    })
+
+    child.on('error', (err) => {
+      if (settled) return
+      settled = true
+      clearTimeout(timeoutId)
+      reject(err)
+    })
+  })
 }
