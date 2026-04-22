@@ -84,7 +84,17 @@ const experimentDataByFeature = new Map<string, StoredExperimentData>()
 const remoteEvalFeatureValues = new Map<string, unknown>()
 
 // Track features accessed before init that need exposure logging
+// Bounded to prevent unbounded growth if init never completes
+const MAX_PENDING_EXPOSURES = 500
 const pendingExposures = new Set<string>()
+
+function trimPendingExposures(): void {
+  if (pendingExposures.size <= MAX_PENDING_EXPOSURES) return
+  const entries = Array.from(pendingExposures)
+  pendingExposures.clear()
+  // Keep only the most recent half
+  for (const e of entries.slice(-MAX_PENDING_EXPOSURES / 2)) pendingExposures.add(e)
+}
 
 // Track features that have already had their exposure logged this session (dedup)
 // This prevents firing duplicate exposure events when getFeatureValue_CACHED_MAY_BE_STALE
@@ -768,6 +778,7 @@ export function getFeatureValue_CACHED_MAY_BE_STALE<T>(
     logExposureForFeature(feature)
   } else {
     pendingExposures.add(feature)
+    trimPendingExposures()
   }
 
   // In-memory payload is authoritative once processRemoteEvalPayload has run.
@@ -837,6 +848,7 @@ export function checkStatsigFeatureGate_CACHED_MAY_BE_STALE(
     logExposureForFeature(gate)
   } else {
     pendingExposures.add(gate)
+    trimPendingExposures()
   }
 
   // Return cached value immediately from disk
@@ -940,6 +952,7 @@ export async function checkGate_CACHED_OR_BLOCKING(
       logExposureForFeature(gate)
     } else {
       pendingExposures.add(gate)
+      trimPendingExposures()
     }
     return true
   }

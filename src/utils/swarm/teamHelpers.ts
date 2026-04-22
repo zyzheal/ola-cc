@@ -2,7 +2,7 @@ import { mkdirSync, readFileSync, writeFileSync } from 'fs'
 import { mkdir, readFile, rm, writeFile } from 'fs/promises'
 import { join } from 'path'
 import { z } from 'zod/v4'
-import { getSessionCreatedTeams } from '../../bootstrap/state.js'
+import { addSessionCreatedTeam, getSessionCreatedTeams, removeSessionCreatedTeam } from '../../bootstrap/state.js'
 import { logForDebugging } from '../debug.js'
 import { getTeamsDir } from '../envUtils.js'
 import { errorMessage, getErrnoCode } from '../errors.js'
@@ -558,7 +558,7 @@ async function destroyWorktree(worktreePath: string): Promise<void> {
  * clears it between tests (avoids the PR #17615 cross-shard leak class).
  */
 export function registerTeamForSessionCleanup(teamName: string): void {
-  getSessionCreatedTeams().add(teamName)
+  addSessionCreatedTeam(teamName)
 }
 
 /**
@@ -566,7 +566,7 @@ export function registerTeamForSessionCleanup(teamName: string): void {
  * TeamDelete — already cleaned, don't try again on shutdown).
  */
 export function unregisterTeamForSessionCleanup(teamName: string): void {
-  getSessionCreatedTeams().delete(teamName)
+  removeSessionCreatedTeam(teamName)
 }
 
 /**

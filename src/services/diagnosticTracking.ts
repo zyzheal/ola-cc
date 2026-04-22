@@ -11,6 +11,10 @@ class DiagnosticsTrackingError extends ClaudeError {}
 
 const MAX_DIAGNOSTICS_SUMMARY_CHARS = 4000
 
+// Maximum number of files to track for diagnostics. Beyond this, oldest
+// entries are evicted (FIFO) to prevent unbounded growth in long sessions.
+const MAX_DIAGNOSTIC_FILES = 200
+
 export interface Diagnostic {
   message: string
   severity: 'Error' | 'Warning' | 'Info' | 'Hint'
@@ -40,6 +44,18 @@ export class DiagnosticTrackingService {
   // Track which files have received right file diagnostics and if they've changed
   // Map<normalizedPath, lastClaudeFsRightDiagnostics>
   private rightFileDiagnosticsState: Map<string, Diagnostic[]> = new Map()
+
+  private evictStaleEntries(): void {
+    // Evict from all maps using the largest one as the driver
+    while (this.baseline.size > MAX_DIAGNOSTIC_FILES) {
+      const firstKey = this.baseline.keys().next().value
+      if (firstKey) {
+        this.baseline.delete(firstKey)
+        this.lastProcessedTimestamps.delete(firstKey)
+        this.rightFileDiagnosticsState.delete(firstKey)
+      }
+    }
+  }
 
   static getInstance(): DiagnosticTrackingService {
     if (!DiagnosticTrackingService.instance) {
@@ -170,11 +186,13 @@ export class DiagnosticTrackingService {
         const normalizedPath = this.normalizeFileUri(filePath)
         this.baseline.set(normalizedPath, diagnosticFile.diagnostics)
         this.lastProcessedTimestamps.set(normalizedPath, timestamp)
+        this.evictStaleEntries()
       } else {
         // No diagnostic file returned, store an empty baseline
         const normalizedPath = this.normalizeFileUri(filePath)
         this.baseline.set(normalizedPath, [])
         this.lastProcessedTimestamps.set(normalizedPath, timestamp)
+        this.evictStaleEntries()
       }
     } catch (_error) {
       // Fail silently if IDE doesn't support diagnostics
