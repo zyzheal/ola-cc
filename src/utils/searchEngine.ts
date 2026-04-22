@@ -2,13 +2,14 @@
 // Translate ripgrep CLI args to ugrep CLI args and spawn ugrep binary
 
 import { spawn } from 'child_process'
-import { join, resolve } from 'path'
+import * as path from 'path'
+import { existsSync } from 'fs'
 import { fileURLToPath } from 'url'
 import { logForDebugging } from './debug.js'
 import { getPlatform } from './platform.js'
 
 const __filename = fileURLToPath(import.meta.url)
-const __dirname = resolve(__filename, '..')
+const __dirname = path.dirname(__filename)
 
 const MAX_BUFFER_SIZE = 20_000_000 // 20MB, same as ripgrep.ts
 
@@ -128,10 +129,11 @@ export function translateRgToUgrep(rgArgs: string[]): string[] {
  * Returns null if ugrep is not available for this platform/arch.
  */
 function getUgrepPath(): string | null {
-  const ugRoot = resolve(__dirname, 'vendor', 'ugrep')
+  const ugRoot = path.join(__dirname, 'vendor', 'ugrep')
 
   if (process.platform === 'win32' && process.arch === 'x64') {
-    const p = join(ugRoot, 'x64-win32', 'ugrep.exe')
+    const p = path.join(ugRoot, 'x64-win32', 'ugrep.exe')
+    if (!existsSync(p)) return null
     return p
   }
   return null
@@ -188,12 +190,13 @@ export async function ugrepBinary(
       }
     })
 
+    let killTimeoutId: ReturnType<typeof setTimeout> | undefined
     const timeoutId = setTimeout(() => {
       if (process.platform === 'win32') {
         child.kill()
       } else {
         child.kill('SIGTERM')
-        setTimeout(() => child.kill('SIGKILL'), 5_000)
+        killTimeoutId = setTimeout(() => child.kill('SIGKILL'), 5_000)
       }
     }, timeout)
 
@@ -202,6 +205,13 @@ export async function ugrepBinary(
       if (settled) return
       settled = true
       clearTimeout(timeoutId)
+      clearTimeout(killTimeoutId)
+
+      // Distinguish abort from real failure
+      if (abortSignal.aborted) {
+        resolve([])
+        return
+      }
 
       if (code === 0 || code === 1) {
         resolve(
@@ -220,6 +230,7 @@ export async function ugrepBinary(
       if (settled) return
       settled = true
       clearTimeout(timeoutId)
+      clearTimeout(killTimeoutId)
       reject(err)
     })
   })
