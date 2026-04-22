@@ -103,12 +103,14 @@ function trimPendingExposures(): void {
 const MAX_LOGGED_EXPOSURES = 500
 const loggedExposures = new Set<string>()
 
-// Trim the Set to half its capacity when it grows too large
+// Trim the Set to half its capacity when it grows too large.
+// Keeps the oldest half (first entries) to preserve dedup for features
+// that have already been logged, preventing re-exposure of early features.
 function trimLoggedExposures(): void {
   if (loggedExposures.size <= MAX_LOGGED_EXPOSURES) return
   const entries = Array.from(loggedExposures)
   loggedExposures.clear()
-  for (const e of entries.slice(-MAX_LOGGED_EXPOSURES / 2)) loggedExposures.add(e)
+  for (const e of entries.slice(0, MAX_LOGGED_EXPOSURES / 2)) loggedExposures.add(e)
 }
 
 // Track re-initialization promise for security gate checks

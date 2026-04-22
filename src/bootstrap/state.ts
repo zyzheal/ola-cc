@@ -1556,7 +1556,7 @@ const MAX_SYSTEM_PROMPT_CACHE = 100
 // Maximum number of team IDs tracked per session. Teams are created by
 // subagents and cleaned up on shutdown; this cap prevents unbounded growth
 // if many subagents are spawned in long sessions.
-const MAX_SESSION_CREATED_TEAMS = 100
+export const MAX_SESSION_CREATED_TEAMS = 100
 
 export function addInvokedSkill(
   skillName: string,

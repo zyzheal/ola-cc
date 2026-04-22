@@ -220,10 +220,32 @@ function sanitizeNestedSchema(schema: unknown): Record<string, unknown> {
     result.type = 'number'
   }
 
+  // Normalize type: if it's an array, take the first element (OpenAI requires single string type)
+  if (Array.isArray(result.type)) {
+    result.type = result.type[0]
+    if (result.type === 'integer') result.type = 'number'
+    if (result.type === 'null') result.type = 'string' // fallback for nullable fields
+  }
+
   // Remove polymorphism
   delete (result as Record<string, unknown>).anyOf
   delete (result as Record<string, unknown>).oneOf
   delete (result as Record<string, unknown>).allOf
+
+  // Remove unsupported JSON Schema keywords
+  delete (result as Record<string, unknown>).$ref
+  delete (result as Record<string, unknown>).$defs
+  delete (result as Record<string, unknown>).$schema
+  delete (result as Record<string, unknown>).definitions
+  delete (result as Record<string, unknown>).const
+  delete (result as Record<string, unknown>).enum
+  delete (result as Record<string, unknown>).if
+  delete (result as Record<string, unknown>).then
+  delete (result as Record<string, unknown>).else
+  delete (result as Record<string, unknown>).contains
+  delete (result as Record<string, unknown>).propertyNames
+  delete (result as Record<string, unknown>).patternProperties
+  delete (result as Record<string, unknown>).additionalItems
 
   // Handle malformed required field (non-array → delete)
   if (result.required !== undefined && !Array.isArray(result.required)) {
@@ -273,7 +295,11 @@ function sanitizeSchemaForOpenAI(schema: unknown): Record<string, unknown> {
   const obj = schema as Record<string, unknown>
   const result = { ...obj }
 
-  // Ensure type is object (top-level tool schemas must be type: 'object')
+  // Ensure type is a single string (top-level tool schemas must be type: 'object')
+  // If type is an array, take the first element
+  if (Array.isArray(result.type)) {
+    result.type = result.type[0]
+  }
   result.type = 'object'
 
   // Ensure properties exists and is an object
@@ -285,6 +311,21 @@ function sanitizeSchemaForOpenAI(schema: unknown): Record<string, unknown> {
   delete result.anyOf
   delete result.oneOf
   delete result.allOf
+
+  // Remove unsupported JSON Schema keywords
+  delete result.$ref
+  delete result.$defs
+  delete result.$schema
+  delete result.definitions
+  delete result.const
+  delete result.enum
+  delete result.if
+  delete result.then
+  delete result.else
+  delete result.contains
+  delete result.propertyNames
+  delete result.patternProperties
+  delete result.additionalItems
 
   // Handle malformed required field (non-array → delete)
   if (result.required !== undefined && !Array.isArray(result.required)) {
