@@ -34,7 +34,7 @@
     "build:bin:platform": "bun run ./scripts/build-publish-bin.ts --only-bin"
   },
   "dependencies": {
-    "@alcalzone/ansi-tokenize": "*",
+    "@alcalzone/ansi-tokenize": "^0.2.4",
     "@ant/claude-for-chrome-mcp": "file:./shims/ant-claude-for-chrome-mcp",
     "@ant/computer-use-input": "file:./shims/ant-computer-use-input",
     "@ant/computer-use-mcp": "file:./shims/ant-computer-use-mcp",
