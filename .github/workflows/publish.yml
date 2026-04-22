@@ -28,8 +28,19 @@ jobs:
       - name: Install dependencies
         run: bun install
 
+      - name: Build JS bundle (for Windows + wrapper)
+        run: bun run ./scripts/build-publish.ts --publish
+
       - name: Build wrapper
         run: bun run ./scripts/build-publish-bin.ts --only-wrapper
+
+      - name: Test wrapper package.json
+        run: |
+          node -e "const pkg = require('./dist/publish/package.json'); console.log('Wrapper pkg:', pkg.name, pkg.version); if (pkg.version !== '0.3.5') process.exit(1)"
+
+      - name: Test CLI bundle
+        run: |
+          node dist/publish/cli.mjs --version | grep -q "0.3.5" && echo "CLI version OK"
 
       - name: Upload wrapper artifact
         uses: actions/upload-artifact@v4
@@ -74,10 +85,72 @@ jobs:
             -w /workspace oven/bun:1-alpine sh -c \
             "bun install && bun run ./scripts/build-publish-bin.ts --only-bin"
 
-      # Native build for other platforms
+      # Native build for macOS/Linux, pkg build for Windows
       - name: Build platform binary
         if: "!matrix.platform.musl"
         run: bun run ./scripts/build-publish-bin.ts --only-bin
+
+      # Windows: install pkg at fixed version before building
+      - name: Install pkg (Windows)
+        if: startsWith(matrix.platform.key, 'win32')
+        run: npm install @yao-pkg/pkg@6.18.1 --save-dev --no-save
+        shell: bash
+
+      # ─── Test phase ──────────────────────────────────────
+      # Windows: test compiled .exe (or JS bundle fallback)
+      - name: Test Windows binary
+        if: startsWith(matrix.platform.key, 'win32')
+        run: |
+          if [[ -f "dist/publish-bin/${{ matrix.platform.key }}/ola-cc.exe" ]]; then
+            echo "Found compiled .exe"
+            ./dist/publish-bin/${{ matrix.platform.key }}/ola-cc.exe --version
+          else
+            echo "Using JS bundle fallback"
+            node dist/publish-bin/${{ matrix.platform.key }}/cli.mjs --version
+          fi
+        shell: bash
+
+      # macOS/Linux: test native binary
+      - name: Test native binary
+        if: "!startsWith(matrix.platform.key, 'win32')"
+        run: |
+          ./dist/publish-bin/${{ matrix.platform.key }}/ola-cc --version
+        shell: bash
+
+      # Integration test: wrapper + binary in a clean npm workspace
+      - name: Test wrapper + binary integration
+        run: |
+          # Build wrapper (uses current platform's cli.mjs from build-publish step)
+          bun run ./scripts/build-publish-bin.ts --only-wrapper
+
+          # Create a clean test directory to avoid root project dependencies
+          TEST_DIR="$RUNNER_TEMP/ola-cc-test"
+          rm -rf "$TEST_DIR"
+          mkdir -p "$TEST_DIR"
+          cd "$TEST_DIR"
+
+          # Initialize minimal package.json (no deps to resolve)
+          echo '{"name":"test","private":true}' > package.json
+
+          # Install only the wrapper + binary packages (no transitive deps)
+          AUTHORIZED=1 npm install --no-save \
+            --ignore-scripts \
+            "${{ github.workspace }}/dist/publish/" \
+            "${{ github.workspace }}/dist/publish-bin/${{ matrix.platform.key }}/" 2>&1
+
+          if [[ "${{ matrix.platform.key }}" == win32-* ]]; then
+            # Windows: postinstall copies ola-cc.exe to bin/ (or uses JS bundle fallback)
+            node node_modules/@zyzheal/ola-cc/install.cjs 2>&1
+            npx ola-cc --version
+          else
+            # macOS/Linux: run postinstall to place native binary
+            node node_modules/@zyzheal/ola-cc/install.cjs 2>&1
+            npx ola-cc --version
+          fi
+
+          # Cleanup
+          rm -rf "$TEST_DIR"
+        shell: bash
 
       - name: Upload binary artifact
         uses: actions/upload-artifact@v4

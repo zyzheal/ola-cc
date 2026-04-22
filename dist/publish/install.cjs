@@ -132,10 +132,43 @@ function placeBinary(src, dest) {
 }
 
 function main() {
-  // Windows: uses JS bundle (cli.js) directly — no native binary needed.
-  // The cli.js bundle is already included in the main package.
+  // Windows: check if the platform package has a compiled ola-cc.exe
+  // If yes, copy it to bin/. If no, fall through to JS bundle usage.
   if (process.platform === 'win32') {
-    console.log(`[${WRAPPER_NAME} postinstall] Windows: using bundled JS bundle (cli.js)`)
+    const winArch = arch() === 'arm64' ? 'arm64' : 'x64'
+    const winPkgName = PACKAGE_PREFIX + '-win32-' + winArch
+    let exeSrc = null
+
+    // Try resolve from optionalDependencies
+    try {
+      const pkgDir = path.dirname(require.resolve(winPkgName + '/package.json'))
+      const exeCandidate = path.join(pkgDir, 'ola-cc.exe')
+      require('fs').accessSync(exeCandidate)
+      exeSrc = exeCandidate
+    } catch {
+      // Check fallback path too (global installs)
+      const fallbackPath = path.join(__dirname, 'node_modules', winPkgName, 'ola-cc.exe')
+      try {
+        require('fs').accessSync(fallbackPath)
+        exeSrc = fallbackPath
+      } catch { /* no exe found */ }
+    }
+
+    if (exeSrc) {
+      const dest = path.join(__dirname, 'bin', 'ola-cc.exe')
+      try {
+        placeBinary(exeSrc, dest)
+        console.log(`[${WRAPPER_NAME} postinstall] Installed ola-cc.exe → bin/ola-cc.exe`)
+      } catch (err) {
+        console.error(`[${WRAPPER_NAME} postinstall] Failed to place ola-cc.exe: ${err.message}`)
+        console.error('  Fallback: node ' + path.join(__dirname, 'cli.mjs'))
+        process.exitCode = 1
+      }
+      return
+    }
+
+    // No compiled .exe found — use JS bundle (cli.mjs) directly
+    console.log(`[${WRAPPER_NAME} postinstall] Windows: no compiled binary found, using JS bundle`)
     return
   }
 
@@ -151,49 +184,55 @@ function main() {
   }
 
   let src
-  try {
-    const pkgDir = path.dirname(require.resolve(info.pkg + '/package.json'))
-    src = path.join(pkgDir, info.bin)
-  } catch (resolveErr) {
-    // Fallback: try resolving relative to this file's parent node_modules
-    // This handles global install paths where the package layout differs
-    const nodeModulesDir = path.join(__dirname, 'node_modules')
-    const fallbackPath = path.join(nodeModulesDir, info.pkg, info.bin)
+  // Resolution strategy: try multiple paths to find the platform binary package
+  const searchPaths = [
+    // 1. User project's node_modules (covers symlink/local installs)
+    path.join(process.cwd(), 'node_modules', info.pkg),
+    // 2. Standard require.resolve from this file's context
+    (() => { try { return path.dirname(require.resolve(info.pkg + '/package.json')); } catch { return null; } })(),
+    // 3. Wrapper's own node_modules (covers global installs)
+    path.join(__dirname, 'node_modules', info.pkg),
+  ].filter(Boolean)
+
+  for (const pkgDir of searchPaths) {
+    const binPath = path.join(pkgDir, info.bin)
     try {
-      require('fs').accessSync(fallbackPath)
-      src = fallbackPath
-    } catch {
+      require('fs').accessSync(binPath)
+      src = binPath
+      break
+    } catch { /* try next */ }
+  }
+
+  if (!src) {
+    console.error(
+      `[${WRAPPER_NAME} postinstall] Native package "${info.pkg}" not found.`,
+    )
+    console.error(`  Searched: ${searchPaths.map(p => p + '/' + info.bin).join(', ')}`)
+    if (platformKey === 'darwin-arm64' && arch() === 'x64') {
       console.error(
-        `[${WRAPPER_NAME} postinstall] Native package "${info.pkg}" not found.`,
-      )
-      console.error(`  require.resolve error: ${resolveErr.message}`)
-      console.error(`  Also checked: ${fallbackPath}`)
-      if (platformKey === 'darwin-arm64' && arch() === 'x64') {
-        console.error(
-          '  You are running x64 Node under Rosetta 2 on Apple Silicon. npm only',
-        )
-        console.error(
-          '  installed the darwin-x64 binary, which requires AVX (not emulated by',
-        )
-        console.error(
-          '  Rosetta). Install arm64 Node and reinstall — e.g. via nvm:',
-        )
-        console.error(
-          '    arch -arm64 zsh -c "nvm install --lts && npm i -g ' +
-            WRAPPER_NAME +
-            '"',
-        )
-        return
-      }
-      console.error(
-        '  This happens with --omit=optional or when the download failed.',
+        '  You are running x64 Node under Rosetta 2 on Apple Silicon. npm only',
       )
       console.error(
-        '  The `ola-cc` command will print instructions when invoked.',
+        '  installed the darwin-x64 binary, which requires AVX (not emulated by',
       )
-      console.error('  Fallback: node ' + path.join(__dirname, 'cli-wrapper.cjs'))
+      console.error(
+        '  Rosetta). Install arm64 Node and reinstall — e.g. via nvm:',
+      )
+      console.error(
+        '    arch -arm64 zsh -c "nvm install --lts && npm i -g ' +
+          WRAPPER_NAME +
+          '"',
+      )
       return
     }
+    console.error(
+      '  This happens with --omit=optional or when the download failed.',
+    )
+    console.error(
+      '  The `ola-cc` command will print instructions when invoked.',
+    )
+    console.error('  Fallback: node ' + path.join(__dirname, 'cli-wrapper.cjs'))
+    return
   }
 
   // Always write to bin/ directory

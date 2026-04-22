@@ -4,7 +4,7 @@
  *
  * 输出结构:
  *   dist/publish/
- *   ├── cli.js              # JS bundle (~10MB, 跨平台)
+ *   ├── cli.mjs              # JS bundle (~10MB, 跨平台)
  *   ├── package.json        # 干净的发布用 package.json
  *   ├── README.md           # 使用文档 + 配置示例
  *   ├── LICENSE.md
@@ -114,7 +114,7 @@ const externals = [
 
 // ─── Build JS Bundle ────────────────────────────────────────
 const publishVersion = pkg.version
-const outfile = join(outDir, 'cli.js')
+const outfile = join(outDir, 'cli.mjs')
 const buildTime = new Date().toISOString()
 const version = publishVersion
 
@@ -134,7 +134,7 @@ for (const ext of externals) cmd.push('--external', ext)
 for (const feature of features) cmd.push(`--feature=${feature}`)
 
 // Define macros
-const defines: Record<string, string> = {
+const macros = {
   'process.env.USER_TYPE': JSON.stringify('external'),
   'process.env.CLAUDE_CODE_FORCE_FULL_LOGO': JSON.stringify('true'),
   'process.env.CCR_FORCE_BUNDLE': JSON.stringify('true'),
@@ -146,9 +146,9 @@ const defines: Record<string, string> = {
   'MACRO.ISSUES_EXPLAINER': JSON.stringify(
     'This reconstructed source snapshot does not include Anthropic internal issue routing.',
   ),
-  'MACRO.VERSION_CHANGELOG': JSON.stringify('https://github.com/anthropics/claude-code'),
+  'MACRO.VERSION_CHANGELOG': JSON.stringify('https://github.com/zyzheal/ola-cc'),
 }
-for (const [key, value] of Object.entries(defines)) cmd.push('--define', `${key}=${value}`)
+for (const [key, value] of Object.entries(macros)) cmd.push('--define', `${key}=${value}`)
 
 console.log(`[publish-build] Building JS bundle with ${features.length} features...`)
 const proc = Bun.spawnSync({ cmd, cwd: process.cwd(), stdout: 'inherit', stderr: 'inherit' })
@@ -174,7 +174,7 @@ cliContent = cliContent.replace(/(#!\/usr\/bin\/env node\r?\n)(#!\/usr\/bin\/env
 await Bun.write(outfile, cliContent)
 
 const size = Bun.file(outfile).size
-console.log(`[publish-build] cli.js: ${(size / 1024 / 1024).toFixed(2)} MB`)
+console.log(`[publish-build] cli.mjs: ${(size / 1024 / 1024).toFixed(2)} MB`)
 
 // ─── Generate publish package.json ──────────────────────────
 const publishPkg = {
@@ -184,7 +184,7 @@ const publishPkg = {
   license: 'SEE LICENSE IN LICENSE.md',
   type: 'module',
   bin: {
-    'ola-cc': './cli.js',
+    'ola-cc': './cli.mjs',
   },
   repository: {
     type: 'git',
@@ -201,7 +201,7 @@ const publishPkg = {
     sharp: '*',
   },
   files: [
-    'cli.js',
+    'cli.mjs',
     'sdk-tools.d.ts',
     'vendor/',
     'README.md',
@@ -317,7 +317,7 @@ for (const dir of vendorSearchDirs) {
 console.log('')
 console.log('=== Publish Package ===')
 console.log(`Output: ${outDir}/`)
-console.log(`cli.js: ${(size / 1024 / 1024).toFixed(2)} MB`)
+console.log(`cli.mjs: ${(size / 1024 / 1024).toFixed(2)} MB`)
 console.log(`Features: ${features.length}`)
 console.log(`Vendor files: ${vendorCount}`)
 console.log('')
