@@ -18,7 +18,7 @@ import {
 import type { PermissionDecision } from '../../utils/permissions/PermissionResult.js'
 import { matchWildcardPattern } from '../../utils/permissions/shellRuleMatching.js'
 import { getGlobExclusionsForPluginCache } from '../../utils/plugins/orphanedPluginFilter.js'
-import { ripGrep } from '../../utils/ripgrep.js'
+import { unifiedSearch } from '../../utils/searchEngine.js'
 import { semanticBoolean } from '../../utils/semanticBoolean.js'
 import { semanticNumber } from '../../utils/semanticNumber.js'
 import { plural } from '../../utils/stringUtils.js'
@@ -159,7 +159,7 @@ type Output = z.infer<OutputSchema>
 
 export const GrepTool = buildTool({
   name: GREP_TOOL_NAME,
-  searchHint: 'search file contents with regex (ripgrep)',
+  searchHint: 'search file contents with regex',
   // 20K chars - tool result persistence threshold
   maxResultSizeChars: 20_000,
   strict: true,
@@ -438,7 +438,7 @@ export const GrepTool = buildTool({
     // We don't use AbortController for timeout to avoid interrupting the agent loop
     // If ripgrep times out, it throws RipgrepTimeoutError which propagates up
     // so Claude knows the search didn't complete (rather than thinking there were no matches)
-    const results = await ripGrep(args, absolutePath, abortController.signal)
+    const results = await unifiedSearch(args, absolutePath, abortController.signal)
 
     if (output_mode === 'content') {
       // For content mode, results are the actual content lines

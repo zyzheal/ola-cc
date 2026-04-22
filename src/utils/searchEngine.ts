@@ -151,7 +151,7 @@ function getUgrepPath(): string | null {
 
 function logEngineFallback(from: string, to: string, reason: string): void {
   logEvent('search_engine_fallback', { from, to, reason })
-  console.warn(`[searchEngine] ${from} failed (${reason}), falling back to ${to}`)
+  logForDebugging(`[searchEngine] ${from} failed (${reason}), falling back to ${to}`)
 }
 
 /**
