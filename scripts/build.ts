@@ -111,7 +111,7 @@ for (let i = 0; i < args.length; i += 1) {
 const features = [...featureSet]
 
 const outfile = publish
-  ? './dist/publish/cli.js'
+  ? './dist/publish/cli.mjs'
   : compile
     ? dev
       ? './dist/cli-dev'

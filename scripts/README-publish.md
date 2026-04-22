@@ -292,13 +292,13 @@ node --version
 绕过 npm bin shim，直接运行 JS bundle：
 
 ```bash
-node "%APPDATA%\npm\node_modules\@zyzheal\ola-cc\cli.js"
+node "%APPDATA%\npm\node_modules\@zyzheal\ola-cc\cli.mjs"
 ```
 
 或本地安装时：
 
 ```bash
-node node_modules/@zyzheal/ola-cc/cli.js
+node node_modules/@zyzheal/ola-cc/cli.mjs
 ```
 
 **方案 3：使用降级启动器**

@@ -1,9 +1,9 @@
 #!/usr/bin/env node
 // Entry point for ola-cc.
 //
+// Windows: tries compiled ola-cc.exe (pkg) first, falls back to JS bundle (cli.mjs)
+//          via Node.js if .exe is not available.
 // macOS/Linux: spawns the native binary (bun --compile) for performance.
-// Windows: runs the JS bundle (cli.js) directly via Node.js to avoid
-//          bun-compiled binary crashes on Windows.
 // Falls back to cli-wrapper.cjs if postinstall didn't run.
 
 const { spawnSync } = require('child_process')
@@ -14,13 +14,30 @@ const fs = require('fs')
 const BINARY_NAME = process.platform === 'win32' ? 'ola-cc.exe' : 'ola-cc'
 const BIN_DIR = path.join(__dirname)
 const WRAPPER = path.join(__dirname, '..', 'cli-wrapper.cjs')
-const CLI_BUNDLE = path.join(__dirname, '..', 'cli.js')
+const CLI_BUNDLE = path.join(__dirname, '..', 'cli.mjs')
 
 function main() {
-  // Windows: run the JS bundle directly via Node.js to avoid bun-compiled
-  // binary crashes. The cli.js bundle is a Node.js-compatible ESM bundle
-  // that contains the full application.
+  // Windows: try compiled .exe first, then JS bundle fallback
   if (process.platform === 'win32') {
+    const exePath = path.join(BIN_DIR, 'ola-cc.exe')
+    try {
+      fs.accessSync(exePath)
+      const result = spawnSync(exePath, process.argv.slice(2), {
+        stdio: 'inherit',
+        env: process.env,
+      })
+      if (!result.error) {
+        if (result.signal) {
+          const signum = constants.signals[result.signal] || 0
+          process.exit(128 + signum)
+        }
+        process.exit(result.status || 0)
+      }
+    } catch (_) {
+      // .exe not found, fall through to JS bundle
+    }
+
+    // JS bundle fallback
     try {
       fs.accessSync(CLI_BUNDLE)
       const result = spawnSync('node', [CLI_BUNDLE, ...process.argv.slice(2)], {
@@ -38,7 +55,7 @@ function main() {
       }
       process.exit(result.status || 0)
     } catch (_) {
-      // cli.js not found, fall through to wrapper
+      // cli.mjs not found, fall through to wrapper
     }
   }
 
