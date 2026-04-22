@@ -7,6 +7,8 @@ import { existsSync } from 'fs'
 import { fileURLToPath } from 'url'
 import { logForDebugging } from './debug.js'
 import { getPlatform } from './platform.js'
+import { logEvent } from 'src/services/analytics/index.js'
+import { ripGrep } from './ripgrep.js'
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
@@ -125,6 +127,14 @@ export function translateRgToUgrep(rgArgs: string[]): string[] {
 }
 
 /**
+ * Check if ugrep is available on this platform.
+ * Currently: Windows x64 only.
+ */
+export function canUseUgrep(): boolean {
+  return process.platform === 'win32' && process.arch === 'x64'
+}
+
+/**
  * Get the path to the ugrep binary for the current platform.
  * Returns null if ugrep is not available for this platform/arch.
  */
@@ -137,6 +147,11 @@ function getUgrepPath(): string | null {
     return p
   }
   return null
+}
+
+function logEngineFallback(from: string, to: string, reason: string): void {
+  logEvent('search_engine_fallback', { from, to, reason })
+  console.warn(`[searchEngine] ${from} failed (${reason}), falling back to ${to}`)
 }
 
 /**
@@ -234,4 +249,26 @@ export async function ugrepBinary(
       reject(err)
     })
   })
+}
+
+/**
+ * Unified search entry point.
+ * On Windows x64: tries ugrep first, falls back to ripgrep on any error.
+ * On all other platforms: uses ripgrep directly.
+ */
+export async function unifiedSearch(
+  args: string[],
+  target: string,
+  abortSignal: AbortSignal,
+): Promise<string[]> {
+  if (canUseUgrep()) {
+    try {
+      return await ugrepBinary(args, target, abortSignal)
+    } catch (err) {
+      const reason = (err as Error)?.message ?? String(err)
+      logEngineFallback('ugrep', 'ripgrep', reason)
+      // Fall through to ripgrep
+    }
+  }
+  return ripGrep(args, target, abortSignal)
 }
