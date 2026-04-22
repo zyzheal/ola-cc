@@ -543,6 +543,13 @@ function updateTaskState(
 /**
  * Sends a message to the leader's file-based mailbox.
  * Uses the same mailbox system as tmux teammates for consistency.
+ *
+ * IMPORTANT: We write to TEAM_LEAD_NAME ('team-lead') because that's the
+ * canonical recipient for the leader's team inbox. The leader reads from
+ * this same mailbox when polling for teammate messages. The previous code
+ * incorrectly used the leader's display name from teamContext, which may
+ * differ from TEAM_LEAD_NAME, causing messages to be written to the wrong
+ * inbox file and never consumed.
  */
 async function sendMessageToLeader(
   from: string,
@@ -1234,16 +1241,19 @@ export async function runInProcessTeammate(
               task => {
                 // Track in-progress tool use IDs for animation in transcript view
                 let inProgressToolUseIDs = task.inProgressToolUseIDs
-                if (message.type === 'assistant') {
-                  for (const block of message.message.content) {
-                    if (block.type === 'tool_use') {
-                      inProgressToolUseIDs = new Set([
-                        ...(inProgressToolUseIDs ?? []),
-                        block.id,
-                      ])
+                if (message.type === 'assistant' && message.message?.content) {
+                  const content = message.message.content
+                  if (Array.isArray(content)) {
+                    for (const block of content) {
+                      if (block.type === 'tool_use') {
+                        inProgressToolUseIDs = new Set([
+                          ...(inProgressToolUseIDs ?? []),
+                          block.id,
+                        ])
+                      }
                     }
                   }
-                } else if (message.type === 'user') {
+                } else if (message.type === 'user' && message.message?.content) {
                   const content = message.message.content
                   if (Array.isArray(content)) {
                     for (const block of content) {
@@ -1333,21 +1343,24 @@ export async function runInProcessTeammate(
         const lastAssistantMsg = [...allMessages].reverse().find(
           m => m.type === 'assistant',
         )
-        if (lastAssistantMsg?.type === 'assistant') {
-          const textBlocks = lastAssistantMsg.message.content.filter(
-            b => b.type === 'text' && b.text.trim().length > 0,
-          )
-          if (textBlocks.length > 0) {
-            const responseText = textBlocks.map(b => b.text).join('\n\n')
-            logForDebugging(
-              `[inProcessRunner] ${identity.agentId} sending response to leader (${responseText.length} chars)`,
+        if (lastAssistantMsg?.type === 'assistant' && lastAssistantMsg.message?.content) {
+          const content = lastAssistantMsg.message.content
+          if (Array.isArray(content)) {
+            const textBlocks = content.filter(
+              b => b.type === 'text' && b.text.trim().length > 0,
             )
-            await sendMessageToLeader(
-              identity.agentName,
-              responseText,
-              identity.color,
-              identity.teamName,
-            )
+            if (textBlocks.length > 0) {
+              const responseText = textBlocks.map(b => b.text).join('\n\n')
+              logForDebugging(
+                `[inProcessRunner] ${identity.agentId} sending response to leader (${responseText.length} chars)`,
+              )
+              await sendMessageToLeader(
+                identity.agentName,
+                responseText,
+                identity.color,
+                identity.teamName,
+              )
+            }
           }
         }
       }
