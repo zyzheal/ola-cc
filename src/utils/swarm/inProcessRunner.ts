@@ -1325,9 +1325,32 @@ export async function runInProcessTeammate(
         setAppState,
       )
 
-      // Note: We do NOT automatically send the teammate's response to the leader.
-      // Teammates should use the Teammate tool to communicate with the leader.
-      // This matches process-based teammates where output is not visible to the leader.
+      // Send the teammate's response text to the leader so the user can see
+      // the actual work output. Without this, the leader only receives an idle
+      // notification (metadata) and the user sees "Worked for Xs" with no
+      // meaningful response text.
+      if (!wasAlreadyIdle && !workWasAborted) {
+        const lastAssistantMsg = [...allMessages].reverse().find(
+          m => m.type === 'assistant',
+        )
+        if (lastAssistantMsg?.type === 'assistant') {
+          const textBlocks = lastAssistantMsg.message.content.filter(
+            b => b.type === 'text' && b.text.trim().length > 0,
+          )
+          if (textBlocks.length > 0) {
+            const responseText = textBlocks.map(b => b.text).join('\n\n')
+            logForDebugging(
+              `[inProcessRunner] ${identity.agentId} sending response to leader (${responseText.length} chars)`,
+            )
+            await sendMessageToLeader(
+              identity.agentName,
+              responseText,
+              identity.color,
+              identity.teamName,
+            )
+          }
+        }
+      }
 
       // Only send idle notification on transition to idle (not if already idle)
       if (!wasAlreadyIdle) {
