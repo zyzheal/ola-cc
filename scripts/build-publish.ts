@@ -347,3 +347,62 @@ console.log('To publish:')
 console.log(`  cd ${outDir}`)
 console.log('  npm publish --dry-run    # 预览')
 console.log('  npm publish              # 发布')
+
+// ─── VSCode Extension Build ─────────────────────────────────
+const buildVscode = args.includes('--vscode') || process.env.BUILD_VSCODE === '1'
+
+if (buildVscode) {
+  console.log('[publish] Building VSCode extension...')
+
+  const vscodeDir = join(process.cwd(), 'vscode-extension')
+  const vscePkgPath = join(vscodeDir, 'package.json')
+  const vscePkg = await Bun.file(vscePkgPath).json()
+  vscePkg.version = publishVersion
+  await Bun.write(vscePkgPath, JSON.stringify(vscePkg, null, 2) + '\n')
+
+  // Build
+  const buildProc = Bun.spawnSync({
+    cmd: ['bun', 'run', 'build'],
+    cwd: vscodeDir,
+    stdout: 'inherit',
+    stderr: 'inherit',
+  })
+  if (buildProc.exitCode !== 0) {
+    console.error('[publish] VSCode extension build failed')
+    process.exit(buildProc.exitCode ?? 1)
+  }
+
+  // Copy to dist/publish-vscode/
+  const vsceOutDir = join(outDir, '..', 'publish-vscode')
+  mkdirSync(vsceOutDir, { recursive: true })
+  mkdirSync(join(vsceOutDir, 'extension'), { recursive: true })
+  cpSync(
+    join(vscodeDir, 'dist', 'extension.js'),
+    join(vsceOutDir, 'extension', 'extension.js')
+  )
+  mkdirSync(join(vsceOutDir, 'extension', 'webview'), { recursive: true })
+  cpSync(
+    join(vscodeDir, 'dist', 'webview', 'app.js'),
+    join(vsceOutDir, 'extension', 'webview', 'app.js')
+  )
+  cpSync(join(vscodeDir, 'package.json'), join(vsceOutDir, 'package.json'))
+  cpSync(join(vscodeDir, 'README.md'), join(vsceOutDir, 'README.md'))
+  cpSync('LICENSE.md', join(vsceOutDir, 'LICENSE.md'))
+
+  // Package vsix
+  const vsixProc = Bun.spawnSync({
+    cmd: [
+      'bunx', 'vsce', 'package', '--no-yarn',
+      '--out', join(outDir, '..', `claude-code-vscode-${publishVersion}.vsix`),
+    ],
+    cwd: vscodeDir,
+    stdout: 'inherit',
+    stderr: 'inherit',
+  })
+  if (vsixProc.exitCode !== 0) {
+    console.error('[publish] VSCode extension packaging failed')
+    process.exit(vsixProc.exitCode ?? 1)
+  }
+
+  console.log(`[publish] VSIX: ${join(outDir, '..', `claude-code-vscode-${publishVersion}.vsix`)}`)
+}
