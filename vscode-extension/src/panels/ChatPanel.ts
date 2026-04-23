@@ -51,6 +51,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   private isStreaming = false;
   private isResolving = false;
 
+  private messageHandlerDisposable: vscode.Disposable | undefined;
   private _onDidChangeVisibility = new vscode.EventEmitter<boolean>();
   readonly onDidChangeVisibility = this._onDidChangeVisibility.event;
 
@@ -88,15 +89,15 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
   /**
    * Set up message handlers for the webview.
+   * Disposes old handler before re-registering to prevent listener leaks on re-resolve.
    */
   private setupMessageHandlers(): void {
+    this.messageHandlerDisposable?.dispose();
     if (!this.view) return;
-    this.view.webview.onDidReceiveMessage(
+    this.messageHandlerDisposable = this.view.webview.onDidReceiveMessage(
       async (message: WebviewMessage) => {
         await this.handleWebviewMessage(message);
-      },
-      undefined,
-      this.context.subscriptions
+      }
     );
   }
 
@@ -104,7 +105,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
    * Focus the sidebar view.
    */
   async show(): Promise<void> {
-    await vscode.commands.executeCommand('claudeCode.sidebar.focus');
+    this.view?.show?.(true);
   }
 
   /**
@@ -241,6 +242,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
    * Dispose of resources.
    */
   dispose(): void {
+    this.messageHandlerDisposable?.dispose();
+    this._onDidChangeVisibility.dispose();
     this.client.dispose();
   }
 
