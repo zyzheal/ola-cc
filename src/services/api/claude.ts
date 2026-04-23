@@ -2446,6 +2446,7 @@ async function* queryModel(
         })
       }
 
+      // DIAGNOSTIC: Log content block types and counts after stream completes
       // Check if the cache actually broke based on response tokens
       if (feature('PROMPT_CACHE_BREAK_DETECTION')) {
         void checkResponseForCacheBreak(
