@@ -158,27 +158,35 @@ if (buildVscode) {
 
 **原因:** package.json 声明了 sidebar webview 但实际使用浮动面板，设计不一致。WebviewView 常驻实例对 MCP 集成有利。
 
+**重要注意:** WebviewView 与 WebviewPanel 在状态管理上有根本差异。WebviewView 没有 `retainContextWhenHidden` 选项，当侧边栏被收起时 webview DOM 会被销毁，仅 `vscode.getState()` 保留。每次 `resolveWebviewView()` 被调用时必须重新发送全量历史和配置。
+
 **变更:**
 
 ```typescript
-// 当前 (WebviewPanel)
-this.panel = vscode.window.createWebviewPanel('claudeChat', 'Claude Code', vscode.ViewColumn.Two, {...})
-
-// 改为 (WebviewViewProvider)
 export class ChatViewProvider implements vscode.WebviewViewProvider {
   private view: vscode.WebviewView | undefined
+  private visible = false
 
   resolveWebviewView(webviewView: vscode.WebviewView): void {
     this.view = webviewView
     this.view.webview.options = { enableScripts: true }
     this.view.webview.html = this.getWebviewHtml()
     this.setupMessageHandlers()
+
+    // 每次 resolve 时重新发送全量历史和配置
+    // （WebviewView 无 retainContextWhenHidden，DOM 销毁后需重建）
+    this.sendHistoryToWebview()
+    this.sendConfigToWebview()
   }
 
-  // show() → this.view?.show(true)
-  // postMessage → this.view?.webview.postMessage
-  // onDidReceiveMessage → this.view?.webview.onDidReceiveMessage
-  // 删除 panel.onDidDispose → 不需要，view 由 VSCode 管理
+  // 聚焦侧边栏
+  async show(): Promise<void> {
+    await vscode.commands.executeCommand('claudeCode.sidebar.focus')
+  }
+
+  postMessage(msg: unknown): void {
+    this.view?.webview.postMessage(msg)
+  }
 }
 
 // extension.ts 注册
@@ -186,13 +194,23 @@ const provider = new ChatViewProvider(context, statusBar)
 context.subscriptions.push(
   vscode.window.registerWebviewViewProvider('claudeCode.sidebar', provider)
 )
+
+// 监听可见性变化（MCP 长连接场景：收起时暂停工具轮询）
+context.subscriptions.push(
+  provider.onDidChangeVisibility(visible => {
+    if (!visible) provider.pauseMCPPolling()
+    else provider.resumeMCPPolling()
+  })
+)
 ```
 
 **关键变化:**
 - 删除 `panel: vscode.WebviewPanel | undefined` 的 optional 处理
-- `retainContextWhenHidden: true` 移除（WebviewView 默认保持状态）
+- `retainContextWhenHidden` 移除（WebviewView 不支持此选项）
+- `resolveWebviewView()` 中必须重新发送 `messageHistory` 和配置
+- `show()` 改为 `vscode.commands.executeCommand('claudeCode.sidebar.focus')`
+- 新增 `onDidChangeVisibility` 监听器用于 MCP 生命周期管理
 - HTML 生成和消息传递接口不变
-- `show()` 方法变为聚焦侧边栏
 
 ### 3.5 API Key 改用 SecretStorage
 
@@ -201,27 +219,61 @@ context.subscriptions.push(
 **变更:**
 
 ```typescript
-// 存储
-await context.secrets.store('claude-api-key', apiKey)
+// 存储（带 read-back 验证）
+async function safeStoreApiKey(apiKey: string): Promise<boolean> {
+  try {
+    await context.secrets.store('claude-api-key', apiKey)
+    const readBack = await context.secrets.get('claude-api-key')
+    if (!readBack) throw new Error('SecretStorage read-back failed')
+    return true
+  } catch (e) {
+    // 降级：写入 settings.json + 警告
+    await vscode.workspace.getConfiguration('claude').update(
+      'apiKey', apiKey, vscode.ConfigurationTarget.Global
+    )
+    vscode.window.showWarningMessage(
+      'SecretStorage unavailable. API key stored in settings.json (not encrypted).'
+    )
+    return false
+  }
+}
 
-// 读取
-const apiKey = await context.secrets.get('claude-api-key')
-
-// 清除
-await context.secrets.delete('claude-api-key')
+// 读取（优先 SecretStorage，降级 settings.json）
+async function getApiKey(): Promise<string | undefined> {
+  const fromSecret = await context.secrets.get('claude-api-key')
+  if (fromSecret) return fromSecret
+  // 降级路径
+  return vscode.workspace.getConfiguration('claude').get<string>('apiKey')
+}
 ```
 
-**降级策略:** 如果 SecretStorage 不可用（某些 Linux 缺少 libsecret），降级为 settings.json，但显示警告。
+**迁移路径:** 已有用户如果之前通过 settings.json 设置了 API Key，在 `activate()` 中自动迁移：
 
-**设置 UI:** `claude.apiKey` 设置为空字符串，新增命令 `claude.setApiKey` 弹出输入框并存储到 SecretStorage。
+```typescript
+async function migrateApiKey(context: vscode.ExtensionContext): Promise<void> {
+  const config = vscode.workspace.getConfiguration('claude')
+  const settingsKey = config.get<string>('apiKey', '')
+  if (settingsKey) {
+    const ok = await safeStoreApiKey(settingsKey)
+    if (ok) {
+      await config.update('apiKey', '', vscode.ConfigurationTarget.Global)
+      console.log('API key migrated from settings.json to SecretStorage')
+    }
+  }
+}
+```
+
+**Linux 降级:** 在 Ubuntu Server、WSL2、远程 SSH 等环境中 `libsecret` 或 DBus 可能不可用。降级策略已在 `safeStoreApiKey` 中实现，显示明确警告。**影响等级：中**（大量开发者使用 Linux/WSL）。
+
+**设置 UI:** `claude.apiKey` 保留但显示为空（`"format": "password"`），新增命令 `claude.setApiKey` 弹出输入框并调用 `safeStoreApiKey`。
 
 ## 4. Phase 2: 功能增强（3-5 天）
 
 ### 4.1 OpenAI 兼容支持
 
-**新增文件:** `vscode-extension/src/api/openai.ts`
+**新增文件:** `vscode-extension/src/api/openai-adapter.ts`
 
-从主项目 `src/services/api/openai.ts` 复制。该模块是自包含的（只依赖 `crypto`），将 Anthropic 格式的请求转换为 OpenAI 格式。
+**注意:** 当前 ClaudeClient 直接调用 HTTP API（非 SDK），所以不能直接复用主项目的 `openai.ts`（它是 Anthropic SDK→OpenAI 格式转换器）。需要独立实现 OpenAI 格式 HTTP 请求构建和 SSE 解析。
 
 **ClaudeClient 变更:**
 
@@ -232,14 +284,80 @@ await context.secrets.delete('claude-api-key')
   "enum": ["anthropic", "openai"],
   "default": "anthropic"
 }
-"claude.baseUrl": {
+"claude.openaiBaseUrl": {
   "type": "string",
-  "default": ""  // 空=使用 provider 默认
+  "default": "http://localhost:11434"  // Ollama 默认地址
+}
+"claude.openaiApiKey": {
+  "type": "string",
+  "default": "",
+  "format": "password"
+}
+"claude.openaiModel": {
+  "type": "string",
+  "default": ""  // 空=使用 claude.model 的值
+}
+```
+
+**端点配置（区分认证和请求格式）:**
+
+```typescript
+interface ProviderConfig {
+  url: string        // 完整端点 URL
+  apiKey: string     // API key
+  headers: Record<string, string>
+  body: (msg: ApiMessage[], opts: RequestOptions) => Record<string, unknown>
+  parseSSE: (line: string) => SSEEvent  // 不同 provider 的 SSE 格式不同
 }
 
-// 请求路由
-const baseUrl = config.get<string>('baseUrl') ||
-  (this.provider === 'openai' ? 'http://localhost:11434' : 'https://api.anthropic.com')
+const anthropicConfig: ProviderConfig = {
+  url: 'https://api.anthropic.com/v1/messages',
+  headers: { 'x-api-key': apiKey, 'anthropic-version': '2023-06-01' },
+  body: (messages, opts) => ({
+    model: opts.model,
+    max_tokens: opts.maxTokens,
+    temperature: opts.temperature,
+    messages: messages.map(m => ({ role: m.role === 'user' ? 'user' : 'assistant', content: m.content })),
+    stream: true,
+  }),
+  parseSSE: parseAnthropicSSE,  // content_block_delta → text_delta
+}
+
+const openaiConfig: ProviderConfig = {
+  url: `${openaiBaseUrl}/v1/chat/completions`,
+  headers: { 'Authorization': `Bearer ${openaiApiKey}` },
+  body: (messages, opts) => ({
+    model: openaiModel || opts.model,
+    max_tokens: opts.maxTokens,
+    temperature: opts.temperature,
+    messages: messages.map(m => ({ role: m.role, content: m.content })),
+    stream: true,
+  }),
+  parseSSE: parseOpenAISSE,  // choices[0].delta.content
+}
+```
+
+**SSE 格式差异处理:**
+
+```typescript
+// Anthropic SSE: data: {"type":"content_block_delta","delta":{"type":"text_delta","text":"..."}}
+function parseAnthropicSSE(line: string): SSEEvent {
+  const parsed = JSON.parse(line.slice(6))
+  if (parsed.type === 'content_block_delta' && parsed.delta?.type === 'text_delta') {
+    return { type: 'chunk', text: parsed.delta.text }
+  }
+  if (parsed.type === 'message_stop') return { type: 'done' }
+  return { type: 'ignore' }
+}
+
+// OpenAI SSE: data: {"choices":[{"delta":{"content":"..."},"index":0}]}
+function parseOpenAISSE(line: string): SSEEvent {
+  const parsed = JSON.parse(line.slice(6))
+  const content = parsed.choices?.[0]?.delta?.content
+  if (content) return { type: 'chunk', text: content }
+  if (parsed.choices?.[0]?.finish_reason) return { type: 'done' }
+  return { type: 'ignore' }
+}
 ```
 
 ### 4.2 Webview 语法高亮
@@ -284,17 +402,32 @@ await esbuild.build({
   target: 'chrome100',
   platform: 'browser',
   format: 'iife',
+  globalName: 'hljs',  // 确保 IIFE 正确挂载到 window.hljs
   minify: !isWatch,
+})
+
+// 打包 CSS 为 JS 字符串，由 app.js 注入
+await esbuild.build({
+  bundle: true,
+  entryPoints: [join(srcDir, 'webview', 'highlight.css')],
+  outfile: join(webviewDistDir, 'highlight-css.js'),
+  target: 'chrome100',
+  platform: 'browser',
+  format: 'iife',
+  minify: !isWatch,
+  loader: { '.css': 'dataurl' },
 })
 ```
 
 **Webview HTML 引入:**
 
 ```html
-<link rel="stylesheet" href="highlight.css">
 <script nonce="${nonce}" src="${highlightJsUri}"></script>
+<script nonce="${nonce}" src="${highlightCssUri}"></script>
 <script nonce="${nonce}" src="${appJsUri}"></script>
 ```
+
+CSS 的 URI 通过 `asWebviewUri()` 转换，与 JS 文件一致。CSP `style-src` 加入 `${this.panel.webview.cspSource}` 以允许内联样式。
 
 **Webview 中使用:**
 
@@ -317,23 +450,75 @@ function renderCodeBlock(code: string, language?: string): string {
 
 **问题:** `vscode.getState()` 有 10MB 限制。
 
-**方案:** 双层存储
+**方案:** 双层存储 + 节流
+
+**职责划分:**
+- **Extension 侧 (`ChatViewProvider`):** 维护 `messageHistory`，负责写入 `globalStorageUri` 文件
+- **Webview 侧 (`app.tsx`):** 保留 `vscode.getState()` 作为 view 层快速恢复（最近 50 条消息）
+- 两者通过 `sendHistoryToWebview()` 保持同步
+
+**节流策略:**
 
 ```typescript
-// 快速访问: 最近 50 条消息缓存到 vscode.getState()
-// 长期存储: 全部消息写入 context.globalStorageUri (文件系统)
+// Extension 侧：每 10 条消息或每 10 秒持久化一次，取先到者
+private pendingSave = false
+private saveDebounceTimer: NodeJS.Timeout | undefined
 
-async function saveSession(messages: ChatMessage[]): Promise<void> {
-  // 缓存最近 50 条
-  const cache = messages.slice(-50)
-  vscode.setState({ messages: cache })
+async onMessageAdded(): Promise<void> {
+  if (this.saveDebounceTimer) clearTimeout(this.saveDebounceTimer)
 
-  // 持久化到文件
-  const uri = vscode.Uri.joinPath(context.globalStorageUri, 'session.json')
-  const content = JSON.stringify({ messages, savedAt: Date.now() })
-  // 使用 VSCode FileSystem API 写入
+  if (this.messageHistory.length % 10 === 0) {
+    await this.saveSession()  // 每 10 条立即保存
+  } else {
+    this.saveDebounceTimer = setTimeout(() => this.saveSession(), 10_000)
+  }
 }
 ```
+
+**持久化实现:**
+
+```typescript
+async saveSession(): Promise<void> {
+  if (this.pendingSave) return
+  this.pendingSave = true
+
+  try {
+    const uri = vscode.Uri.joinPath(context.globalStorageUri, 'session.json')
+    const content = JSON.stringify({
+      messages: this.messageHistory,
+      savedAt: Date.now(),
+      version: 1,
+    })
+
+    // 原子写入：先写临时文件再 rename
+    const tmpUri = vscode.Uri.joinPath(context.globalStorageUri, 'session.json.tmp')
+    await vscode.workspace.fs.writeFile(tmpUri, new TextEncoder().encode(content))
+    await vscode.workspace.fs.rename(tmpUri, uri, { overwrite: true })
+  } finally {
+    this.pendingSave = false
+  }
+}
+
+async loadSession(): Promise<ChatMessage[] | null> {
+  try {
+    const uri = vscode.Uri.joinPath(context.globalStorageUri, 'session.json')
+    const data = await vscode.workspace.fs.readFile(uri)
+    const session = JSON.parse(new TextDecoder().decode(data))
+    // 清理过期 session（超过 7 天）
+    if (Date.now() - session.savedAt > 7 * 24 * 60 * 60 * 1000) {
+      await vscode.workspace.fs.delete(uri)
+      return null
+    }
+    return session.messages
+  } catch {
+    return null  // 文件不存在或解析失败
+  }
+}
+```
+
+**旧数据清理:**
+- 自动清理超过 7 天的 session
+- 启动时检查 `globalStorageUri` 下文件大小，超过 50MB 时删除最旧的 session 文件
 
 ## 5. Phase 3: MCP + Agent（5-7 天）
 
@@ -400,40 +585,73 @@ interface ApiMessage {
 ```typescript
 async agentLoop(messages: ApiMessage[], callbacks: AgentCallbacks): Promise<void> {
   let iteration = 0
-  const maxIterations = 25
+  const maxIterations = this.getMaxIterations()  // 可配置，默认 25
 
   while (iteration < maxIterations) {
     iteration++
+    callbacks.onIteration(iteration, maxIterations)  // 通知 webview 当前进度
+
     const response = await this.callAPI(messages)
 
-    // 解析响应 content blocks
+    // 解析响应 content blocks（可能同时包含 text 和 tool_use）
+    const textBlocks = response.content.filter(b => b.type === 'text')
     const toolUses = response.content.filter(b => b.type === 'tool_use')
 
+    // 流式发送文本内容
+    for (const textBlock of textBlocks) {
+      callbacks.onChunk(textBlock.text || '')
+    }
+
     if (toolUses.length === 0) {
-      // 纯文本响应，流式发送给 webview
-      break
+      break  // 纯文本响应，结束循环
     }
 
-    // 有 tool_use: 执行工具
-    for (const toolUse of toolUses) {
-      callbacks.onToolStart(toolUse)
+    // 有 tool_use: 追加完整 assistant message（含 text + tool_use）
+    messages.push({
+      role: 'assistant',
+      content: response.content,  // 保留原始混合内容
+    })
 
-      // 需要用户确认的工具
-      if (this.requiresConfirmation(toolUse.name)) {
-        await callbacks.onToolConfirmation(toolUse)
-      }
+    // 并发执行工具（支持多个 tool_use 同时执行）
+    const toolResults = await Promise.allSettled(
+      toolUses.map(async (toolUse) => {
+        try {
+          callbacks.onToolStart(toolUse)
 
-      const result = await this.executeTool(toolUse)
-      callbacks.onToolComplete(toolUse, result)
+          // 需要用户确认的工具
+          if (this.requiresConfirmation(toolUse.name)) {
+            await callbacks.onToolConfirmation(toolUse)
+          }
 
-      // 添加 tool_use 和 tool_result 到消息历史
-      messages.push({ role: 'assistant', content: [{ type: 'tool_use', ...toolUse }] })
-      messages.push({ role: 'user', content: [{
-        type: 'tool_result',
-        tool_use_id: toolUse.id,
-        content: JSON.stringify(result),
-      }]})
-    }
+          const result = await this.executeTool(toolUse)
+          callbacks.onToolComplete(toolUse, result)
+          return {
+            type: 'tool_result' as const,
+            tool_use_id: toolUse.id,
+            content: JSON.stringify(result),
+          }
+        } catch (error) {
+          callbacks.onToolError(toolUse, error)
+          return {
+            type: 'tool_result' as const,
+            tool_use_id: toolUse.id,
+            content: `Error: ${error instanceof Error ? error.message : String(error)}`,
+            is_error: true,
+          }
+        }
+      })
+    )
+
+    // 将所有 tool_result 追加到用户消息
+    messages.push({
+      role: 'user',
+      content: toolResults.map(r => r.status === 'fulfilled' ? r.value : {
+        type: 'tool_result' as const,
+        tool_use_id: 'unknown',
+        content: 'Tool execution failed',
+        is_error: true,
+      }),
+    })
   }
 }
 ```
@@ -444,15 +662,23 @@ async agentLoop(messages: ApiMessage[], callbacks: AgentCallbacks): Promise<void
 
 ```typescript
 // Extension host → Webview
-{ command: 'tool_start', toolName: '...', input: {...} }
+{ command: 'tool_start', toolName: '...', input: {...}, iteration: 1 }
 { command: 'tool_progress', toolName: '...', progress: 'Fetching...' }
 { command: 'tool_complete', toolName: '...', result: {...} }
+{ command: 'tool_error', toolName: '...', error: '...' }
 { command: 'tool_requires_confirmation', toolName: '...', input: {...} }
+{ command: 'agent_iteration', current: 1, max: 25 }
+{ command: 'agent_done', stopReason: 'end_turn' }
 
 // Webview → Extension host
 { command: 'tool_approve', toolName: '...' }
 { command: 'tool_deny', toolName: '...' }
+{ command: 'cancel_agent_loop' }  // 用户手动取消
 ```
+
+**超时处理:** 单个 tool 执行超过 60 秒自动标记为 timeout 并发送 `tool_error`。整个 agent loop 超过 5 分钟自动终止。
+
+**并发工具管理:** 当 API 返回多个 `tool_use` 时，webview 为每个 tool 创建独立的进度卡片，通过 `toolName + id` 区分。
 
 **UI 元素:**
 - Tool 执行进度指示器
@@ -467,9 +693,12 @@ async agentLoop(messages: ApiMessage[], callbacks: AgentCallbacks): Promise<void
 |------|------|------|
 | vsce 依赖 `node_modules` 体积膨胀 | 中 | .vscodeignore 正确排除 |
 | esbuild 不认识 `feature()` 宏 | 低 | 当前未引用，未来需 `--define` |
-| highlight.js CSP eval() 限制 | 低 | esbuild 预打包为 IIFE，确认不含 eval |
-| SecretStorage 在 Linux 不可用 | 低 | 降级为 settings.json + 警告 |
-| Webview 的 `vscode.getState()` 10MB 限制 | 低 | 双层存储方案 |
+| highlight.js CSP eval() 限制 | 低 | esbuild IIFE + `globalName`，验证不含 eval |
+| SecretStorage 在 Linux 不可用 | 中 | 降级为 settings.json + 警告 + read-back 验证 |
+| Webview 的 `vscode.getState()` 10MB 限制 | 低 | 双层存储 + 节流 + 原子写入 |
+| `vsce package` 版本号手动维护 | 中 | build-publish.ts 自动同步主项目版本号 |
+| `@types/vscode` 版本过低 | 中 | 升级到 `^1.87.0`（WebviewView 稳定版） |
+| Webview `acquireVsCodeApi()` 多次调用 | 高 | IIFE 保护，确保只调用一次 |
 
 ### 6.2 架构风险
 
@@ -478,8 +707,12 @@ async agentLoop(messages: ApiMessage[], callbacks: AgentCallbacks): Promise<void
 | `claude.ts` 深度耦合 CLI | 高 | 不共享，VSCode 独立实现 |
 | MCP SDK 依赖 `bun:bundle` | 高 | 重新实现传输层，不直接引用 |
 | Agent mode 的流式 + tool_use 混合 | 中 | 重构 SSE 解析器支持 content block |
-| Webview XSS（Claude 响应含恶意 HTML） | 中 | 集成 DOMPurify sanitization |
-| Webview CSP 不允许 `eval()` | 中 | highlight.js 确认不含 eval |
+| Webview XSS（Claude 响应含恶意 HTML） | 中 | 集成 DOMPurify sanitization（Phase 2） |
+| Webview 状态丢失（WebviewView 无 retainContext） | 中 | resolve 时重发全量历史 |
+| Agent loop 25 次迭代费用不可控 | 中 | 可配置 maxIterations + webview 显示进度 + 取消按钮 |
+| Token 计数超上下文窗口 | 中 | buildApiMessages 增加 token 计数，超长时截断历史 |
+| Abort race condition（旧 callback 在新请求后触发） | 中 | AbortError 时 continue，不调用 onError callback |
+| Activation 时间慢（MCP 初始化） | 中 | MCP 延迟初始化，首次聊天时连接 |
 
 ### 6.3 体积预估
 
@@ -498,23 +731,34 @@ async agentLoop(messages: ApiMessage[], callbacks: AgentCallbacks): Promise<void
 Phase 1 (基础修复)
   ├── 3.1 .vscodeignore 修复
   ├── 3.2 LICENSE.md
-  ├── 3.4 WebviewPanel → WebviewView
-  └── 3.5 API Key → SecretStorage
+  ├── 3.4 WebviewPanel → WebviewView（含 resolve 重发历史 + onDidChangeVisibility）
+  └── 3.5 API Key → SecretStorage（含迁移路径 + Linux 降级）
 
 Phase 2 (功能增强)
   ├── 3.3 构建集成（build-publish.ts 新增阶段）
-  ├── 4.1 OpenAI 兼容
-  ├── 4.2 语法高亮
-  └── 4.3 Session 持久化
+  ├── 4.1 OpenAI 兼容（独立实现 HTTP 请求 + SSE 解析）
+  ├── 4.2 语法高亮（esbuild IIFE 预打包 + globalName）
+  └── 4.3 Session 持久化（双层存储 + 节流 + 原子写入 + 旧数据清理）
 
 Phase 3 (MCP + Agent)
-  ├── 5.1 MCP Client
-  ├── 5.2 Tool Use 循环
-  └── 5.3 Webview Tool UI
+  ├── 5.1 MCP Client（重新实现传输层）
+  ├── 5.2 Tool Use 循环（并发执行 + 错误处理 + 可配置 maxIterations）
+  └── 5.3 Webview Tool UI（错误/取消/超时语义 + 并发进度卡片）
 ```
 
 ## 8. 测试策略
 
 - **Phase 1:** 手动测试（Extension Development Host F5）
-- **Phase 2:** 单元测试（ClaudeClient, OpenAI shim）+ 手动集成测试
-- **Phase 3:** 集成测试（MCP transport mock）+ 端到端测试
+  - WebviewView resolve/re-resolve 生命周期验证
+  - SecretStorage 在 macOS/Linux/Windows 的可用性测试
+  - API Key 迁移路径测试
+
+- **Phase 2:** 单元测试 + 手动集成测试
+  - 测试框架：`@vscode/test-electron` + `mocha`
+  - ClaudeClient OpenAI adapter：mock `fetch` 验证请求格式和 SSE 解析
+  - Session 持久化：验证节流、原子写入、过期清理
+
+- **Phase 3:** 集成测试 + 端到端测试
+  - MCP transport mock（模拟 stdio subprocess 的 JSON-RPC 通信）
+  - Agent loop 测试：验证混合 content block 解析、并发 tool 执行、错误恢复
+  - 端到端：真实 MCP server（如 filesystem server）连接测试
