@@ -1,4 +1,11 @@
 node_modules/
 .vscode-test/
 .vscode-test.mjs
+.vscode/
 bun.lock
+tsconfig.json
+src/
+build.mjs
+**/*.ts
+**/*.tsx
+**/*.map
