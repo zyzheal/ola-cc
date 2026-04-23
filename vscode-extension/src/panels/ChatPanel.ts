@@ -55,10 +55,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   private _onDidChangeVisibility = new vscode.EventEmitter<boolean>();
   readonly onDidChangeVisibility = this._onDidChangeVisibility.event;
 
-  constructor(context: vscode.ExtensionContext, statusBar: StatusBarManager) {
+  constructor(context: vscode.ExtensionContext, statusBar: StatusBarManager, apiKey?: string) {
     this.context = context;
     this.statusBar = statusBar;
-    this.client = new ClaudeClient();
+    this.client = new ClaudeClient(apiKey);
   }
 
   /**
@@ -232,9 +232,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
   /**
    * Handle configuration changes.
+   * API key is loaded from SecretStorage first, then other settings are refreshed.
    */
-  onConfigChanged(): void {
-    this.client.onConfigChanged();
+  async onConfigChanged(): Promise<void> {
+    await this.client.loadApiKeyFromSecretStorage(this.context);
+    this.client.onConfigChanged(); // Only refreshes model/maxTokens/temperature, not apiKey
     this.sendConfigToWebview();
   }
 

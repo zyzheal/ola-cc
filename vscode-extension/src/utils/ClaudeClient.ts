@@ -39,9 +39,9 @@ export class ClaudeClient {
   private baseUrl: string;
   private abortController: AbortController | null = null;
 
-  constructor() {
+  constructor(apiKey?: string) {
     const config = vscode.workspace.getConfiguration('claude');
-    this.apiKey = config.get<string>('apiKey') || process.env.ANTHROPIC_API_KEY || process.env.CLAUDE_API_KEY;
+    this.apiKey = apiKey || config.get<string>('apiKey') || process.env.ANTHROPIC_API_KEY || process.env.CLAUDE_API_KEY;
     this.model = config.get<string>('model', 'claude-sonnet-4-20250514');
     this.maxTokens = config.get<number>('maxTokens', 8192);
     this.temperature = config.get<number>('temperature', 0);
@@ -50,13 +50,26 @@ export class ClaudeClient {
 
   /**
    * Handle configuration changes (reload settings).
+   * Note: apiKey is NOT reloaded here - it's managed separately via SecretStorage.
    */
   onConfigChanged(): void {
     const config = vscode.workspace.getConfiguration('claude');
-    this.apiKey = config.get<string>('apiKey') || process.env.ANTHROPIC_API_KEY || process.env.CLAUDE_API_KEY;
     this.model = config.get<string>('model', 'claude-sonnet-4-20250514');
     this.maxTokens = config.get<number>('maxTokens', 8192);
     this.temperature = config.get<number>('temperature', 0);
+  }
+
+  /**
+   * Set API key from SecretStorage (called after setApiKey command).
+   */
+  async loadApiKeyFromSecretStorage(context: vscode.ExtensionContext): Promise<void> {
+    const fromSecret = await context.secrets.get('claude-api-key');
+    if (fromSecret) {
+      this.apiKey = fromSecret;
+    } else {
+      const config = vscode.workspace.getConfiguration('claude');
+      this.apiKey = config.get<string>('apiKey') || process.env.ANTHROPIC_API_KEY || process.env.CLAUDE_API_KEY;
+    }
   }
 
   /**

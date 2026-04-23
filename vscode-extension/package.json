@@ -34,6 +34,7 @@
     "onCommand:claude.fix",
     "onCommand:claude.generateTests",
     "onCommand:claude.review",
+    "onCommand:claude.setApiKey",
     "onView:claudeCode.sidebar"
   ],
   "main": "./dist/extension.js",
@@ -78,6 +79,10 @@
         "command": "claude.focusInput",
         "title": "Claude: Focus Chat Input",
         "icon": "$(cursor)"
+      },
+      {
+        "command": "claude.setApiKey",
+        "title": "Claude: Set API Key"
       }
     ],
     "viewsContainers": {
