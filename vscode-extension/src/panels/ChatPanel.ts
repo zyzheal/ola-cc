@@ -50,6 +50,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   private activeFileContext: FileContext | null = null;
   private isStreaming = false;
   private isResolving = false;
+  private pendingSave = false;
+  private saveDebounceTimer: NodeJS.Timeout | undefined;
 
   private messageHandlerDisposable: vscode.Disposable | undefined;
   private _onDidChangeVisibility = new vscode.EventEmitter<boolean>();
@@ -85,6 +87,14 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     this.sendConfigToWebview();
     this.sendHistoryToWebview();
     this.isResolving = false;
+
+    // Restore session from file storage
+    this.loadSession().then(messages => {
+      if (messages) {
+        this.messageHistory = messages;
+        this.sendHistoryToWebview();
+      }
+    });
   }
 
   /**
@@ -138,6 +148,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       timestamp: Date.now(),
     };
     this.messageHistory.push(userMsg);
+    this.onMessageAdded(); // Trigger session persistence
     this.postMessageToWebview({
       command: 'add_message',
       message: userMsg,
@@ -172,6 +183,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             timestamp: Date.now(),
           };
           this.messageHistory.push(assistantMsg);
+          this.onMessageAdded(); // Trigger session persistence
           this.postMessageToWebview({
             command: 'update_message',
             messageId: assistantMsgId,
@@ -377,6 +389,62 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       command: 'load_history',
       messages: this.messageHistory,
     });
+  }
+
+  /**
+   * Called when a message is added to history.
+   * Saves immediately every 10 messages, otherwise debounces 10 seconds.
+   */
+  async onMessageAdded(): Promise<void> {
+    if (this.saveDebounceTimer) clearTimeout(this.saveDebounceTimer);
+
+    if (this.messageHistory.length % 10 === 0) {
+      this.saveDebounceTimer = undefined;
+      await this.saveSession();
+    } else {
+      this.saveDebounceTimer = setTimeout(() => this.saveSession(), 10_000);
+    }
+  }
+
+  /**
+   * Persist current session to global storage with atomic write.
+   */
+  async saveSession(): Promise<void> {
+    if (this.pendingSave) return;
+    this.pendingSave = true;
+
+    try {
+      const uri = vscode.Uri.joinPath(this.context.globalStorageUri, 'session.json');
+      const content = JSON.stringify({
+        messages: this.messageHistory,
+        savedAt: Date.now(),
+        version: 1,
+      });
+
+      const tmpUri = vscode.Uri.joinPath(this.context.globalStorageUri, 'session.json.tmp');
+      await vscode.workspace.fs.writeFile(tmpUri, new TextEncoder().encode(content));
+      await vscode.workspace.fs.rename(tmpUri, uri, { overwrite: true });
+    } finally {
+      this.pendingSave = false;
+    }
+  }
+
+  /**
+   * Load session from global storage. Returns null if not found or expired (>7 days).
+   */
+  async loadSession(): Promise<ChatMessage[] | null> {
+    try {
+      const uri = vscode.Uri.joinPath(this.context.globalStorageUri, 'session.json');
+      const data = await vscode.workspace.fs.readFile(uri);
+      const session = JSON.parse(new TextDecoder().decode(data));
+      if (Date.now() - session.savedAt > 7 * 24 * 60 * 60 * 1000) {
+        await vscode.workspace.fs.delete(uri);
+        return null;
+      }
+      return session.messages;
+    } catch {
+      return null;
+    }
   }
 
   /**
