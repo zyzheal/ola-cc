@@ -4,6 +4,7 @@ import { getGlobalConfig } from './config.js'
 import { isEnvTruthy } from './envUtils.js'
 import { getCanonicalName } from './model/model.js'
 import { getModelCapability } from './model/modelCapabilities.js'
+import { isFirstPartyAnthropicBaseUrl } from './model/providers.js'
 
 // Model context window size (200k tokens for all models right now)
 export const MODEL_CONTEXT_WINDOW_DEFAULT = 200_000
@@ -106,6 +107,11 @@ export function getSonnet1mExpTreatmentEnabled(model: string): boolean {
     return false
   }
   if (!getCanonicalName(model).includes('sonnet-4-6')) {
+    return false
+  }
+  // Require first-party API endpoint - proxy gateways may not support
+  // the context_1m beta header
+  if (!isFirstPartyAnthropicBaseUrl()) {
     return false
   }
   return getGlobalConfig().clientDataCache?.['coral_reef_sonnet'] === 'true'

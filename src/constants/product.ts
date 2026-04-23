@@ -60,7 +60,7 @@ function lazyEnv(name: string, defaultValue?: string): string {
 
 export const PRODUCT_URL = lazyEnv('CLAUDE_PRODUCT_URL', 'https://claude.ai')
 
-// Claude Code Remote session URLs — default to Anthropic official URLs
+// ola-cc Remote session URLs — default to Anthropic official URLs
 export const CLAUDE_AI_BASE_URL = lazyEnv('CLAUDE_AI_BASE_URL', 'https://claude.ai')
 export const CLAUDE_AI_STAGING_BASE_URL = lazyEnv('CLAUDE_AI_STAGING_BASE_URL', 'https://staging.claude.ai')
 export const CLAUDE_AI_LOCAL_BASE_URL = lazyEnv('CLAUDE_AI_LOCAL_BASE_URL', 'http://localhost:3000')

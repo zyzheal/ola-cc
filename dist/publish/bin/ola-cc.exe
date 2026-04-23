@@ -1,4 +1,0 @@
-#!/bin/sh
-echo "Error: ola-cc native binary not installed."
-echo "Run the postinstall script: node install.cjs"
-exit 1

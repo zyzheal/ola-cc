@@ -110,6 +110,18 @@ const getPowerShellTool = () => {
 /* eslint-enable @typescript-eslint/no-require-imports */
 
 /**
+ * Platform auto-detection: on Windows, use PowerShellTool; on all other
+ * platforms, use BashTool. This prevents the model from seeing both tools
+ * and eliminates platform mismatch issues.
+ */
+function getShellTool() {
+  if (process.platform === 'win32') {
+    return getPowerShellTool()
+  }
+  return BashTool
+}
+
+/**
  * Predefined tool presets that can be used with --tools flag
  */
 export const TOOL_PRESETS = ['default'] as const
@@ -141,7 +153,7 @@ export function getAllBaseTools(): Tools {
   return [
     AgentTool,
     TaskOutputTool,
-    BashTool,
+    getShellTool(),
     GlobTool,
     GrepTool,
     ExitPlanModeV2Tool,
@@ -180,7 +192,6 @@ export function getAllBaseTools(): Tools {
     MonitorTool,
     BriefTool,
     SendUserFileTool,
-    getPowerShellTool(),
     SnipTool,
     TestingPermissionTool,
     ListMcpResourcesTool,

@@ -38,7 +38,7 @@ export function getMacOsKeychainStorageServiceName(
     : `-${createHash('sha256').update(configDir).digest('hex').substring(0, 8)}`
   // OAUTH_FILE_SUFFIX is always '' but importing getOauthConfig() here would
   // cause a crash at module load time when env vars aren't set yet.
-  return `Claude Code${serviceSuffix}${dirHash}`
+  return `ola-cc${serviceSuffix}${dirHash}`
 }
 
 export function getUsername(): string {

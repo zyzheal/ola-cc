@@ -1,7 +1,7 @@
 #!/usr/bin/env node
-// Fallback launcher for the ola-cc wrapper package.
+// Fallback launcher for the claude wrapper package (name in ./package.json).
 //
-// Normally the postinstall script copies the native binary over bin/ola-cc.exe,
+// Normally the postinstall script copies the native binary over bin/claude.exe,
 // so this file is never invoked. It exists for environments where postinstall
 // doesn't run (--ignore-scripts) — users can run `node cli-wrapper.cjs` directly
 // and pay the Node-process overhead as the price.
@@ -12,8 +12,8 @@ const path = require('path')
 
 // Replaced at build time via sed. Keep the literals below as markers.
 // Platform detection + PLATFORMS map is duplicated in install.cjs — keep in sync.
-const PACKAGE_PREFIX = '@zyzheal/ola-cc'
-const BINARY_NAME = 'ola-cc'
+const PACKAGE_PREFIX = '@anthropic-ai/claude-code'
+const BINARY_NAME = 'claude'
 const WRAPPER_NAME = require('./package.json').name
 
 const PLATFORMS = {
@@ -104,7 +104,7 @@ function main() {
   const binaryPath = getBinaryPath()
   const result = spawnSync(binaryPath, process.argv.slice(2), {
     stdio: 'inherit',
-    env: { ...process.env, OLA_CC_INSTALLED_VIA_NPM_WRAPPER: '1' },
+    env: { ...process.env, CLAUDE_CODE_INSTALLED_VIA_NPM_WRAPPER: '1' },
   })
   if (result.error) {
     console.error(

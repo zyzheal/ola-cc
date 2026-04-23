@@ -241,13 +241,7 @@ async function fetchWithRetry(
   let lastError: Error | null = null
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
     try {
-      // Debug logging for fetch failed issue
-      console.error(`[fetchWithRetry] Attempt ${attempt + 1}/${maxRetries + 1}, URL: ${url}`)
-      console.error(`[fetchWithRetry] Headers:`, JSON.stringify(init.headers))
-
       const response = await fetchFn(url, { ...init, signal })
-
-      console.error(`[fetchWithRetry] Response status: ${response.status} ${response.statusText}`)
 
       if (response.ok) {
         return response
@@ -271,7 +265,6 @@ async function fetchWithRetry(
 
       if (attempt < maxRetries) {
         const delay = calculateBackoff(attempt, baseDelay, maxDelay)
-        console.error(`[fetchWithRetry] Retrying in ${delay}ms`)
         await new Promise<void>((resolve, reject) => {
           const timeoutId = setTimeout(resolve, delay)
           signal?.addEventListener('abort', () => {
@@ -281,8 +274,6 @@ async function fetchWithRetry(
         })
       }
     } catch (err) {
-      console.error(`[fetchWithRetry] Caught error:`, err instanceof Error ? err.message : err)
-
       // If the signal was aborted, do NOT retry — propagate immediately
       if (signal?.aborted) {
         throw signal.reason
@@ -302,7 +293,6 @@ async function fetchWithRetry(
 
       if (attempt < maxRetries) {
         const delay = calculateBackoff(attempt, baseDelay, maxDelay)
-        console.error(`[fetchWithRetry] Retrying after error in ${delay}ms`)
         await new Promise<void>((resolve, reject) => {
           const timeoutId = setTimeout(resolve, delay)
           signal?.addEventListener('abort', () => {
@@ -314,7 +304,6 @@ async function fetchWithRetry(
     }
   }
 
-  console.error(`[fetchWithRetry] All attempts failed, throwing:`, lastError)
   throw lastError || new Error('Request failed after retries')
 }
 
@@ -1105,7 +1094,7 @@ export function createOpenAICompatibleClient(options: OpenAICompatibleClientOpti
           // Track tool call state across chunks
           const toolCallState: Map<
             number,
-            { id: string; name: string; arguments: string }
+            { id: string; name: string; arguments: string; blockIdx: number }
           > = new Map()
 
           // Track all content block indices that were opened (text + tool_use)
@@ -1217,21 +1206,26 @@ export function createOpenAICompatibleClient(options: OpenAICompatibleClientOpti
 
                     // Handle tool calls
                     if (delta?.tool_calls) {
+                      // DIAGNOSTIC: Log tool_calls received in delta
+                      if (process.env.DEBUG_OPENAI_STREAM) {
+                        console.error(`[OpenAI Stream] Received tool_calls delta:`, JSON.stringify(delta.tool_calls))
+                      }
                       for (const tc of delta.tool_calls) {
                         const idx = tc.index ?? 0
                         let state = toolCallState.get(idx)
 
                         if (!state) {
                           // New tool call
+                          const toolBlockIdx = contentBlockIndex++
                           state = {
                             id: tc.id ?? `tool_call_${idx}_${randomUUID().slice(0, 8)}`,
                             name: tc.function?.name ?? '',
                             arguments: tc.function?.arguments ?? '',
+                            blockIdx: toolBlockIdx,
                           }
                           toolCallState.set(idx, state)
 
                           // Emit content_block_start for tool_use
-                          const toolBlockIdx = contentBlockIndex++
                           openedContentBlockIndices.add(toolBlockIdx)
                           yield {
                             type: 'content_block_start',
@@ -1250,12 +1244,11 @@ export function createOpenAICompatibleClient(options: OpenAICompatibleClientOpti
                           }
                         }
 
-                        // Emit input_json_delta
+                        // Emit input_json_delta with correct block index
                         if (tc.function?.arguments) {
-                          const toolBlockIdx = toolCallState.size - 1
                           yield {
                             type: 'content_block_delta',
-                            index: toolBlockIdx >= 0 ? toolBlockIdx : contentBlockIndex - 1,
+                            index: state.blockIdx,
                             delta: {
                               type: 'input_json_delta',
                               partial_json: tc.function.arguments,
@@ -1267,6 +1260,10 @@ export function createOpenAICompatibleClient(options: OpenAICompatibleClientOpti
 
                     // Handle finish_reason (message_delta + message_stop)
                     if (choice.finish_reason) {
+                      // DIAGNOSTIC: Log finish_reason and toolCallState
+                      if (process.env.DEBUG_OPENAI_STREAM) {
+                        console.error(`[OpenAI Stream] finish_reason: ${choice.finish_reason}, toolCallState size: ${toolCallState.size}`)
+                      }
                       // Close all open content blocks (text + tool_use)
                       for (const blockIdx of openedContentBlockIndices) {
                         yield {
@@ -1280,6 +1277,17 @@ export function createOpenAICompatibleClient(options: OpenAICompatibleClientOpti
                       else if (stopReason === 'tool_calls') stopReason = 'tool_use'
                       else if (stopReason === 'length') stopReason = 'max_tokens'
                       else if (stopReason === 'content_filter') stopReason = 'end_turn'
+
+                      // CRITICAL FIX: If we received tool_calls in the stream,
+                      // the stop_reason should be 'tool_use' regardless of finish_reason.
+                      // Some OpenAI-compatible APIs may return finish_reason='stop' even
+                      // when tool_calls were emitted in the deltas.
+                      if (toolCallState.size > 0) {
+                        stopReason = 'tool_use'
+                        if (process.env.DEBUG_OPENAI_STREAM) {
+                          console.error(`[OpenAI Stream] Override stop_reason to 'tool_use' due to ${toolCallState.size} tool_calls`)
+                        }
+                      }
 
                       // Emit usage
                       if (chunk.usage && !hasEmittedUsage) {

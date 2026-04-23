@@ -221,7 +221,11 @@ export async function toolToAPISchema(
   }
 
   // Add defer_loading if requested (for tool search feature)
-  if (options.deferLoading) {
+  // ONLY add for first-party Anthropic API endpoints. Proxy gateways
+  // (ANTHROPIC_BASE_URL → LiteLLM → DashScope → Bedrock) reject this
+  // field with "Extra inputs are not permitted" or "Invalid tool parameters".
+  // This matches the gating pattern for eager_input_streaming above.
+  if (options.deferLoading && isFirstPartyAnthropicBaseUrl()) {
     schema.defer_loading = true
   }
 
@@ -644,8 +648,17 @@ export function normalizeToolInput<T extends Tool>(
       } as z.infer<T['inputSchema']>
     }
     case FileWriteTool.name: {
+      // Normalize legacy/alternative parameter names from some API providers
+      // (e.g., DashScope may use 'new_source' instead of 'content')
+      const legacyInput = input as Record<string, unknown>
+      const normalizedInput = {
+        file_path: legacyInput.file_path,
+        // Map 'new_source' -> 'content' for compatibility with some providers
+        content: legacyInput.content ?? legacyInput.new_source,
+      }
+
       // Validated upstream, won't throw
-      const parsedInput = FileWriteTool.inputSchema.parse(input)
+      const parsedInput = FileWriteTool.inputSchema.parse(normalizedInput)
 
       // Markdown uses two trailing spaces as a hard line break — don't strip.
       const isMarkdown = /\.(md|mdx)$/i.test(parsedInput.file_path)

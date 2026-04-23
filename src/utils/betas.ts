@@ -27,7 +27,7 @@ import { has1mContext } from './context.js'
 import { isEnvDefinedFalsy, isEnvTruthy } from './envUtils.js'
 import { getCanonicalName } from './model/model.js'
 import { get3PModelCapabilityOverride } from './model/modelSupportOverrides.js'
-import { getAPIProvider } from './model/providers.js'
+import { getAPIProvider, isFirstPartyAnthropicBaseUrl } from './model/providers.js'
 import { getInitialSettings } from './settings/settings.js'
 
 /**
@@ -211,10 +211,16 @@ export function getToolSearchBetaHeader(): string {
  * Check if experimental betas should be included.
  * These are betas that are only available on firstParty provider
  * and may not be supported by proxies or other providers.
+ *
+ * Also checks isFirstPartyAnthropicBaseUrl() because ANTHROPIC_BASE_URL
+ * may point to a proxy gateway (LiteLLM, DashScope, etc.) even when
+ * getAPIProvider() returns 'firstParty'. Proxy gateways reject beta
+ * headers like advanced-tool-use-* with 400 errors.
  */
 export function shouldIncludeFirstPartyOnlyBetas(): boolean {
   return (
     (getAPIProvider() === 'firstParty' || getAPIProvider() === 'foundry') &&
+    isFirstPartyAnthropicBaseUrl() &&
     !isEnvTruthy(process.env.CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS)
   )
 }
@@ -223,10 +229,16 @@ export function shouldIncludeFirstPartyOnlyBetas(): boolean {
  * Global-scope prompt caching is firstParty only. Foundry is excluded because
  * GrowthBook never bucketed Foundry users into the rollout experiment — the
  * treatment data is firstParty-only.
+ *
+ * Also checks isFirstPartyAnthropicBaseUrl() because ANTHROPIC_BASE_URL
+ * may point to a proxy gateway (LiteLLM, DashScope, etc.) even when
+ * getAPIProvider() returns 'firstParty'. Proxy gateways may reject the
+ * prompt_caching_scope beta header.
  */
 export function shouldUseGlobalCacheScope(): boolean {
   return (
     getAPIProvider() === 'firstParty' &&
+    isFirstPartyAnthropicBaseUrl() &&
     !isEnvTruthy(process.env.CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS)
   )
 }

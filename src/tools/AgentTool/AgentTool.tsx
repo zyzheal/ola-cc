@@ -1104,6 +1104,11 @@ export const AgentTool = buildTool({
             }
             const normalizedNew = normalizeMessages([message]);
             for (const m of normalizedNew) {
+              // Defensive check: some message types (progress, system, attachment)
+              // don't have a 'message' property. Skip if message structure is invalid.
+              if (!m.message || !Array.isArray(m.message.content)) {
+                continue;
+              }
               for (const content of m.message.content) {
                 if (content.type !== 'tool_use' && content.type !== 'tool_result') {
                   continue;

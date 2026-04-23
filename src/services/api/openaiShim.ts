@@ -1,5 +1,5 @@
 /**
- * Enhanced OpenAI-compatible API shim for Claude Code.
+ * Enhanced OpenAI-compatible API shim for ola-cc.
  *
  * Based on openai.ts with additional enhancements:
  * - JSON Schema sanitization (required is superset of properties)
@@ -952,7 +952,7 @@ export function createOpenAICompatibleShimClient(options: OpenAICompatibleClient
 
           const messageId = `msg_${randomUUID().slice(0, 24)}`
           let contentBlockIndex = 0
-          const toolCallState: Map<number, { id: string; name: string; arguments: string }> = new Map()
+          const toolCallState: Map<number, { id: string; name: string; arguments: string; blockIdx: number }> = new Map()
           const openedContentBlockIndices: Set<number> = new Set()
 
           return {
@@ -1016,26 +1016,33 @@ export function createOpenAICompatibleShimClient(options: OpenAICompatibleClient
                     }
 
                     if (delta?.tool_calls) {
-                      for (const tc of delta.tool_calls) {
+                        // DIAGNOSTIC: Log tool_calls received in delta
+                        if (process.env.DEBUG_OPENAI_STREAM) {
+                          console.error(`[OpenAI Shim Stream] Received tool_calls delta:`, JSON.stringify(delta.tool_calls))
+                        }
+                        for (const tc of delta.tool_calls) {
                         const idx = tc.index ?? 0
                         let state = toolCallState.get(idx)
                         if (!state) {
-                          state = { id: tc.id ?? `tool_call_${idx}_${randomUUID().slice(0, 8)}`, name: tc.function?.name ?? '', arguments: tc.function?.arguments ?? '' }
-                          toolCallState.set(idx, state)
                           const toolBlockIdx = contentBlockIndex++
+                          state = { id: tc.id ?? `tool_call_${idx}_${randomUUID().slice(0, 8)}`, name: tc.function?.name ?? '', arguments: tc.function?.arguments ?? '', blockIdx: toolBlockIdx }
+                          toolCallState.set(idx, state)
                           openedContentBlockIndices.add(toolBlockIdx)
                           yield { type: 'content_block_start', index: toolBlockIdx, content_block: { type: 'tool_use', id: state.id, name: state.name, input: {} } } as AnthropicStreamEvent
                         } else {
                           if (tc.function?.arguments) state.arguments += tc.function.arguments
                         }
                         if (tc.function?.arguments) {
-                          const toolBlockIdx = toolCallState.size - 1
-                          yield { type: 'content_block_delta', index: toolBlockIdx >= 0 ? toolBlockIdx : contentBlockIndex - 1, delta: { type: 'input_json_delta', partial_json: tc.function.arguments } } as AnthropicStreamEvent
+                          yield { type: 'content_block_delta', index: state.blockIdx, delta: { type: 'input_json_delta', partial_json: tc.function.arguments } } as AnthropicStreamEvent
                         }
                       }
                     }
 
                     if (choice.finish_reason) {
+                      // DIAGNOSTIC: Log finish_reason and toolCallState
+                      if (process.env.DEBUG_OPENAI_STREAM) {
+                        console.error(`[OpenAI Shim Stream] finish_reason: ${choice.finish_reason}, toolCallState size: ${toolCallState.size}`)
+                      }
                       for (const blockIdx of openedContentBlockIndices) {
                         yield { type: 'content_block_stop', index: blockIdx } as AnthropicStreamEvent
                       }
@@ -1044,6 +1051,17 @@ export function createOpenAICompatibleShimClient(options: OpenAICompatibleClient
                       else if (stopReason === 'tool_calls') stopReason = 'tool_use'
                       else if (stopReason === 'length') stopReason = 'max_tokens'
                       else if (stopReason === 'content_filter') stopReason = 'end_turn'
+
+                      // CRITICAL FIX: If we received tool_calls in the stream,
+                      // the stop_reason should be 'tool_use' regardless of finish_reason.
+                      // Some OpenAI-compatible APIs may return finish_reason='stop' even
+                      // when tool_calls were emitted in the deltas.
+                      if (toolCallState.size > 0) {
+                        stopReason = 'tool_use'
+                        if (process.env.DEBUG_OPENAI_STREAM) {
+                          console.error(`[OpenAI Shim Stream] Override stop_reason to 'tool_use' due to ${toolCallState.size} tool_calls`)
+                        }
+                      }
 
                       if (chunk.usage && !hasEmittedUsage) {
                         hasEmittedUsage = true

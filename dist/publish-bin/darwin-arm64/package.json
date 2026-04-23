@@ -1,6 +1,6 @@
 {
   "name": "@zyzheal/ola-cc-darwin-arm64",
-  "version": "0.3.8",
+  "version": "0.4.1",
   "description": "Ola CC native binary for darwin-arm64",
   "license": "SEE LICENSE IN LICENSE.md",
   "os": [
@@ -10,6 +10,7 @@
     "arm64"
   ],
   "files": [
-    "ola-cc"
+    "ola-cc",
+    "vendor/"
   ]
 }

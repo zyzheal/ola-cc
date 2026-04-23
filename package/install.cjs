@@ -1,8 +1,8 @@
 #!/usr/bin/env node
-// Postinstall for the ola-cc wrapper package (name in ./package.json).
+// Postinstall for the claude wrapper package (name in ./package.json).
 //
 // Detects the platform, finds the matching native binary from optionalDependencies,
-// and copies it over the bin/ola-cc.exe placeholder. After this runs, `ola-cc` execs
+// and copies it over the bin/claude.exe placeholder. After this runs, `claude` execs
 // the native binary directly — no Node.js process stays resident.
 //
 // If the native package isn't present (--omit=optional), prints instructions and
@@ -25,8 +25,8 @@ const { arch } = require('os')
 const path = require('path')
 
 // Replaced at build time via sed. Keep the literals below as markers.
-const PACKAGE_PREFIX = '@zyzheal/ola-cc'
-const BINARY_NAME = 'ola-cc'
+const PACKAGE_PREFIX = '@anthropic-ai/claude-code'
+const BINARY_NAME = 'claude'
 const WRAPPER_NAME = require('./package.json').name
 
 const PLATFORMS = {
@@ -86,14 +86,7 @@ function getPlatformKey() {
 }
 
 function placeBinary(src, dest) {
-  // Windows: always copy to avoid symlink permission issues.
-  // Hard links on Windows may require elevated privileges.
-  if (process.platform === 'win32') {
-    copyFileSync(src, dest)
-    return
-  }
-
-  // macOS/Linux: Try hardlink first (instant, zero extra disk for a ~500MB binary; src and
+  // Try hardlink first (instant, zero extra disk for a ~500MB binary; src and
   // dest are both under node_modules/ so same-filesystem is the common case).
   // We attempt the link BEFORE touching dest — if src is missing (partial
   // extraction) the first linkSync throws ENOENT and the fallback stub stays.
@@ -132,46 +125,6 @@ function placeBinary(src, dest) {
 }
 
 function main() {
-  // Windows: check if the platform package has a compiled ola-cc.exe
-  // If yes, copy it to bin/. If no, fall through to JS bundle usage.
-  if (process.platform === 'win32') {
-    const winArch = arch() === 'arm64' ? 'arm64' : 'x64'
-    const winPkgName = PACKAGE_PREFIX + '-win32-' + winArch
-    let exeSrc = null
-
-    // Try resolve from optionalDependencies
-    try {
-      const pkgDir = path.dirname(require.resolve(winPkgName + '/package.json'))
-      const exeCandidate = path.join(pkgDir, 'ola-cc.exe')
-      require('fs').accessSync(exeCandidate)
-      exeSrc = exeCandidate
-    } catch {
-      // Check fallback path too (global installs)
-      const fallbackPath = path.join(__dirname, 'node_modules', winPkgName, 'ola-cc.exe')
-      try {
-        require('fs').accessSync(fallbackPath)
-        exeSrc = fallbackPath
-      } catch { /* no exe found */ }
-    }
-
-    if (exeSrc) {
-      const dest = path.join(__dirname, 'bin', 'ola-cc.exe')
-      try {
-        placeBinary(exeSrc, dest)
-        console.log(`[${WRAPPER_NAME} postinstall] Installed ola-cc.exe → bin/ola-cc.exe`)
-      } catch (err) {
-        console.error(`[${WRAPPER_NAME} postinstall] Failed to place ola-cc.exe: ${err.message}`)
-        console.error('  Fallback: node ' + path.join(__dirname, 'cli.mjs'))
-        process.exitCode = 1
-      }
-      return
-    }
-
-    // No compiled .exe found — use JS bundle (cli.mjs) directly
-    console.log(`[${WRAPPER_NAME} postinstall] Windows: no compiled binary found, using JS bundle`)
-    return
-  }
-
   const platformKey = getPlatformKey()
   const info = PLATFORMS[platformKey]
 
@@ -184,30 +137,13 @@ function main() {
   }
 
   let src
-  // Resolution strategy: try multiple paths to find the platform binary package
-  const searchPaths = [
-    // 1. User project's node_modules (covers symlink/local installs)
-    path.join(process.cwd(), 'node_modules', info.pkg),
-    // 2. Standard require.resolve from this file's context
-    (() => { try { return path.dirname(require.resolve(info.pkg + '/package.json')); } catch { return null; } })(),
-    // 3. Wrapper's own node_modules (covers global installs)
-    path.join(__dirname, 'node_modules', info.pkg),
-  ].filter(Boolean)
-
-  for (const pkgDir of searchPaths) {
-    const binPath = path.join(pkgDir, info.bin)
-    try {
-      require('fs').accessSync(binPath)
-      src = binPath
-      break
-    } catch { /* try next */ }
-  }
-
-  if (!src) {
+  try {
+    const pkgDir = path.dirname(require.resolve(info.pkg + '/package.json'))
+    src = path.join(pkgDir, info.bin)
+  } catch {
     console.error(
       `[${WRAPPER_NAME} postinstall] Native package "${info.pkg}" not found.`,
     )
-    console.error(`  Searched: ${searchPaths.map(p => p + '/' + info.bin).join(', ')}`)
     if (platformKey === 'darwin-arm64' && arch() === 'x64') {
       console.error(
         '  You are running x64 Node under Rosetta 2 on Apple Silicon. npm only',
@@ -229,19 +165,20 @@ function main() {
       '  This happens with --omit=optional or when the download failed.',
     )
     console.error(
-      '  The `ola-cc` command will print instructions when invoked.',
+      '  The `claude` command will print instructions when invoked.',
     )
     console.error('  Fallback: node ' + path.join(__dirname, 'cli-wrapper.cjs'))
     return
   }
 
-  // Always write to bin/ directory
-  const binName = process.platform === 'win32' ? 'ola-cc.exe' : 'ola-cc'
-  const dest = path.join(__dirname, 'bin', binName)
+  // Always write to bin/claude.exe — the package.json bin field points here.
+  // The .exe extension + no-shebang stub makes npm's cmd-shim (generated at
+  // install time, before postinstall) emit a direct exec on Windows; Unix
+  // ignores the extension. Same pattern as Bun's npm package.
+  const dest = path.join(__dirname, 'bin', 'claude.exe')
 
   try {
     placeBinary(src, dest)
-    console.log(`[${WRAPPER_NAME} postinstall] Installed ${info.bin} → bin/${binName}`)
   } catch (err) {
     console.error(
       `[${WRAPPER_NAME} postinstall] Failed to place binary: ${err.message}`,

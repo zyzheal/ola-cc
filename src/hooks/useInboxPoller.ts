@@ -94,12 +94,11 @@ function getAgentNameToPoll(appState: AppState): string | undefined {
   if (isTeammate()) {
     return getAgentName()
   }
-  // Team lead polls using their agent name (not ID)
+  // Team lead polls using TEAM_LEAD_NAME ('team-lead') — this matches what
+  // in-process teammates write to via sendMessageToLeader/TEammateMailbox.
+  // Using the lead's display name from teammates map would read the wrong inbox.
   if (isTeamLead(appState.teamContext)) {
-    const leadAgentId = appState.teamContext!.leadAgentId
-    // Look up the lead's name from teammates map
-    const leadName = appState.teamContext!.teammates[leadAgentId]?.name
-    return leadName || 'team-lead'
+    return TEAM_LEAD_NAME
   }
   return undefined
 }
