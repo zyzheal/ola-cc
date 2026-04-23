@@ -2,22 +2,22 @@
  * Claude Code VSCode Extension - Entry Point
  *
  * This extension embeds Claude Code's AI capabilities inside VSCode,
- * providing a chat panel, code actions, and editor integration.
+ * providing a sidebar chat view, code actions, and editor integration.
  *
  * Architecture:
  * - extension.ts: VSCode extension lifecycle, command registration
- * - panels/ChatView.tsx: Manages the webview-based chat panel
+ * - panels/ChatPanel.ts: ChatViewProvider for the sidebar webview
  * - providers/: Code actions, hover providers, completion providers
  * - webview/: Frontend code that runs inside VSCode webviews
  */
 import * as vscode from 'vscode';
-import { ChatPanel } from './panels/ChatPanel';
+import { ChatViewProvider } from './panels/ChatPanel';
 import { CodeActionProvider } from './providers/CodeActionProvider';
 import { HoverProvider } from './providers/HoverProvider';
 import { StatusBarManager } from './utils/StatusBarManager';
 
 // Global state
-let chatPanel: ChatPanel | undefined;
+let chatProvider: ChatViewProvider | undefined;
 let statusBar: StatusBarManager | undefined;
 let codeActionDisposable: vscode.Disposable | undefined;
 let hoverDisposable: vscode.Disposable | undefined;
@@ -26,42 +26,46 @@ let hoverProvider: HoverProvider | undefined;
 /**
  * Extension activation - called when the extension is first activated.
  */
-export function activate(context: vscode.ExtensionContext): void {
+export async function activate(context: vscode.ExtensionContext): Promise<void> {
   console.log('Claude Code extension activated');
 
   // Initialize status bar
   statusBar = new StatusBarManager(context);
   statusBar.updateStatus('idle');
 
-  // Initialize chat panel (lazy - created on first command)
-  chatPanel = new ChatPanel(context, statusBar);
+  // Initialize chat view provider and register as WebviewViewProvider
+  const provider = new ChatViewProvider(context, statusBar);
+  context.subscriptions.push(
+    vscode.window.registerWebviewViewProvider(ChatViewProvider.viewType, provider)
+  );
+  chatProvider = provider;
 
   // Register commands
-  registerCommands(context, chatPanel);
+  registerCommands(context, chatProvider);
 
   // Register providers (conditionally based on settings)
   registerProviders(context);
 
   // Register event listeners
-  registerEventListeners(context, chatPanel);
+  registerEventListeners(context, chatProvider);
 }
 
 /**
  * Register all VSCode commands contributed by this extension.
  */
-function registerCommands(context: vscode.ExtensionContext, panel: ChatPanel): void {
-  // Main chat command - opens/focuses the chat panel
+function registerCommands(context: vscode.ExtensionContext, provider: ChatViewProvider): void {
+  // Main chat command - opens/focuses the sidebar
   const chatCmd = vscode.commands.registerCommand('claude.chat', async () => {
-    await panel.show();
-    panel.focusInput();
+    await provider.show();
+    provider.focusInput();
   });
   context.subscriptions.push(chatCmd);
 
   // Explain code - uses current selection or active file
   const explainCmd = vscode.commands.registerCommand('claude.explain', async () => {
     const context = getEditorContext();
-    await panel.show();
-    panel.sendMessage({
+    await provider.show();
+    provider.sendMessage({
       type: 'user_message',
       content: `Please explain this code:\n\n\`\`\`${context.language}\n${context.text}\n\`\`\``,
       context,
@@ -72,8 +76,8 @@ function registerCommands(context: vscode.ExtensionContext, panel: ChatPanel): v
   // Refactor code
   const refactorCmd = vscode.commands.registerCommand('claude.refactor', async () => {
     const context = getEditorContext();
-    await panel.show();
-    panel.sendMessage({
+    await provider.show();
+    provider.sendMessage({
       type: 'user_message',
       content: `Please refactor this code to improve readability and maintainability:\n\n\`\`\`${context.language}\n${context.text}\n\`\`\``,
       context,
@@ -84,8 +88,8 @@ function registerCommands(context: vscode.ExtensionContext, panel: ChatPanel): v
   // Fix issue
   const fixCmd = vscode.commands.registerCommand('claude.fix', async () => {
     const context = getEditorContext();
-    await panel.show();
-    panel.sendMessage({
+    await provider.show();
+    provider.sendMessage({
       type: 'user_message',
       content: `Please identify and fix any issues in this code:\n\n\`\`\`${context.language}\n${context.text}\n\`\`\``,
       context,
@@ -96,8 +100,8 @@ function registerCommands(context: vscode.ExtensionContext, panel: ChatPanel): v
   // Generate tests
   const testsCmd = vscode.commands.registerCommand('claude.generateTests', async () => {
     const context = getEditorContext();
-    await panel.show();
-    panel.sendMessage({
+    await provider.show();
+    provider.sendMessage({
       type: 'user_message',
       content: `Please generate comprehensive unit tests for this code:\n\n\`\`\`${context.language}\n${context.text}\n\`\`\``,
       context,
@@ -108,8 +112,8 @@ function registerCommands(context: vscode.ExtensionContext, panel: ChatPanel): v
   // Review code
   const reviewCmd = vscode.commands.registerCommand('claude.review', async () => {
     const context = getEditorContext();
-    await panel.show();
-    panel.sendMessage({
+    await provider.show();
+    provider.sendMessage({
       type: 'user_message',
       content: `Please review this code for best practices, potential bugs, and improvements:\n\n\`\`\`${context.language}\n${context.text}\n\`\`\``,
       context,
@@ -119,14 +123,14 @@ function registerCommands(context: vscode.ExtensionContext, panel: ChatPanel): v
 
   // Clear chat
   const clearCmd = vscode.commands.registerCommand('claude.clearChat', () => {
-    panel.clearChat();
+    provider.clearChat();
   });
   context.subscriptions.push(clearCmd);
 
   // Focus input
   const focusCmd = vscode.commands.registerCommand('claude.focusInput', async () => {
-    await panel.show();
-    panel.focusInput();
+    await provider.show();
+    provider.focusInput();
   });
   context.subscriptions.push(focusCmd);
 }
@@ -163,13 +167,13 @@ function registerProviders(context: vscode.ExtensionContext): void {
  */
 function registerEventListeners(
   context: vscode.ExtensionContext,
-  panel: ChatPanel
+  provider: ChatViewProvider
 ): void {
   // Listen for configuration changes
   context.subscriptions.push(
     vscode.workspace.onDidChangeConfiguration(e => {
       if (e.affectsConfiguration('claude')) {
-        panel.onConfigChanged();
+        provider.onConfigChanged();
         statusBar?.updateStatus('idle');
 
         // Re-register/unregister hover provider when enableHoverInsights changes
@@ -184,7 +188,7 @@ function registerEventListeners(
   context.subscriptions.push(
     vscode.window.onDidChangeActiveTextEditor(editor => {
       if (editor) {
-        panel.updateActiveFileContext({
+        provider.updateActiveFileContext({
           path: editor.document.uri.fsPath,
           language: editor.document.languageId,
           text: getSelectedOrFullText(editor),
@@ -198,7 +202,7 @@ function registerEventListeners(
   context.subscriptions.push(
     vscode.window.onDidChangeTextEditorSelection(e => {
       if (e.textEditor.document.uri.scheme === 'file' && !e.selections[0]?.isEmpty) {
-        panel.updateActiveFileContext({
+        provider.updateActiveFileContext({
           path: e.textEditor.document.uri.fsPath,
           language: e.textEditor.document.languageId,
           text: e.textEditor.document.getText(e.selections[0]),
@@ -281,7 +285,7 @@ export interface EditorContext {
  * Extension deactivation - called when the extension is deactivated.
  */
 export function deactivate(): void {
-  chatPanel?.dispose();
+  chatProvider?.dispose();
   statusBar?.dispose();
   console.log('Claude Code extension deactivated');
 }

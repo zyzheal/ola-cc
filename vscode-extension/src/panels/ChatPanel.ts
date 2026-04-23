@@ -1,11 +1,16 @@
 /**
- * ChatPanel - Manages the VSCode webview for Claude Code chat.
+ * ChatViewProvider - Manages the VSCode sidebar webview for Claude Code chat.
  *
- * This class handles the lifecycle of the webview panel, message passing
- * between VSCode and the webview, and integration with the Claude API.
+ * This class implements WebviewViewProvider to embed the Claude chat
+ * interface in the VSCode sidebar. It handles message passing between
+ * VSCode and the webview, and integration with the Claude API.
  *
  * The webview renders a chat interface that mirrors the CLI experience,
  * with streaming responses and support for code blocks, markdown, etc.
+ *
+ * Note: WebviewView does NOT support retainContextWhenHidden. When the
+ * sidebar collapses, the webview DOM is destroyed and resolveWebviewView()
+ * is called again. We must re-send full history and config on every resolve.
  */
 import * as vscode from 'vscode';
 import * as path from 'path';
@@ -31,16 +36,23 @@ interface UserMessageData {
 }
 
 /**
- * ChatPanel manages a VSCode webview that displays the Claude chat interface.
+ * ChatViewProvider implements vscode.WebviewViewProvider to display
+ * the Claude chat interface in the VSCode sidebar.
  */
-export class ChatPanel {
-  private panel: vscode.WebviewPanel | undefined;
+export class ChatViewProvider implements vscode.WebviewViewProvider {
+  public static readonly viewType = 'claudeCode.sidebar';
+
+  private view: vscode.WebviewView | undefined;
   private client: ClaudeClient;
   private statusBar: StatusBarManager;
   private context: vscode.ExtensionContext;
   private messageHistory: ChatMessage[] = [];
   private activeFileContext: FileContext | null = null;
   private isStreaming = false;
+  private isResolving = false;
+
+  private _onDidChangeVisibility = new vscode.EventEmitter<boolean>();
+  readonly onDidChangeVisibility = this._onDidChangeVisibility.event;
 
   constructor(context: vscode.ExtensionContext, statusBar: StatusBarManager) {
     this.context = context;
@@ -49,52 +61,64 @@ export class ChatPanel {
   }
 
   /**
-   * Show the chat panel, creating it if it doesn't exist.
+   * Called by VSCode when the sidebar view is first created or
+   * re-created after the sidebar was collapsed (DOM destroyed).
    */
-  async show(): Promise<void> {
-    if (this.panel) {
-      this.panel.reveal(vscode.ViewColumn.Two);
-      return;
-    }
+  resolveWebviewView(
+    webviewView: vscode.WebviewView,
+    _context: vscode.WebviewViewResolveContext,
+    _token: vscode.CancellationToken
+  ): void {
+    this.view = webviewView;
+    this.view.webview.options = {
+      enableScripts: true,
+      localResourceRoots: [
+        vscode.Uri.file(path.join(this.context.extensionPath, 'dist', 'webview')),
+      ],
+    };
+    this.view.webview.html = this.getWebviewHtml();
+    this.setupMessageHandlers();
 
-    // Create the webview panel
-    this.panel = vscode.window.createWebviewPanel(
-      'claudeChat',
-      'Claude Code',
-      vscode.ViewColumn.Two,
-      {
-        enableScripts: true,
-        retainContextWhenHidden: true,
-        localResourceRoots: [
-          vscode.Uri.file(path.join(this.context.extensionPath, 'dist', 'webview')),
-        ],
-      }
-    );
+    // Re-send full history and config since DOM is destroyed on re-resolve
+    this.isResolving = true;
+    this.sendConfigToWebview();
+    this.sendHistoryToWebview();
+    this.isResolving = false;
+  }
 
-    this.panel.webview.html = this.getWebviewHtml();
-
-    // Handle messages from the webview
-    this.panel.webview.onDidReceiveMessage(
+  /**
+   * Set up message handlers for the webview.
+   */
+  private setupMessageHandlers(): void {
+    if (!this.view) return;
+    this.view.webview.onDidReceiveMessage(
       async (message: WebviewMessage) => {
         await this.handleWebviewMessage(message);
       },
       undefined,
       this.context.subscriptions
     );
+  }
 
-    // Handle panel disposal
-    this.panel.onDidDispose(
-      () => {
-        this.panel = undefined;
-        this.statusBar.updateStatus('idle');
-      },
-      undefined,
-      this.context.subscriptions
-    );
+  /**
+   * Focus the sidebar view.
+   */
+  async show(): Promise<void> {
+    await vscode.commands.executeCommand('claudeCode.sidebar.focus');
+  }
 
-    // Send initial config to webview
-    this.sendConfigToWebview();
-    this.sendHistoryToWebview();
+  /**
+   * Post a message to the webview.
+   */
+  postMessage(msg: unknown): void {
+    this.view?.webview.postMessage(msg);
+  }
+
+  /**
+   * Notify visibility change.
+   */
+  onVisibilityChange(visible: boolean): void {
+    this._onDidChangeVisibility.fire(visible);
   }
 
   /**
@@ -214,10 +238,9 @@ export class ChatPanel {
   }
 
   /**
-   * Dispose of the chat panel.
+   * Dispose of resources.
    */
   dispose(): void {
-    this.panel?.dispose();
     this.client.dispose();
   }
 
@@ -321,10 +344,10 @@ export class ChatPanel {
   }
 
   /**
-   * Post a message to the webview.
+   * Post a message to the webview (internal helper).
    */
   private postMessageToWebview(message: unknown): void {
-    this.panel?.webview.postMessage(message);
+    this.postMessage(message);
   }
 
   /**
@@ -357,7 +380,7 @@ export class ChatPanel {
    * Only minimal CSS and the script tag are included here.
    */
   private getWebviewHtml(): string {
-    const scriptUri = this.panel?.webview.asWebviewUri(
+    const scriptUri = this.view?.webview.asWebviewUri(
       vscode.Uri.file(path.join(this.context.extensionPath, 'dist', 'webview', 'app.js'))
     );
     const nonce = this.getNonce();
@@ -368,7 +391,7 @@ export class ChatPanel {
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <meta http-equiv="Content-Security-Policy"
-    content="default-src 'none'; style-src ${this.panel?.webview.cspSource} 'unsafe-inline'; script-src 'nonce-${nonce}';">
+    content="default-src 'none'; style-src ${this.view?.webview.cspSource} 'unsafe-inline'; script-src 'nonce-${nonce}';">
   <title>Claude Code</title>
   <style>
     :root {
@@ -548,7 +571,7 @@ Guidelines:
 }
 
 /**
- * Chat message stored in the panel's history.
+ * Chat message stored in the view's history.
  */
 interface ChatMessage {
   id: string;
