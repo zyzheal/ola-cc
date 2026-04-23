@@ -218,6 +218,19 @@
           "type": "string",
           "default": "",
           "description": "OpenAI-compatible model name (leave empty to use claude.model)"
+        },
+        "claude.mcpServers": {
+          "type": "object",
+          "default": {},
+          "description": "MCP server configurations",
+          "additionalProperties": {
+            "type": "object",
+            "properties": {
+              "url": { "type": "string", "description": "MCP server URL" },
+              "apiKey": { "type": "string", "description": "Optional API key" }
+            },
+            "required": ["url"]
+          }
         }
       }
     },
