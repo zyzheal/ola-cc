@@ -154,6 +154,13 @@ function AgentLine(t0) {
   } = useTerminalSize();
   const [hover, setHover] = React.useState(false);
   const isRunning = !isTerminalStatus(task.status);
+  // Blinking animation for running tasks — alternates every 500ms
+  const [blink, setBlink] = React.useState(true);
+  React.useEffect(() => {
+    if (!isRunning) { setBlink(true); return; }
+    const interval = setInterval(() => setBlink(p => !p), 500);
+    return () => clearInterval(interval);
+  }, [isRunning]);
   const pausedMs = task.totalPausedMs ?? 0;
   const elapsedMs = Math.max(0, isRunning ? Date.now() - task.startTime - pausedMs : (task.endTime ?? task.startTime) - task.startTime - pausedMs);
   let t1;
@@ -185,7 +192,8 @@ function AgentLine(t0) {
   const prefix = highlighted ? figures.pointer + " " : "  ";
   const bullet = isViewed ? BLACK_CIRCLE : figures.circle;
   const dim = !highlighted && !isViewed;
-  const sep = isRunning ? PLAY_ICON : PAUSE_ICON;
+  // Blinking: alternate between PLAY_ICON and space when running
+  const sep = isRunning ? (blink ? PLAY_ICON : ' ') : PAUSE_ICON;
   const namePart = name ? `${name}: ` : "";
   const hintPart = isSelected && !isViewed ? ` · x to ${isRunning ? "stop" : "clear"}` : "";
   const suffixPart = ` ${sep} ${elapsed}${tokenText}${queuedText}${hintPart}`;

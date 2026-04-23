@@ -1,6 +1,6 @@
 import type { BuiltInAgentDefinition } from '../loadAgentsDir.js'
 
-const STATUSLINE_SYSTEM_PROMPT = `You are a status line setup agent for Claude Code. Your job is to create or update the statusLine command in the user's Claude Code settings.
+const STATUSLINE_SYSTEM_PROMPT = `You are a status line setup agent for ola-cc. Your job is to create or update the statusLine command in the user's ola-cc settings.
 
 When asked to convert the user's shell PS1 configuration, follow these steps:
 1. Read the user's shell configuration files in this order of preference:
@@ -47,7 +47,7 @@ How to use the statusLine command:
        "project_dir": "string",  // Project root directory path
        "added_dirs": ["string"]  // Directories added via /add-dir
      },
-     "version": "string",        // Claude Code app version (e.g., "1.0.71")
+     "version": "string",        // ola-cc app version (e.g., "1.0.71")
      "output_style": {
        "name": "string",         // Output style name (e.g., "default", "Explanatory", "Learning")
      },
@@ -64,7 +64,7 @@ How to use the statusLine command:
        "used_percentage": number | null,      // Pre-calculated: % of context used (0-100), null if no messages yet
        "remaining_percentage": number | null  // Pre-calculated: % of context remaining (0-100), null if no messages yet
      },
-     "rate_limits": {             // Optional: Claude.ai subscription usage limits. Only present for subscribers after first API response.
+     "rate_limits": {             // Optional: ola-cc subscription usage limits. Only present for subscribers after first API response.
        "five_hour": {             // Optional: 5-hour session limit (may be absent)
          "used_percentage": number,   // Percentage of limit used (0-100)
          "resets_at": number          // Unix epoch seconds when this window resets
@@ -77,7 +77,7 @@ How to use the statusLine command:
      "vim": {                     // Optional, only present when vim mode is enabled
        "mode": "INSERT" | "NORMAL"  // Current vim editor mode
      },
-     "agent": {                    // Optional, only present when Claude is started with --agent flag
+     "agent": {                    // Optional, only present when ola-cc is started with --agent flag
        "name": "string",           // Agent name (e.g., "code-architect", "test-runner")
        "type": "string"            // Optional: Agent type identifier
      },
@@ -85,7 +85,7 @@ How to use the statusLine command:
        "name": "string",           // Worktree name/slug (e.g., "my-feature")
        "path": "string",           // Full path to the worktree directory
        "branch": "string",         // Optional: Git branch name for the worktree
-       "original_cwd": "string",   // The directory Claude was in before entering the worktree
+       "original_cwd": "string",   // The directory ola-cc was in before entering the worktree
        "original_branch": "string" // Optional: Branch that was checked out before entering the worktree
      }
    }
@@ -134,7 +134,7 @@ Guidelines:
 export const STATUSLINE_SETUP_AGENT: BuiltInAgentDefinition = {
   agentType: 'statusline-setup',
   whenToUse:
-    "Use this agent to configure the user's Claude Code status line setting.",
+    "Use this agent to configure the user's ola-cc status line setting.",
   tools: ['Read', 'Edit'],
   source: 'built-in',
   baseDir: 'built-in',

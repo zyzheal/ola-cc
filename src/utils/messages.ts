@@ -235,7 +235,7 @@ export function AUTO_REJECT_MESSAGE(toolName: string): string {
   return `Permission to use ${toolName} has been denied. ${DENIAL_WORKAROUND_GUIDANCE}`
 }
 export function DONT_ASK_REJECT_MESSAGE(toolName: string): string {
-  return `Permission to use ${toolName} has been denied because Claude Code is running in don't ask mode. ${DENIAL_WORKAROUND_GUIDANCE}`
+  return `Permission to use ${toolName} has been denied because ola-cc is running in don't ask mode. ${DENIAL_WORKAROUND_GUIDANCE}`
 }
 export const NO_RESPONSE_REQUESTED = 'No response requested.'
 
@@ -333,8 +333,12 @@ export function getLastAssistantMessage(
 ): AssistantMessage | undefined {
   // findLast exits early from the end — much faster than filter + last for
   // large message arrays (called on every REPL render via useFeedbackSurvey).
+  // Also filter out messages without valid message structure
   return messages.findLast(
-    (msg): msg is AssistantMessage => msg.type === 'assistant',
+    (msg): msg is AssistantMessage =>
+      msg.type === 'assistant' &&
+      msg.message !== undefined &&
+      Array.isArray(msg.message.content),
   )
 }
 
@@ -343,6 +347,10 @@ export function hasToolCallsInLastAssistantTurn(messages: Message[]): boolean {
     const message = messages[i]
     if (message && message.type === 'assistant') {
       const assistantMessage = message as AssistantMessage
+      // Defensive check: message property may be undefined
+      if (!assistantMessage.message || !Array.isArray(assistantMessage.message.content)) {
+        continue
+      }
       const content = assistantMessage.message.content
       if (Array.isArray(content)) {
         return content.some(block => block.type === 'tool_use')
@@ -749,6 +757,11 @@ export function normalizeMessages(messages: Message[]): NormalizedMessage[] {
   return messages.flatMap(message => {
     switch (message.type) {
       case 'assistant': {
+        // Defensive check: message property may be undefined for some assistant messages
+        // Return empty array if message structure is invalid
+        if (!message.message || !Array.isArray(message.message.content)) {
+          return []
+        }
         isNewChain = isNewChain || message.message.content.length > 1
         // Filter out undefined/sparse content blocks before mapping — some API
         // providers may return sparse arrays with gaps in content indices
@@ -782,6 +795,10 @@ export function normalizeMessages(messages: Message[]): NormalizedMessage[] {
       case 'system':
         return [message]
       case 'user': {
+        // Defensive check: message property may be undefined
+        if (!message.message) {
+          return []
+        }
         if (typeof message.message.content === 'string') {
           const uuid = isNewChain ? deriveUUID(message.uuid, 0) : message.uuid
           return [
@@ -795,10 +812,13 @@ export function normalizeMessages(messages: Message[]): NormalizedMessage[] {
             } as NormalizedMessage,
           ]
         }
-        isNewChain = isNewChain || message.message.content.length > 1
+        isNewChain = isNewChain || (Array.isArray(message.message.content) && message.message.content.length > 1)
         let imageIndex = 0
         // Filter out undefined/sparse content blocks
-        const userContentBlocks = message.message.content.filter(Boolean)
+        // Defensive: ensure content is an array before filtering
+        const userContentBlocks = Array.isArray(message.message.content)
+          ? message.message.content.filter(Boolean)
+          : []
         return userContentBlocks.map((_, index) => {
           const isImage = _.type === 'image'
           // For image content blocks, extract just the ID for this image

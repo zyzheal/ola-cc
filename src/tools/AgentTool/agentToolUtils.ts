@@ -263,6 +263,10 @@ export function countToolUses(messages: MessageType[]): number {
   let count = 0
   for (const m of messages) {
     if (m.type === 'assistant') {
+      // Defensive check: message property may be undefined for some assistant messages
+      if (!m.message || !Array.isArray(m.message.content)) {
+        continue;
+      }
       for (const block of m.message.content) {
         if (block.type === 'tool_use') {
           count++
@@ -298,6 +302,23 @@ export function finalizeAgentTool(
   if (lastAssistantMessage === undefined) {
     throw new Error('No assistant messages found')
   }
+  // Defensive check: message property may be undefined for some assistant messages
+  // Instead of throwing, return a minimal result when structure is invalid
+  const hasValidMessage = lastAssistantMessage.message && Array.isArray(lastAssistantMessage.message.content)
+  if (!hasValidMessage) {
+    logForDebugging(`finalizeAgentTool: lastAssistantMessage has invalid structure, returning minimal result`)
+    // Return a minimal valid result to allow the agent to complete gracefully
+    const totalToolUseCount = countToolUses(agentMessages)
+    return {
+      agentId,
+      agentType,
+      content: [{ type: 'text', text: 'Agent completed with partial results (message structure invalid)' }],
+      totalDurationMs: Date.now() - startTime,
+      totalTokens: 0,
+      totalToolUseCount,
+      usage: { input_tokens: 0, output_tokens: 0, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 },
+    }
+  }
   // Extract text content from the agent's response. If the final assistant
   // message is a pure tool_use block (loop exited mid-turn), fall back to
   // the most recent assistant message that has text content.
@@ -308,6 +329,8 @@ export function finalizeAgentTool(
     for (let i = agentMessages.length - 1; i >= 0; i--) {
       const m = agentMessages[i]!
       if (m.type !== 'assistant') continue
+      // Defensive check: skip messages without valid message structure
+      if (!m.message || !Array.isArray(m.message.content)) continue
       const textBlocks = m.message.content.filter(_ => _.type === 'text')
       if (textBlocks.length > 0) {
         content = textBlocks
@@ -362,6 +385,8 @@ export function finalizeAgentTool(
  */
 export function getLastToolUseName(message: MessageType): string | undefined {
   if (message.type !== 'assistant') return undefined
+  // Defensive check: message property may be undefined
+  if (!message.message || !Array.isArray(message.message.content)) return undefined
   const block = message.message.content.findLast(b => b.type === 'tool_use')
   return block?.type === 'tool_use' ? block.name : undefined
 }

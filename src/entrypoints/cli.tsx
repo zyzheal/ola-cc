@@ -75,7 +75,7 @@ async function main(): Promise<void> {
   if (args.length === 1 && (args[0] === '--version' || args[0] === '-v' || args[0] === '-V')) {
     // MACRO.VERSION is inlined at build time
     // biome-ignore lint/suspicious/noConsole:: intentional console output
-    console.log(`${MACRO.VERSION} (Claude Code)`);
+    console.log(`${MACRO.VERSION} (ola-cc)`);
     return;
   }
 
@@ -83,7 +83,7 @@ async function main(): Promise<void> {
   if (args.length === 1 && (args[0] === '--help' || args[0] === '-h')) {
     console.log('Usage: claude [options] [command] [prompt]');
     console.log('');
-    console.log('Claude Code - starts an interactive session by default, use -p/--print for');
+    console.log('ola-cc - starts an interactive session by default, use -p/--print for');
     console.log('non-interactive output');
     console.log('');
     console.log('Common Options:');
@@ -98,8 +98,8 @@ async function main(): Promise<void> {
     console.log('Common Commands:');
     console.log('  mcp                                               Configure and manage MCP servers');
     console.log('  auth                                              Manage authentication');
-    console.log('  plugin                                            Manage Claude Code plugins');
-    console.log('  doctor                                            Check the health of your Claude Code');
+    console.log('  plugin                                            Manage ola-cc plugins');
+    console.log('  doctor                                            Check the health of your ola-cc');
     console.log('  update                                            Check for updates and install if available');
     console.log('');
     console.log('Examples:');
@@ -112,14 +112,14 @@ async function main(): Promise<void> {
 
   // Fast-path for version subcommand
   if (args.length === 1 && args[0] === 'version') {
-    console.log(`${MACRO.VERSION} (Claude Code)`);
+    console.log(`${MACRO.VERSION} (ola-cc)`);
     return;
   }
 
   // Fast-path for update/upgrade subcommands
   if (args.length === 1 && (args[0] === 'update' || args[0] === 'upgrade')) {
     console.log('Update functionality requires the full CLI.');
-    console.log('Please use the official Claude Code package for updates.');
+    console.log('Please use the official ola-cc package for updates.');
     return;
   }
 

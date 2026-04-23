@@ -1221,8 +1221,10 @@ async function* queryModel(
   // Add tool search beta header if enabled - required for defer_loading to be accepted
   // Header differs by provider: 1P/Foundry use advanced-tool-use, Vertex/Bedrock use tool-search-tool
   // For Bedrock, this header must go in extraBodyParams, not the betas array
+  // Also gate on isFirstPartyAnthropicBaseUrl: proxy gateways (DashScope, LiteLLM) reject
+  // beta headers with 400 errors even when getAPIProvider() returns 'firstParty'.
   const toolSearchHeader = useToolSearch ? getToolSearchBetaHeader() : null
-  if (toolSearchHeader && getAPIProvider() !== 'bedrock') {
+  if (toolSearchHeader && getAPIProvider() !== 'bedrock' && isFirstPartyAnthropicBaseUrl()) {
     if (!betas.includes(toolSearchHeader)) {
       betas.push(toolSearchHeader)
     }
@@ -1927,11 +1929,20 @@ async function* queryModel(
     // kill hung streams. Without this, a silently dropped connection can hang
     // the session indefinitely since the SDK's request timeout only covers the
     // initial fetch(), not the streaming body.
+    //
+    // Default to enabled when NOT using first-party Anthropic API endpoint.
+    // Proxy gateways (DashScope, LiteLLM, etc.) are more prone to silently
+    // dropping streaming connections, so watchdog protection is critical.
+    // Official Anthropic API can disable via CLAUDE_ENABLE_STREAM_WATCHDOG=0
+    // if desired, but proxy gateway users should ALWAYS have this enabled.
     const streamWatchdogEnabled = isEnvTruthy(
       process.env.CLAUDE_ENABLE_STREAM_WATCHDOG,
-    )
+    ) || !isFirstPartyAnthropicBaseUrl()  // Default ON for proxy gateways
+    // Use shorter timeout for proxy gateways (45s) since they may have
+    // different timeout characteristics. Official API uses 90s default.
+    const defaultStreamTimeout = isFirstPartyAnthropicBaseUrl() ? 90_000 : 45_000
     const STREAM_IDLE_TIMEOUT_MS =
-      parseInt(process.env.CLAUDE_STREAM_IDLE_TIMEOUT_MS || '', 10) || 90_000
+      parseInt(process.env.CLAUDE_STREAM_IDLE_TIMEOUT_MS || '', 10) || defaultStreamTimeout
     const STREAM_IDLE_WARNING_MS = STREAM_IDLE_TIMEOUT_MS / 2
     let streamIdleAborted = false
     // performance.now() snapshot when watchdog fires, for measuring abort propagation delay
@@ -3349,7 +3360,7 @@ export async function queryHaiku({
 type QueryWithModelOptions = Omit<Options, 'getToolPermissionContext'>
 
 /**
- * Query a specific model through the Claude Code infrastructure.
+ * Query a specific model through the ola-cc infrastructure.
  * This goes through the full query pipeline including proper authentication,
  * betas, and headers - unlike direct API calls.
  */
