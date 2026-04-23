@@ -82,18 +82,20 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     this.view.webview.html = this.getWebviewHtml();
     this.setupMessageHandlers();
 
-    // Re-send full history and config since DOM is destroyed on re-resolve
+    // Restore session from file storage first, then send history/config
     this.isResolving = true;
-    this.sendConfigToWebview();
-    this.sendHistoryToWebview();
-    this.isResolving = false;
-
-    // Restore session from file storage
     this.loadSession().then(messages => {
       if (messages) {
         this.messageHistory = messages;
-        this.sendHistoryToWebview();
       }
+      this.sendConfigToWebview();
+      this.sendHistoryToWebview();
+      this.isResolving = false;
+    }).catch(() => {
+      // If load fails, still send empty history
+      this.sendConfigToWebview();
+      this.sendHistoryToWebview();
+      this.isResolving = false;
     });
   }
 
@@ -215,11 +217,18 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   /**
    * Clear the chat history.
    */
-  clearChat(): void {
+  async clearChat(): Promise<void> {
     this.messageHistory = [];
     this.postMessageToWebview({
       command: 'clear_messages',
     });
+    // Also delete persisted session
+    try {
+      const uri = vscode.Uri.joinPath(this.context.globalStorageUri, 'session.json');
+      await vscode.workspace.fs.delete(uri);
+    } catch {
+      // File may not exist, ignore
+    }
   }
 
   /**
@@ -256,6 +265,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
    * Dispose of resources.
    */
   dispose(): void {
+    clearTimeout(this.saveDebounceTimer);
     this.messageHandlerDisposable?.dispose();
     this._onDidChangeVisibility.dispose();
     this.client.dispose();
