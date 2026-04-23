@@ -1,2 +1,9 @@
 node_modules/
 .worktrees/
+
+# Large binary files - do not commit
+dist/cli
+dist/cli-dev
+*.tgz
+anthropic-ai-claude-code-*.tgz
+dist/publish-bin/darwin-arm64/ola-cc
