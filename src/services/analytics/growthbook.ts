@@ -777,17 +777,13 @@ export function getFeatureValue_CACHED_MAY_BE_STALE<T>(
 
   // Log experiment exposure if data is available, otherwise defer until after init
   if (experimentDataByFeature.has(feature)) {
-    logExposureForFeature(feature)
+    logExposureForFeature(feature);
   } else {
-    pendingExposures.add(feature)
-    trimPendingExposures()
+    pendingExposures.add(feature);
+    trimPendingExposures();
   }
 
   // In-memory payload is authoritative once processRemoteEvalPayload has run.
-  // Disk is also fresh by then (syncRemoteEvalToDisk runs synchronously inside
-  // init), so this is correctness-equivalent to the disk read below — but it
-  // skips the config JSON parse and is what onGrowthBookRefresh subscribers
-  // depend on to read fresh values the instant they're notified.
   if (remoteEvalFeatureValues.has(feature)) {
     return remoteEvalFeatureValues.get(feature) as T
   }

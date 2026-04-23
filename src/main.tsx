@@ -277,8 +277,10 @@ if ("external" !== 'ant' && isBeingDebugged()) {
  * call sites here rather than one here + one in QueryEngine.
  */
 function logSessionTelemetry(): void {
-  const model = parseUserSpecifiedModel(getInitialMainLoopModel() ?? getDefaultMainLoopModel());
-  void logSkillsLoaded(getCwd(), getContextWindowForModel(model, getSdkBetas()));
+  const model = parseUserSpecifiedModel(getInitialMainLoopModel() ?? getDefaultMainLoopModel())
+  const cwd = getCwd()
+  const ctx = getContextWindowForModel(model, getSdkBetas())
+  void logSkillsLoaded(cwd, ctx)
   void loadAllPluginsCacheOnly().then(({
     enabled,
     errors
@@ -1004,7 +1006,7 @@ async function run(): Promise<CommanderCommand> {
   // top-level option. Single-value + collect accumulator means each
   // --plugin-dir takes exactly one arg; repeat the flag for multiple dirs.
   .option('--plugin-dir <path>', 'Load plugins from a directory for this session only (repeatable: --plugin-dir A --plugin-dir B)', (val: string, prev: string[]) => [...prev, val], [] as string[]).option('--disable-slash-commands', 'Disable all skills', () => true).option('--chrome', 'Enable Claude in Chrome integration').option('--no-chrome', 'Disable Claude in Chrome integration').option('--file <specs...>', 'File resources to download at startup. Format: file_id:relative_path (e.g., --file file_abc:doc.txt file_def:img.png)').action(async (prompt, options) => {
-    profileCheckpoint('action_handler_start');
+    profileCheckpoint('action_handler_start')
 
     // --bare = one-switch minimal mode. Sets SIMPLE so all the existing
     // gates fire (CLAUDE.md, skills, hooks inside executeHooks, agent
@@ -1857,19 +1859,14 @@ async function run(): Promise<CommanderCommand> {
       writeToStderr(`Error: --no-session-persistence can only be used with --print mode.`);
       process.exit(1);
     }
-    const effectivePrompt = prompt || '';
-    let inputPrompt = await getInputPrompt(effectivePrompt, (inputFormat ?? 'text') as 'text' | 'stream-json');
-    profileCheckpoint('action_after_input_prompt');
+    const effectivePrompt = prompt || ''
+    let inputPrompt = await getInputPrompt(effectivePrompt, (inputFormat ?? 'text') as 'text' | 'stream-json')
+    profileCheckpoint('action_after_input_prompt')
 
     // Activate proactive mode BEFORE getTools() so SleepTool.isEnabled()
     // (which returns isProactiveActive()) passes and Sleep is included.
     // The later REPL-path maybeActivateProactive() calls are idempotent.
     maybeActivateProactive(options);
-    try {
-      let tools = getTools(toolPermissionContext);
-    } catch (e) {
-      throw e;
-    }
     let tools = getTools(toolPermissionContext);
 
     // Apply coordinator mode tool filtering for headless path
@@ -1906,8 +1903,8 @@ async function run(): Promise<CommanderCommand> {
     }
 
     // IMPORTANT: setup() must be called before any other code that depends on the cwd or worktree setup
-    profileCheckpoint('action_before_setup');
-    logForDebugging('[STARTUP] Running setup()...');
+    profileCheckpoint('action_before_setup')
+    logForDebugging('[STARTUP] Running setup()...')
     const setupStart = Date.now();
     const {
       setup
@@ -1936,8 +1933,8 @@ async function run(): Promise<CommanderCommand> {
     // ~28ms setupPromise await before Promise.all joins them below.
     commandsPromise?.catch(() => {});
     agentDefsPromise?.catch(() => {});
-    await setupPromise;
-    logForDebugging(`[STARTUP] setup() completed in ${Date.now() - setupStart}ms`);
+    await setupPromise
+    logForDebugging(`[STARTUP] setup() completed in ${Date.now() - setupStart}ms`)
     profileCheckpoint('action_after_setup');
 
     // Replay user messages into stream-json only when the socket was
@@ -2031,7 +2028,7 @@ async function run(): Promise<CommanderCommand> {
     const commandsStart = Date.now();
     // Join the promises kicked before setup() (or start fresh if
     // worktreeEnabled gated the early kick). Both memoized by cwd.
-    const [commands, agentDefinitionsResult] = await Promise.all([commandsPromise ?? getCommands(currentCwd), agentDefsPromise ?? getAgentDefinitionsWithOverrides(currentCwd)]);
+    const [commands, agentDefinitionsResult] = await Promise.all([commandsPromise ?? getCommands(currentCwd), agentDefsPromise ?? getAgentDefinitionsWithOverrides(currentCwd)])
     logForDebugging(`[STARTUP] Commands and agents loaded in ${Date.now() - commandsStart}ms`);
     profileCheckpoint('action_commands_loaded');
 
@@ -2049,12 +2046,12 @@ async function run(): Promise<CommanderCommand> {
     }
 
     // Merge CLI agents with existing ones
-    const allAgents = [...agentDefinitionsResult.allAgents, ...cliAgents];
+    const allAgents = [...agentDefinitionsResult.allAgents, ...cliAgents]
     const agentDefinitions = {
       ...agentDefinitionsResult,
       allAgents,
       activeAgents: getActiveAgentsFromList(allAgents)
-    };
+    }
 
     // Look up main thread agent from CLI flag or settings
     const agentSetting = agentCli ?? getInitialSettings().agent;
@@ -2113,13 +2110,13 @@ async function run(): Promise<CommanderCommand> {
     if (!effectiveModel && mainThreadAgentDefinition?.model && mainThreadAgentDefinition.model !== 'inherit') {
       effectiveModel = parseUserSpecifiedModel(mainThreadAgentDefinition.model);
     }
-    setMainLoopModelOverride(effectiveModel);
+    setMainLoopModelOverride(effectiveModel)
 
     // Compute resolved model for hooks (use user-specified model at launch)
-    setInitialMainLoopModel(getUserSpecifiedModelSetting() || null);
-    const initialMainLoopModel = getInitialMainLoopModel();
-    const resolvedInitialModel = parseUserSpecifiedModel(initialMainLoopModel ?? getDefaultMainLoopModel());
-    let advisorModel: string | undefined;
+    setInitialMainLoopModel(getUserSpecifiedModelSetting() || null)
+    const initialMainLoopModel = getInitialMainLoopModel()
+    const resolvedInitialModel = parseUserSpecifiedModel(initialMainLoopModel ?? getDefaultMainLoopModel())
+    let advisorModel: string | undefined
     if (isAdvisorEnabled()) {
       const advisorOption = canUserConfigureAdvisor() ? (options as {
         advisor?: string;
@@ -2176,7 +2173,7 @@ async function run(): Promise<CommanderCommand> {
         logForDebugging(`[teammate] Custom agent ${storedTeammateOpts.agentType} not found in available agents`);
       }
     }
-    maybeActivateBrief(options);
+    maybeActivateBrief(options)
     // defaultView: 'chat' is a persisted opt-in — check entitlement and set
     // userMsgOptIn so the tool + prompt section activate. Interactive-only:
     // defaultView is a display preference; SDK sessions have no display, and
@@ -2385,7 +2382,7 @@ async function run(): Promise<CommanderCommand> {
     // Resolve MCP configs (started early, overlaps with setup/trust dialog work)
     const {
       servers: existingMcpConfigs
-    } = await mcpConfigPromise;
+    } = await mcpConfigPromise
     logForDebugging(`[STARTUP] MCP configs resolved in ${mcpConfigResolvedMs}ms (awaited at +${Date.now() - mcpConfigStart}ms)`);
     // CLI flag (--mcp-config) should override file-based configs, matching settings precedence
     const allMcpConfigs = {
@@ -2602,17 +2599,8 @@ async function run(): Promise<CommanderCommand> {
       initializeTelemetryAfterTrust();
 
       // Kick SessionStart hooks now so the subprocess spawn overlaps with
-      // MCP connect + plugin init + print.ts import below. loadInitialMessages
-      // joins this at print.ts:4397. Guarded same as loadInitialMessages —
-      // continue/resume/teleport paths don't fire startup hooks (or fire them
-      // conditionally inside the resume branch, where this promise is
-      // undefined and the ?? fallback runs). Also skip when setupTrigger is
-      // set — those paths run setup hooks first (print.ts:544), and session
-      // start hooks must wait until setup completes.
+      // MCP connect + plugin init + print.ts import below.
       const sessionStartHooksPromise = options.continue || options.resume || teleport || setupTrigger ? undefined : processSessionStartHooks('startup');
-      // Suppress transient unhandledRejection if this rejects before
-      // loadInitialMessages awaits it. Downstream await still observes the
-      // rejection — this just prevents the spurious global handler fire.
       sessionStartHooksPromise?.catch(() => {});
       profileCheckpoint('before_validateForceLoginOrg');
       // Validate org restriction for non-interactive sessions
@@ -2831,7 +2819,7 @@ async function run(): Promise<CommanderCommand> {
         runHeadless
       } = await import('src/cli/print.js');
       profileCheckpoint('after_print_import');
-      void runHeadless(inputPrompt, () => headlessStore.getState(), headlessStore.setState, commandsHeadless, tools, sdkMcpConfigs, agentDefinitions.activeAgents, {
+      await runHeadless(inputPrompt, () => headlessStore.getState(), headlessStore.setState, commandsHeadless, tools, sdkMcpConfigs, agentDefinitions.activeAgents, {
         continue: options.continue,
         resume: options.resume,
         verbose: verbose,

@@ -213,7 +213,7 @@ const cmd = [
   'bun',
   'build',
   './src/entrypoints/cli.tsx',
-  ...(compile && !publish ? ['--compile'] : []),
+  ...(!publish ? ['--compile'] : []),
   '--target',
   publish ? 'node' : 'bun',
   '--format',
