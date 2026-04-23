@@ -467,13 +467,20 @@ private saveDebounceTimer: NodeJS.Timeout | undefined
 async onMessageAdded(): Promise<void> {
   if (this.saveDebounceTimer) clearTimeout(this.saveDebounceTimer)
 
+  // 先清除 timer，避免立即保存后 timer 仍然触发（修复 P0: 冗余写入）
   if (this.messageHistory.length % 10 === 0) {
-    await this.saveSession()  // 每 10 条立即保存
+    this.saveDebounceTimer = undefined  // 明确清除
+    await this.saveSession()
   } else {
     this.saveDebounceTimer = setTimeout(() => this.saveSession(), 10_000)
   }
 }
 ```
+
+**恢复优先级定义（修复 P1: 状态恢复路径不完整）:**
+1. **Extension 激活时:** 优先读取 `globalStorageUri/session.json`，不存在则读取 webview 传递的 `vscode.getState()` 作为备份
+2. **Webview resolve 时:** 先用 `vscode.getState()` 快速渲染，然后通过 `sendHistoryToWebview()` 从 extension 侧同步
+3. **Webview resolve 竞态保护:** 设置 `isResolving` 标志，重发历史完成前暂停新的 `postMessage` 调用（排队等待）
 
 **持久化实现:**
 
@@ -612,9 +619,12 @@ async agentLoop(messages: ApiMessage[], callbacks: AgentCallbacks): Promise<void
       content: response.content,  // 保留原始混合内容
     })
 
-    // 并发执行工具（支持多个 tool_use 同时执行）
+    // 并发执行工具（带并发度限制，默认 3）
+    const maxConcurrent = this.getMaxConcurrentTools()  // 可配置
+    const semaphore = new Semaphore(maxConcurrent)
     const toolResults = await Promise.allSettled(
       toolUses.map(async (toolUse) => {
+        await semaphore.acquire()
         try {
           callbacks.onToolStart(toolUse)
 
@@ -631,25 +641,31 @@ async agentLoop(messages: ApiMessage[], callbacks: AgentCallbacks): Promise<void
             content: JSON.stringify(result),
           }
         } catch (error) {
-          callbacks.onToolError(toolUse, error)
+          const errorMsg = error instanceof Error ? error.message : String(error)
+          callbacks.onToolError(toolUse, errorMsg)
           return {
             type: 'tool_result' as const,
-            tool_use_id: toolUse.id,
-            content: `Error: ${error instanceof Error ? error.message : String(error)}`,
+            tool_use_id: toolUse.id,  // 保留原始 ID
+            content: `Error: ${errorMsg}`,
             is_error: true,
           }
+        } finally {
+          semaphore.release()
         }
       })
     )
 
-    // 将所有 tool_result 追加到用户消息
+    // 将所有 tool_result 追加到用户消息（保留原始 tool_use_id）
     messages.push({
       role: 'user',
-      content: toolResults.map(r => r.status === 'fulfilled' ? r.value : {
-        type: 'tool_result' as const,
-        tool_use_id: 'unknown',
-        content: 'Tool execution failed',
-        is_error: true,
+      content: toolResults.map((r, i) => {
+        if (r.status === 'fulfilled') return r.value
+        return {
+          type: 'tool_result' as const,
+          tool_use_id: toolUses[i].id,  // 从原始数组获取正确 ID
+          content: `Error: ${r.reason}`,
+          is_error: true,
+        }
       }),
     })
   }
