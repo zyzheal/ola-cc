@@ -38,6 +38,10 @@ export class ClaudeClient {
   private temperature: number;
   private baseUrl: string;
   private abortController: AbortController | null = null;
+  private provider: 'anthropic' | 'openai';
+  private openaiBaseUrl: string;
+  private openaiApiKey: string;
+  private openaiModel: string;
 
   constructor(apiKey?: string) {
     const config = vscode.workspace.getConfiguration('claude');
@@ -46,6 +50,10 @@ export class ClaudeClient {
     this.maxTokens = config.get<number>('maxTokens', 8192);
     this.temperature = config.get<number>('temperature', 0);
     this.baseUrl = process.env.ANTHROPIC_BASE_URL || 'https://api.anthropic.com';
+    this.provider = config.get<'anthropic' | 'openai'>('provider', 'anthropic');
+    this.openaiApiKey = config.get<string>('openaiApiKey', '');
+    this.openaiBaseUrl = config.get<string>('openaiBaseUrl', 'http://localhost:11434');
+    this.openaiModel = config.get<string>('openaiModel', '');
   }
 
   /**
@@ -57,6 +65,10 @@ export class ClaudeClient {
     this.model = config.get<string>('model', 'claude-sonnet-4-20250514');
     this.maxTokens = config.get<number>('maxTokens', 8192);
     this.temperature = config.get<number>('temperature', 0);
+    this.provider = config.get<'anthropic' | 'openai'>('provider', 'anthropic');
+    this.openaiApiKey = config.get<string>('openaiApiKey', '');
+    this.openaiBaseUrl = config.get<string>('openaiBaseUrl', 'http://localhost:11434');
+    this.openaiModel = config.get<string>('openaiModel', '');
   }
 
   /**
@@ -81,17 +93,28 @@ export class ClaudeClient {
 
   /**
    * Stream a completion from the Claude API with retry logic.
+   * Dispatches to the appropriate provider based on configuration.
    *
    * @param messages - Array of messages to send
    * @param callbacks - Streaming callbacks
    */
   async streamCompletion(messages: ApiMessage[], callbacks: StreamCallbacks): Promise<void> {
-    if (!this.isConfigured()) {
+    if (!this.isConfigured() && this.provider === 'anthropic') {
       callbacks.onError(new Error(
         'API key not configured. Set "claude.apiKey" in VSCode settings or ANTHROPIC_API_KEY environment variable.'
       ));
       return;
     }
+    if (this.provider === 'openai') {
+      return this.streamOpenAI(messages, callbacks);
+    }
+    return this.streamAnthropic(messages, callbacks);
+  }
+
+  /**
+   * Stream from the Anthropic API with retry logic.
+   */
+  private async streamAnthropic(messages: ApiMessage[], callbacks: StreamCallbacks): Promise<void> {
 
     // Separate system prompt from messages
     const systemMessages = messages.filter(m => m.role === 'system');
@@ -223,6 +246,110 @@ export class ClaudeClient {
     }
 
     // Exhausted all retries
+    if (lastError) {
+      callbacks.onError(new Error(`Failed after ${MAX_RETRIES} retries: ${lastError.message}`));
+    }
+  }
+
+  /**
+   * Stream from an OpenAI-compatible API with retry logic.
+   */
+  private async streamOpenAI(messages: ApiMessage[], callbacks: StreamCallbacks): Promise<void> {
+    const { buildOpenAIRequest, parseOpenAISSE } = await import('../api/openai-adapter');
+
+    const systemMessages = messages.filter(m => m.role === 'system');
+    const systemPrompt = systemMessages.map(m => m.content).join('\n\n');
+
+    const { url, init } = buildOpenAIRequest(
+      messages.map(m => ({ role: m.role, content: m.content })),
+      {
+        baseUrl: this.openaiBaseUrl,
+        apiKey: this.openaiApiKey || this.apiKey || '',
+        model: this.openaiModel || this.model,
+        maxTokens: this.maxTokens,
+        temperature: this.temperature,
+        systemPrompt,
+      }
+    );
+
+    let lastError: Error | undefined;
+
+    for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+      this.abortController?.abort();
+      this.abortController = new AbortController();
+      const { signal } = this.abortController;
+
+      try {
+        const response = await fetch(url, { ...init, signal });
+        if (!response.ok && (response.status === 429 || response.status >= 500)) {
+          const retryAfter = this.getRetryAfter(response, attempt);
+          lastError = new Error(`API error ${response.status}: ${await response.text()}`);
+          if (attempt < MAX_RETRIES) {
+            await this.delay(retryAfter);
+            continue;
+          }
+          callbacks.onError(new Error(`Failed after ${MAX_RETRIES} retries: ${lastError.message}`));
+          return;
+        }
+        if (!response.ok) {
+          callbacks.onError(new Error(`API error ${response.status}: ${await response.text()}`));
+          return;
+        }
+        if (!response.body) {
+          callbacks.onError(new Error('No response body from API'));
+          return;
+        }
+
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+        let completed = false;
+
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+
+          buffer += decoder.decode(value, { stream: true });
+          const lines = buffer.split('\n');
+          buffer = lines.pop() || '';
+
+          for (const line of lines) {
+            const trimmed = line.trim();
+            if (!trimmed || trimmed.startsWith(':')) continue;
+            if (!trimmed.startsWith('data: ')) continue;
+
+            const event = parseOpenAISSE(trimmed);
+            if (event.type === 'chunk') {
+              callbacks.onChunk(event.text!);
+            }
+            if (event.type === 'done') {
+              if (!completed) {
+                completed = true;
+                callbacks.onComplete();
+              }
+              return;
+            }
+          }
+        }
+
+        if (!completed) {
+          completed = true;
+          callbacks.onComplete();
+        }
+        return;
+      } catch (error) {
+        if (error instanceof Error && error.name === 'AbortError') {
+          continue;
+        }
+        if (attempt < MAX_RETRIES) {
+          await this.delay(this.getRetryDelay(attempt));
+          continue;
+        }
+        callbacks.onError(new Error(`Failed after ${MAX_RETRIES} retries: ${error}`));
+        return;
+      }
+    }
+
     if (lastError) {
       callbacks.onError(new Error(`Failed after ${MAX_RETRIES} retries: ${lastError.message}`));
     }

@@ -196,6 +196,28 @@
           "type": "boolean",
           "default": false,
           "description": "Enable hover-based Claude insights on code elements."
+        },
+        "claude.provider": {
+          "type": "string",
+          "enum": ["anthropic", "openai"],
+          "default": "anthropic",
+          "description": "API provider to use"
+        },
+        "claude.openaiBaseUrl": {
+          "type": "string",
+          "default": "http://localhost:11434",
+          "description": "OpenAI-compatible API base URL (for Ollama, vLLM, etc.)"
+        },
+        "claude.openaiApiKey": {
+          "type": "string",
+          "default": "",
+          "format": "password",
+          "description": "OpenAI-compatible API key (leave empty to use claude.apiKey)"
+        },
+        "claude.openaiModel": {
+          "type": "string",
+          "default": "",
+          "description": "OpenAI-compatible model name (leave empty to use claude.model)"
         }
       }
     },
