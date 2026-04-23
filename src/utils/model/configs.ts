@@ -3,86 +3,116 @@ import type { APIProvider } from './providers.js'
 
 export type ModelConfig = Record<APIProvider, ModelName>
 
-// @[MODEL LAUNCH]: Add a new CLAUDE_*_CONFIG constant here. Double check the correct model strings
-// here since the pattern may change.
+// Model configurations - all model names must be provided via environment variables
+// No hardcoded model names to support arbitrary proxy endpoints (DashScope, LiteLLM, etc.)
+
+// Environment variable mapping:
+// - CLAUDE_CODE_MODEL_HAIKU_35: Haiku 3.5 model name
+// - CLAUDE_CODE_MODEL_HAIKU_45: Haiku 4.5 model name
+// - CLAUDE_CODE_MODEL_SONNET_35: Sonnet 3.5 model name
+// - CLAUDE_CODE_MODEL_SONNET_37: Sonnet 3.7 model name
+// - CLAUDE_CODE_MODEL_SONNET_40: Sonnet 4.0 model name
+// - CLAUDE_CODE_MODEL_SONNET_45: Sonnet 4.5 model name
+// - CLAUDE_CODE_MODEL_SONNET_46: Sonnet 4.6 model name
+// - CLAUDE_CODE_MODEL_OPUS_40: Opus 4.0 model name
+// - CLAUDE_CODE_MODEL_OPUS_41: Opus 4.1 model name
+// - CLAUDE_CODE_MODEL_OPUS_45: Opus 4.5 model name
+// - CLAUDE_CODE_MODEL_OPUS_46: Opus 4.6 model name
+
+function getEnvModel(envVar: string, fallback: string): string {
+  return process.env[envVar] || fallback
+}
+
+// All model configs use environment variables with fallback to generic names
+// The fallback allows system to work without env vars, but users should configure
+// their specific model names via environment variables for proxy endpoints
 
 export const CLAUDE_3_7_SONNET_CONFIG = {
-  firstParty: 'claude-3-7-sonnet-20250219',
-  bedrock: 'us.anthropic.claude-3-7-sonnet-20250219-v1:0',
-  vertex: 'claude-3-7-sonnet@20250219',
-  foundry: 'claude-3-7-sonnet',
+  firstParty: getEnvModel('CLAUDE_CODE_MODEL_SONNET_37', 'sonnet-3-7'),
+  bedrock: getEnvModel('CLAUDE_CODE_MODEL_SONNET_37', 'sonnet-3-7'),
+  vertex: getEnvModel('CLAUDE_CODE_MODEL_SONNET_37', 'sonnet-3-7'),
+  foundry: getEnvModel('CLAUDE_CODE_MODEL_SONNET_37', 'sonnet-3-7'),
+  openai: getEnvModel('CLAUDE_CODE_MODEL_SONNET_37', 'sonnet-3-7'),
 } as const satisfies ModelConfig
 
 export const CLAUDE_3_5_V2_SONNET_CONFIG = {
-  firstParty: 'claude-3-5-sonnet-20241022',
-  bedrock: 'anthropic.claude-3-5-sonnet-20241022-v2:0',
-  vertex: 'claude-3-5-sonnet-v2@20241022',
-  foundry: 'claude-3-5-sonnet',
+  firstParty: getEnvModel('CLAUDE_CODE_MODEL_SONNET_35', 'sonnet-3-5'),
+  bedrock: getEnvModel('CLAUDE_CODE_MODEL_SONNET_35', 'sonnet-3-5'),
+  vertex: getEnvModel('CLAUDE_CODE_MODEL_SONNET_35', 'sonnet-3-5'),
+  foundry: getEnvModel('CLAUDE_CODE_MODEL_SONNET_35', 'sonnet-3-5'),
+  openai: getEnvModel('CLAUDE_CODE_MODEL_SONNET_35', 'sonnet-3-5'),
 } as const satisfies ModelConfig
 
 export const CLAUDE_3_5_HAIKU_CONFIG = {
-  firstParty: 'claude-3-5-haiku-20241022',
-  bedrock: 'us.anthropic.claude-3-5-haiku-20241022-v1:0',
-  vertex: 'claude-3-5-haiku@20241022',
-  foundry: 'claude-3-5-haiku',
+  firstParty: getEnvModel('CLAUDE_CODE_MODEL_HAIKU_35', 'haiku-3-5'),
+  bedrock: getEnvModel('CLAUDE_CODE_MODEL_HAIKU_35', 'haiku-3-5'),
+  vertex: getEnvModel('CLAUDE_CODE_MODEL_HAIKU_35', 'haiku-3-5'),
+  foundry: getEnvModel('CLAUDE_CODE_MODEL_HAIKU_35', 'haiku-3-5'),
+  openai: getEnvModel('CLAUDE_CODE_MODEL_HAIKU_35', 'haiku-3-5'),
 } as const satisfies ModelConfig
 
 export const CLAUDE_HAIKU_4_5_CONFIG = {
-  firstParty: 'claude-haiku-4-5-20251001',
-  bedrock: 'us.anthropic.claude-haiku-4-5-20251001-v1:0',
-  vertex: 'claude-haiku-4-5@20251001',
-  foundry: 'claude-haiku-4-5',
+  firstParty: getEnvModel('CLAUDE_CODE_MODEL_HAIKU_45', 'haiku-4-5'),
+  bedrock: getEnvModel('CLAUDE_CODE_MODEL_HAIKU_45', 'haiku-4-5'),
+  vertex: getEnvModel('CLAUDE_CODE_MODEL_HAIKU_45', 'haiku-4-5'),
+  foundry: getEnvModel('CLAUDE_CODE_MODEL_HAIKU_45', 'haiku-4-5'),
+  openai: getEnvModel('CLAUDE_CODE_MODEL_HAIKU_45', 'haiku-4-5'),
 } as const satisfies ModelConfig
 
 export const CLAUDE_SONNET_4_CONFIG = {
-  firstParty: 'claude-sonnet-4-20250514',
-  bedrock: 'us.anthropic.claude-sonnet-4-20250514-v1:0',
-  vertex: 'claude-sonnet-4@20250514',
-  foundry: 'claude-sonnet-4',
+  firstParty: getEnvModel('CLAUDE_CODE_MODEL_SONNET_40', 'sonnet-4'),
+  bedrock: getEnvModel('CLAUDE_CODE_MODEL_SONNET_40', 'sonnet-4'),
+  vertex: getEnvModel('CLAUDE_CODE_MODEL_SONNET_40', 'sonnet-4'),
+  foundry: getEnvModel('CLAUDE_CODE_MODEL_SONNET_40', 'sonnet-4'),
+  openai: getEnvModel('CLAUDE_CODE_MODEL_SONNET_40', 'sonnet-4'),
 } as const satisfies ModelConfig
 
 export const CLAUDE_SONNET_4_5_CONFIG = {
-  firstParty: 'claude-sonnet-4-5-20250929',
-  bedrock: 'us.anthropic.claude-sonnet-4-5-20250929-v1:0',
-  vertex: 'claude-sonnet-4-5@20250929',
-  foundry: 'claude-sonnet-4-5',
-} as const satisfies ModelConfig
-
-export const CLAUDE_OPUS_4_CONFIG = {
-  firstParty: 'claude-opus-4-20250514',
-  bedrock: 'us.anthropic.claude-opus-4-20250514-v1:0',
-  vertex: 'claude-opus-4@20250514',
-  foundry: 'claude-opus-4',
-} as const satisfies ModelConfig
-
-export const CLAUDE_OPUS_4_1_CONFIG = {
-  firstParty: 'claude-opus-4-1-20250805',
-  bedrock: 'us.anthropic.claude-opus-4-1-20250805-v1:0',
-  vertex: 'claude-opus-4-1@20250805',
-  foundry: 'claude-opus-4-1',
-} as const satisfies ModelConfig
-
-export const CLAUDE_OPUS_4_5_CONFIG = {
-  firstParty: 'claude-opus-4-5-20251101',
-  bedrock: 'us.anthropic.claude-opus-4-5-20251101-v1:0',
-  vertex: 'claude-opus-4-5@20251101',
-  foundry: 'claude-opus-4-5',
-} as const satisfies ModelConfig
-
-export const CLAUDE_OPUS_4_6_CONFIG = {
-  firstParty: 'claude-opus-4-6',
-  bedrock: 'us.anthropic.claude-opus-4-6-v1',
-  vertex: 'claude-opus-4-6',
-  foundry: 'claude-opus-4-6',
-  openai: process.env.CLAUDE_CODE_OPENAI_OPUS_MODEL ?? 'claude-opus-4-6',
+  firstParty: getEnvModel('CLAUDE_CODE_MODEL_SONNET_45', 'sonnet-4-5'),
+  bedrock: getEnvModel('CLAUDE_CODE_MODEL_SONNET_45', 'sonnet-4-5'),
+  vertex: getEnvModel('CLAUDE_CODE_MODEL_SONNET_45', 'sonnet-4-5'),
+  foundry: getEnvModel('CLAUDE_CODE_MODEL_SONNET_45', 'sonnet-4-5'),
+  openai: getEnvModel('CLAUDE_CODE_MODEL_SONNET_45', 'sonnet-4-5'),
 } as const satisfies ModelConfig
 
 export const CLAUDE_SONNET_4_6_CONFIG = {
-  firstParty: 'claude-sonnet-4-6',
-  bedrock: 'us.anthropic.claude-sonnet-4-6',
-  vertex: 'claude-sonnet-4-6',
-  foundry: 'claude-sonnet-4-6',
-  openai: process.env.CLAUDE_CODE_OPENAI_SONNET_MODEL ?? 'claude-sonnet-4-6',
+  firstParty: getEnvModel('CLAUDE_CODE_MODEL_SONNET_46', 'sonnet-4-6'),
+  bedrock: getEnvModel('CLAUDE_CODE_MODEL_SONNET_46', 'sonnet-4-6'),
+  vertex: getEnvModel('CLAUDE_CODE_MODEL_SONNET_46', 'sonnet-4-6'),
+  foundry: getEnvModel('CLAUDE_CODE_MODEL_SONNET_46', 'sonnet-4-6'),
+  openai: getEnvModel('CLAUDE_CODE_MODEL_SONNET_46', 'sonnet-4-6'),
+} as const satisfies ModelConfig
+
+export const CLAUDE_OPUS_4_CONFIG = {
+  firstParty: getEnvModel('CLAUDE_CODE_MODEL_OPUS_40', 'opus-4'),
+  bedrock: getEnvModel('CLAUDE_CODE_MODEL_OPUS_40', 'opus-4'),
+  vertex: getEnvModel('CLAUDE_CODE_MODEL_OPUS_40', 'opus-4'),
+  foundry: getEnvModel('CLAUDE_CODE_MODEL_OPUS_40', 'opus-4'),
+  openai: getEnvModel('CLAUDE_CODE_MODEL_OPUS_40', 'opus-4'),
+} as const satisfies ModelConfig
+
+export const CLAUDE_OPUS_4_1_CONFIG = {
+  firstParty: getEnvModel('CLAUDE_CODE_MODEL_OPUS_41', 'opus-4-1'),
+  bedrock: getEnvModel('CLAUDE_CODE_MODEL_OPUS_41', 'opus-4-1'),
+  vertex: getEnvModel('CLAUDE_CODE_MODEL_OPUS_41', 'opus-4-1'),
+  foundry: getEnvModel('CLAUDE_CODE_MODEL_OPUS_41', 'opus-4-1'),
+  openai: getEnvModel('CLAUDE_CODE_MODEL_OPUS_41', 'opus-4-1'),
+} as const satisfies ModelConfig
+
+export const CLAUDE_OPUS_4_5_CONFIG = {
+  firstParty: getEnvModel('CLAUDE_CODE_MODEL_OPUS_45', 'opus-4-5'),
+  bedrock: getEnvModel('CLAUDE_CODE_MODEL_OPUS_45', 'opus-4-5'),
+  vertex: getEnvModel('CLAUDE_CODE_MODEL_OPUS_45', 'opus-4-5'),
+  foundry: getEnvModel('CLAUDE_CODE_MODEL_OPUS_45', 'opus-4-5'),
+  openai: getEnvModel('CLAUDE_CODE_MODEL_OPUS_45', 'opus-4-5'),
+} as const satisfies ModelConfig
+
+export const CLAUDE_OPUS_4_6_CONFIG = {
+  firstParty: getEnvModel('CLAUDE_CODE_MODEL_OPUS_46', 'opus-4-6'),
+  bedrock: getEnvModel('CLAUDE_CODE_MODEL_OPUS_46', 'opus-4-6'),
+  vertex: getEnvModel('CLAUDE_CODE_MODEL_OPUS_46', 'opus-4-6'),
+  foundry: getEnvModel('CLAUDE_CODE_MODEL_OPUS_46', 'opus-4-6'),
+  openai: getEnvModel('CLAUDE_CODE_MODEL_OPUS_46', 'opus-4-6'),
 } as const satisfies ModelConfig
 
 // @[MODEL LAUNCH]: Register the new config here.
@@ -102,7 +132,7 @@ export const ALL_MODEL_CONFIGS = {
 
 export type ModelKey = keyof typeof ALL_MODEL_CONFIGS
 
-/** Union of all canonical first-party model IDs, e.g. 'claude-opus-4-6' | 'claude-sonnet-4-5-20250929' | … */
+/** Union of all canonical first-party model IDs */
 export type CanonicalModelId =
   (typeof ALL_MODEL_CONFIGS)[ModelKey]['firstParty']
 
