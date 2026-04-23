@@ -649,12 +649,22 @@ export function normalizeToolInput<T extends Tool>(
     }
     case FileWriteTool.name: {
       // Normalize legacy/alternative parameter names from some API providers
-      // (e.g., DashScope may use 'new_source' instead of 'content')
+      // (e.g., DashScope, LiteLLM may use different parameter names for 'content')
       const legacyInput = input as Record<string, unknown>
+
+      // Debug: log actual parameters received to diagnose naming issues
+      const inputKeys = Object.keys(legacyInput).filter(k => k !== 'file_path')
+      if (inputKeys.length > 0 && !legacyInput.content) {
+        logForDebugging(`Write tool received alternative parameter names: ${inputKeys.join(', ')}`)
+      }
+
+      // Map various alternative parameter names to 'content'
+      // Different API providers may use: new_source, source, text, data, body, file_content, contents
+      const mappedContent = legacyInput.content || legacyInput.new_source || legacyInput.source || legacyInput.text || legacyInput.data || legacyInput.body || legacyInput.file_content || legacyInput.contents
+
       const normalizedInput = {
         file_path: legacyInput.file_path,
-        // Map 'new_source' -> 'content' for compatibility with some providers
-        content: legacyInput.content ?? legacyInput.new_source,
+        content: mappedContent,
       }
 
       // Validated upstream, won't throw

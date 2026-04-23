@@ -165,14 +165,14 @@ export const CLAUDE_CODE_DOCS_MAP_URL =
 export const SYSTEM_PROMPT_DYNAMIC_BOUNDARY =
   '__SYSTEM_PROMPT_DYNAMIC_BOUNDARY__'
 
-// @[MODEL LAUNCH]: Update the latest frontier model.
-const FRONTIER_MODEL_NAME = 'Claude Opus 4.6'
+// @[MODEL LAUNCH]: Update the latest frontier model - use env var or generic name
+const FRONTIER_MODEL_NAME = process.env.CLAUDE_CODE_FRONTIER_MODEL_NAME || 'Opus'
 
-// @[MODEL LAUNCH]: Update the model family IDs below to the latest in each tier.
+// @[MODEL LAUNCH]: Update the model family IDs below - all from env vars
 const CLAUDE_4_5_OR_4_6_MODEL_IDS = {
-  opus: 'claude-opus-4-6',
-  sonnet: 'claude-sonnet-4-6',
-  haiku: 'claude-haiku-4-5-20251001',
+  opus: process.env.CLAUDE_CODE_MODEL_OPUS_46 || 'opus-4-6',
+  sonnet: process.env.CLAUDE_CODE_MODEL_SONNET_46 || 'sonnet-4-6',
+  haiku: process.env.CLAUDE_CODE_MODEL_HAIKU_45 || 'haiku-4-5',
 }
 
 function getHooksSection(): string {
