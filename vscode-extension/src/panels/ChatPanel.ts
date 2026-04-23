@@ -170,6 +170,13 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       await this.client.streamCompletion(apiMessages, {
         onChunk: (chunk: string) => {
           fullContent += chunk;
+          // TODO: When streaming parser is upgraded to detect tool_use content blocks,
+          // route tool_use/tool_result events to webview via postMessageToWebview:
+          //   { command: 'tool_start', toolName, input }
+          //   { command: 'tool_complete', toolName, result }
+          //   { command: 'tool_error', toolName, error }
+          //   { command: 'agent_iteration', current, max }
+          //   { command: 'agent_done' }
           this.postMessageToWebview({
             command: 'update_message',
             messageId: assistantMsgId,
@@ -621,6 +628,23 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     .suggestion-btn:hover {
       background: var(--vscode-list-hoverBackground, #2a2d2e);
     }
+    .tool-card { border: 1px solid var(--vscode-widget-border); border-radius: 6px; margin: 8px 0; padding: 8px 12px; background: var(--vscode-sideBar-background); }
+    .tool-card.running { border-left: 3px solid var(--vscode-progress-foreground); }
+    .tool-card.complete { border-left: 3px solid var(--vscode-terminal-ansiGreen); }
+    .tool-card.error { border-left: 3px solid var(--vscode-terminal-ansiRed); }
+    .tool-header { display: flex; justify-content: space-between; align-items: center; }
+    .tool-name { font-weight: bold; font-size: 12px; }
+    .tool-status { font-size: 11px; color: var(--vscode-descriptionForeground); }
+    .tool-details { margin-top: 6px; font-size: 12px; font-family: monospace; white-space: pre-wrap; word-break: break-all; }
+    .agent-progress { display: flex; align-items: center; gap: 8px; padding: 4px 0; font-size: 11px; }
+    .agent-progress-bar { flex: 1; height: 4px; background: var(--vscode-progress-background); border-radius: 2px; }
+    .agent-progress-fill { height: 100%; background: var(--vscode-progress-foreground); border-radius: 2px; transition: width 0.3s; }
+    .confirmation-dialog { border: 1px solid var(--vscode-input-border); border-radius: 6px; padding: 12px; margin: 8px 0; background: var(--vscode-input-background); }
+    .confirmation-buttons { display: flex; gap: 8px; margin-top: 8px; }
+    .confirmation-buttons button { padding: 4px 12px; border: none; border-radius: 4px; cursor: pointer; }
+    .btn-approve { background: var(--vscode-button-background); color: var(--vscode-button-foreground); }
+    .btn-deny { background: var(--vscode-button-secondaryBackground); color: var(--vscode-button-secondaryForeground); }
+    .cancel-btn { background: var(--vscode-errorForeground); color: white; border: none; padding: 4px 12px; border-radius: 4px; cursor: pointer; margin-top: 4px; }
   </style>
 </head>
 <body>

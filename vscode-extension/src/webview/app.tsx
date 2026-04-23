@@ -82,6 +82,27 @@ window.addEventListener('message', (event: MessageEvent) => {
       isStreaming = false;
       updateSendButton();
       break;
+
+    case 'tool_start':
+      showToolCard(message.toolName, message.input, 'running');
+      break;
+    case 'tool_complete':
+      updateToolCard(message.toolName, message.result, 'complete');
+      break;
+    case 'tool_error':
+      updateToolCard(message.toolName, message.error, 'error');
+      break;
+    case 'tool_requires_confirmation':
+      showConfirmationDialog(message.toolName, message.input);
+      break;
+    case 'agent_iteration':
+      updateAgentProgress(message.current, message.max);
+      break;
+    case 'agent_done':
+      hideAgentProgress();
+      isStreaming = false;
+      updateSendButton();
+      break;
   }
 });
 
@@ -302,6 +323,11 @@ function getWelcomeHTML(): string {
   sendMessage(text);
 };
 
+// Make tool approval/denial and cancel available for inline onclick
+(window as unknown as Record<string, unknown>).approveTool = approveTool;
+(window as unknown as Record<string, unknown>).denyTool = denyTool;
+(window as unknown as Record<string, unknown>).cancelAgentLoop = cancelAgentLoop;
+
 /**
  * Get action buttons for assistant messages with code.
  */
@@ -424,6 +450,114 @@ interface FileContext {
   language: string;
   text: string;
   selection: unknown;
+}
+
+/**
+ * Send messages from webview to extension host.
+ */
+function approveTool(toolName: string): void {
+  (window as any).vscode.postMessage({ command: 'tool_approve', toolName });
+}
+
+function denyTool(toolName: string): void {
+  (window as any).vscode.postMessage({ command: 'tool_deny', toolName });
+}
+
+function cancelAgentLoop(): void {
+  (window as any).vscode.postMessage({ command: 'cancel_agent_loop' });
+}
+
+/**
+ * Show a tool execution card in the chat.
+ */
+function showToolCard(toolName: string, input: unknown, state: 'running' | 'complete' | 'error'): void {
+  const container = document.getElementById('chat-messages');
+  if (!container) return;
+
+  const card = document.createElement('div');
+  card.className = `tool-card ${state}`;
+  card.id = `tool-${toolName}-${Date.now()}`;
+
+  const statusText = state === 'running' ? 'Running...' : state === 'complete' ? 'Complete' : 'Error';
+  card.innerHTML = `
+    <div class="tool-header">
+      <span class="tool-name">${escapeHtml(toolName)}</span>
+      <span class="tool-status">${statusText}</span>
+    </div>
+    <div class="tool-details">${escapeHtml(JSON.stringify(input, null, 2))}</div>
+  `;
+
+  container.appendChild(card);
+  scrollToBottom();
+}
+
+/**
+ * Update an existing tool card with result.
+ */
+function updateToolCard(toolName: string, result: unknown, state: 'complete' | 'error'): void {
+  const cards = document.querySelectorAll('.tool-card.running');
+  for (const card of cards) {
+    if (card.querySelector('.tool-name')?.textContent === toolName) {
+      card.className = `tool-card ${state}`;
+      const statusEl = card.querySelector('.tool-status');
+      if (statusEl) statusEl.textContent = state === 'complete' ? 'Complete' : 'Error';
+      const detailsEl = card.querySelector('.tool-details');
+      if (detailsEl) detailsEl.textContent = typeof result === 'string' ? result : JSON.stringify(result, null, 2);
+      break;
+    }
+  }
+  scrollToBottom();
+}
+
+/**
+ * Update agent loop progress bar.
+ */
+function updateAgentProgress(current: number, max: number): void {
+  let bar = document.getElementById('agent-progress-bar');
+  if (!bar) {
+    const container = document.getElementById('chat-messages');
+    if (!container) return;
+    bar = document.createElement('div');
+    bar.id = 'agent-progress-bar';
+    bar.className = 'agent-progress';
+    bar.innerHTML = `<span>Agent loop: ${current}/${max}</span><div class="agent-progress-bar"><div class="agent-progress-fill" id="agent-progress-fill" style="width:${(current/max)*100}%"></div></div><button class="cancel-btn" onclick="cancelAgentLoop()">Cancel</button>`;
+    container.appendChild(bar);
+  } else {
+    bar.querySelector('span')!.textContent = `Agent loop: ${current}/${max}`;
+    const fill = document.getElementById('agent-progress-fill');
+    if (fill) fill.style.width = `${(current/max)*100}%`;
+  }
+  scrollToBottom();
+}
+
+/**
+ * Hide the agent loop progress bar.
+ */
+function hideAgentProgress(): void {
+  const bar = document.getElementById('agent-progress-bar');
+  if (bar) bar.remove();
+}
+
+/**
+ * Show a confirmation dialog for tool execution.
+ */
+function showConfirmationDialog(toolName: string, input: unknown): void {
+  const container = document.getElementById('chat-messages');
+  if (!container) return;
+
+  const dialog = document.createElement('div');
+  dialog.className = 'confirmation-dialog';
+  dialog.id = `confirm-${toolName}`;
+  dialog.innerHTML = `
+    <div><strong>Tool requires confirmation:</strong> ${escapeHtml(toolName)}</div>
+    <div class="tool-details">${escapeHtml(JSON.stringify(input, null, 2))}</div>
+    <div class="confirmation-buttons">
+      <button class="btn-approve" onclick="approveTool('${toolName}')">Approve</button>
+      <button class="btn-deny" onclick="denyTool('${toolName}')">Deny</button>
+    </div>
+  `;
+  container.appendChild(dialog);
+  scrollToBottom();
 }
 
 // Initialize on load
