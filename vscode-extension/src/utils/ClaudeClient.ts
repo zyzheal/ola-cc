@@ -8,6 +8,7 @@
  * environment variables.
  */
 import * as vscode from 'vscode';
+import { Semaphore } from './Semaphore';
 
 /** Streaming completion callbacks */
 interface StreamCallbacks {
@@ -16,10 +17,34 @@ interface StreamCallbacks {
   onError: (error: Error) => void;
 }
 
+/** ContentBlock for tool use format */
+export interface ContentBlock {
+  type: 'text' | 'tool_use' | 'tool_result';
+  text?: string;
+  id?: string;
+  name?: string;
+  input?: Record<string, unknown>;
+  tool_use_id?: string;
+  content?: string;
+  is_error?: boolean;
+}
+
 /** Message format for the API */
 export interface ApiMessage {
   role: 'system' | 'user' | 'assistant';
-  content: string;
+  content: string | ContentBlock[];
+}
+
+/** Agent loop callbacks */
+interface AgentCallbacks {
+  onChunk: (text: string) => void;
+  onToolStart: (toolUse: ContentBlock) => void;
+  onToolComplete: (toolUse: ContentBlock, result: unknown) => void;
+  onToolError: (toolUse: ContentBlock, error: string) => void;
+  onToolConfirmation: (toolUse: ContentBlock) => Promise<boolean>;
+  onIteration: (current: number, max: number) => void;
+  onComplete: (stopReason: string) => void;
+  onError: (error: Error) => void;
 }
 
 /** Retry configuration for transient failures */
@@ -42,6 +67,8 @@ export class ClaudeClient {
   private openaiBaseUrl: string;
   private openaiApiKey: string;
   private openaiModel: string;
+
+  private mcpManagerInstance: any = null;
 
   constructor(apiKey?: string) {
     const config = vscode.workspace.getConfiguration('claude');
@@ -445,6 +472,176 @@ export class ClaudeClient {
    */
   private delay(ms: number): Promise<void> {
     return new Promise(resolve => setTimeout(resolve, ms));
+  }
+
+  /**
+   * Non-streaming API call for the agent loop.
+   * Returns the full response with content blocks.
+   */
+  private async callAPI(messages: ApiMessage[]): Promise<{ content: ContentBlock[]; stopReason?: string }> {
+    if (!this.apiKey) throw new Error('API key not configured');
+
+    const systemMessages = messages.filter(m => m.role === 'system');
+    const systemPrompt = systemMessages.map(m => m.content).join('\n\n');
+    const apiMessages = messages.filter(m => m.role !== 'system');
+
+    const response = await fetch(`${this.baseUrl}/v1/messages`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': this.apiKey,
+        'anthropic-version': '2023-06-01',
+      },
+      body: JSON.stringify({
+        model: this.model,
+        max_tokens: this.maxTokens,
+        temperature: this.temperature,
+        system: systemPrompt,
+        messages: apiMessages.map(m => ({
+          role: m.role === 'assistant' ? 'assistant' : 'user',
+          content: m.content,
+        })),
+      }),
+    });
+
+    if (!response.ok) {
+      throw new Error(`API error ${response.status}: ${await response.text()}`);
+    }
+
+    return response.json();
+  }
+
+  /**
+   * Agent loop with tool use cycling.
+   * Executes tools iteratively until the model stops requesting them.
+   */
+  async agentLoop(messages: ApiMessage[], callbacks: AgentCallbacks): Promise<void> {
+    let iteration = 0;
+    const maxIterations = vscode.workspace.getConfiguration('claude').get<number>('maxAgentIterations', 25);
+
+    while (iteration < maxIterations) {
+      iteration++;
+      callbacks.onIteration(iteration, maxIterations);
+
+      const response = await this.callAPI(messages);
+
+      const textBlocks = response.content.filter((b: ContentBlock) => b.type === 'text');
+      const toolUses = response.content.filter((b: ContentBlock) => b.type === 'tool_use');
+
+      for (const textBlock of textBlocks) {
+        callbacks.onChunk(textBlock.text || '');
+      }
+
+      if (toolUses.length === 0) {
+        callbacks.onComplete(response.stopReason || 'end_turn');
+        break;
+      }
+
+      messages.push({
+        role: 'assistant',
+        content: response.content,
+      });
+
+      // Concurrent tool execution with semaphore
+      const maxConcurrent = vscode.workspace.getConfiguration('claude').get<number>('maxConcurrentTools', 3);
+      const semaphore = new Semaphore(maxConcurrent);
+
+      const toolResults = await Promise.allSettled(
+        toolUses.map(async (toolUse: ContentBlock) => {
+          await semaphore.acquire();
+          try {
+            callbacks.onToolStart(toolUse);
+
+            if (this.requiresConfirmation(toolUse.name!)) {
+              const approved = await callbacks.onToolConfirmation(toolUse);
+              if (!approved) {
+                return {
+                  type: 'tool_result' as const,
+                  tool_use_id: toolUse.id!,
+                  content: 'User denied',
+                  is_error: true,
+                };
+              }
+            }
+
+            const result = await this.executeTool(toolUse);
+            callbacks.onToolComplete(toolUse, result);
+            return {
+              type: 'tool_result' as const,
+              tool_use_id: toolUse.id!,
+              content: JSON.stringify(result),
+            };
+          } catch (error) {
+            const errorMsg = error instanceof Error ? error.message : String(error);
+            callbacks.onToolError(toolUse, errorMsg);
+            return {
+              type: 'tool_result' as const,
+              tool_use_id: toolUse.id!,
+              content: `Error: ${errorMsg}`,
+              is_error: true,
+            };
+          } finally {
+            semaphore.release();
+          }
+        })
+      );
+
+      messages.push({
+        role: 'user',
+        content: toolResults.map((r, i) => {
+          if (r.status === 'fulfilled') return r.value;
+          return {
+            type: 'tool_result' as const,
+            tool_use_id: toolUses[i].id!,
+            content: `Error: ${r.reason}`,
+            is_error: true,
+          };
+        }),
+      });
+    }
+  }
+
+  /**
+   * Check if a tool requires user confirmation.
+   */
+  private requiresConfirmation(toolName: string): boolean {
+    const dangerousTools = ['Bash', 'Write', 'Edit'];
+    return dangerousTools.includes(toolName);
+  }
+
+  /**
+   * Execute a tool via MCP or built-in handlers.
+   */
+  private async executeTool(toolUse: ContentBlock): Promise<unknown> {
+    const name = toolUse.name;
+    const input = toolUse.input || {};
+
+    const mcpManager = await this.getMCPManager();
+    if (mcpManager) {
+      try {
+        return await mcpManager.callTool(name, input);
+      } catch {
+        // Fall through to error
+      }
+    }
+
+    throw new Error(`Unknown tool: ${name}`);
+  }
+
+  /**
+   * Get or create the MCP manager singleton.
+   */
+  async getMCPManager(): Promise<any> {
+    if (!this.mcpManagerInstance) {
+      try {
+        const { MCPClientManager } = await import('../mcp/MCPClientManager');
+        this.mcpManagerInstance = new MCPClientManager();
+        await this.mcpManagerInstance.initialize();
+      } catch {
+        return null;
+      }
+    }
+    return this.mcpManagerInstance;
   }
 
   /**
