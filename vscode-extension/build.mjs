@@ -59,6 +59,47 @@ async function build() {
     console.log('Extension bundled to dist/extension.js');
   }
 
+  // Build highlight.js as standalone IIFE
+  const highlightCtx = await esbuild.context({
+    bundle: true,
+    minify: !isWatch,
+    sourcemap: isWatch ? 'inline' : false,
+    target: 'chrome100',
+    platform: 'browser',
+    format: 'iife',
+    entryPoints: [join(srcDir, 'webview', 'highlight-bundle.ts')],
+    outfile: join(webviewDistDir, 'highlight.js'),
+    globalName: 'hljs',
+  });
+
+  if (isWatch) {
+    await highlightCtx.watch();
+  } else {
+    await highlightCtx.rebuild();
+    await highlightCtx.dispose();
+    console.log('Highlight.js bundled to dist/webview/highlight.js');
+  }
+
+  // Build highlight CSS as data URL IIFE
+  const cssCtx = await esbuild.context({
+    bundle: true,
+    minify: !isWatch,
+    target: 'chrome100',
+    platform: 'browser',
+    format: 'iife',
+    entryPoints: [join(srcDir, 'webview', 'highlight.css')],
+    outfile: join(webviewDistDir, 'highlight-css.js'),
+    loader: { '.css': 'dataurl' },
+  });
+
+  if (isWatch) {
+    await cssCtx.watch();
+  } else {
+    await cssCtx.rebuild();
+    await cssCtx.dispose();
+    console.log('Highlight CSS bundled to dist/webview/highlight-css.js');
+  }
+
   // Build webview bundle (separate context for browser target)
   const webviewCtx = await esbuild.context({
     bundle: true,

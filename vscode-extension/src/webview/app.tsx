@@ -375,6 +375,21 @@ function renderMarkdown(text: string): string {
 }
 
 /**
+ * Render a code block with syntax highlighting via highlight.js.
+ */
+function renderCodeBlock(code: string, language?: string): string {
+  const escaped = escapeHtml(code);
+  if (!language || typeof (window as any).hljs === 'undefined') {
+    return `<pre><code>${escaped}</code></pre>`;
+  }
+  const hljs = (window as any).hljs;
+  const result = hljs.getLanguage(language)
+    ? hljs.highlight(code, { language })
+    : hljs.highlightAuto(code);
+  return `<pre><code class="hljs language-${result.language}">${result.value}</code></pre>`;
+}
+
+/**
  * Escape HTML special characters.
  */
 function escapeHtml(text: string): string {

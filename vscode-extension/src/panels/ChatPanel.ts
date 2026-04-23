@@ -388,6 +388,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     const scriptUri = this.view?.webview.asWebviewUri(
       vscode.Uri.file(path.join(this.context.extensionPath, 'dist', 'webview', 'app.js'))
     );
+    const highlightJsUri = this.view?.webview.asWebviewUri(
+      vscode.Uri.file(path.join(this.context.extensionPath, 'dist', 'webview', 'highlight.js'))
+    );
+    const highlightCssUri = this.view?.webview.asWebviewUri(
+      vscode.Uri.file(path.join(this.context.extensionPath, 'dist', 'webview', 'highlight-css.js'))
+    );
     const nonce = this.getNonce();
 
     return `<!DOCTYPE html>
@@ -541,6 +547,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 </head>
 <body>
   <div id="root"></div>
+  <script nonce="${nonce}" src="${highlightJsUri}"></script>
+  <script nonce="${nonce}" src="${highlightCssUri}"></script>
   <script nonce="${nonce}" src="${scriptUri}"></script>
 </body>
 </html>`;
