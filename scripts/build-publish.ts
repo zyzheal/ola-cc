@@ -242,6 +242,21 @@ try {
   console.log('[publish-build] sdk-tools.d.ts generated (placeholder)')
 }
 
+// ─── Copy wrapper scripts (for build-publish-bin.ts --only-wrapper) ──
+try {
+  cpSync('scripts/install.cjs', join(outDir, 'install.cjs'))
+  console.log('[publish-build] install.cjs copied')
+} catch {
+  console.warn('[publish-build] scripts/install.cjs not found, skipping')
+}
+
+try {
+  cpSync('scripts/cli-wrapper.cjs', join(outDir, 'cli-wrapper.cjs'))
+  console.log('[publish-build] cli-wrapper.cjs copied')
+} catch {
+  console.warn('[publish-build] scripts/cli-wrapper.cjs not found, skipping')
+}
+
 // ─── Copy vendor files ─────────────────────────────────────
 let vendorCount = 0
 
