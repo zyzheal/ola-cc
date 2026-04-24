@@ -142,32 +142,37 @@ jobs:
           fi
         shell: bash
 
-      # Integration test: wrapper + binary in a clean npm workspace
+      # Integration test: simulate real npm install from packed tarballs
       - name: Test wrapper + binary integration
         run: |
-          # Create a clean test directory to avoid root project dependencies
+          # Pack wrapper and binary packages into tarballs
+          WRAPPER_TGZ=$(cd dist/publish && npm pack 2>&1 | tail -1)
+          WRAPPER_TGZ="dist/publish/$WRAPPER_TGZ"
+
+          BIN_DIR="dist/publish-bin/${{ matrix.platform.key }}"
+          BIN_TGZ=$(cd "$BIN_DIR" && npm pack 2>&1 | tail -1)
+          BIN_TGZ="$BIN_DIR/$BIN_TGZ"
+
+          # Create a clean test directory
           TEST_DIR="$RUNNER_TEMP/ola-cc-test"
           rm -rf "$TEST_DIR"
           mkdir -p "$TEST_DIR"
           cd "$TEST_DIR"
 
-          # Initialize minimal package.json (no deps to resolve)
+          # Initialize minimal package.json
           echo '{"name":"test","private":true}' > package.json
 
-          # Install wrapper + binary packages with scripts enabled (tests full install flow)
-          AUTHORIZED=1 npm install --no-save \
-            "${{ github.workspace }}/dist/publish/" \
-            "${{ github.workspace }}/dist/publish-bin/${{ matrix.platform.key }}/" 2>&1
+          # Install from tarballs — this triggers postinstall correctly
+          AUTHORIZED=1 npm install --no-save "$GITHUB_WORKSPACE/$WRAPPER_TGZ" "$GITHUB_WORKSPACE/$BIN_TGZ" 2>&1
 
+          # Verify the binary was placed by postinstall
           if [[ "${{ matrix.platform.key }}" == win32-* ]]; then
-            # Windows: use compiled .exe or JS bundle fallback
             if [[ -f "node_modules/@zyzheal/ola-cc/bin/ola-cc.exe" ]]; then
               ./node_modules/@zyzheal/ola-cc/bin/ola-cc.exe --version
             else
               node node_modules/@zyzheal/ola-cc/bin/ola-cc.js --version
             fi
           else
-            # macOS/Linux: test native binary placed by postinstall
             ./node_modules/@zyzheal/ola-cc/bin/ola-cc --version
           fi
 
