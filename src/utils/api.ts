@@ -660,7 +660,8 @@ export function normalizeToolInput<T extends Tool>(
 
       // Map various alternative parameter names to 'content'
       // Different API providers may use: new_source, source, text, data, body, file_content, contents
-      const mappedContent = legacyInput.content || legacyInput.new_source || legacyInput.source || legacyInput.text || legacyInput.data || legacyInput.body || legacyInput.file_content || legacyInput.contents
+      // Non-Claude models may omit the content field entirely — default to empty string
+      const mappedContent = legacyInput.content ?? legacyInput.new_source ?? legacyInput.source ?? legacyInput.text ?? legacyInput.data ?? legacyInput.body ?? legacyInput.file_content ?? legacyInput.contents ?? ''
 
       const normalizedInput = {
         file_path: legacyInput.file_path,
