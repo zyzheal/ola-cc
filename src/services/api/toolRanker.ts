@@ -68,7 +68,8 @@ type RankOptions = {
  * re-computing descriptions on subsequent ranking calls.
  */
 const getToolDescriptionMemoized = memoize(
-  async (toolName: string, tools: Tools, opts: RankOptions): Promise<string> => {
+  async (cacheKey: string, toolName: string, tools: Tools, opts: RankOptions): Promise<string> => {
+    void cacheKey // Used for cache uniqueness only
     const tool = tools.find(t => toolMatchesName(t, toolName))
     if (!tool) return ''
     try {
@@ -82,7 +83,7 @@ const getToolDescriptionMemoized = memoize(
       return `${tool.name} ${tool.searchHint ?? ''}`
     }
   },
-  (toolName: string) => toolName,
+  (cacheKey: string) => cacheKey,
 )
 
 function getDescriptionCache(): { clear: () => void } {
@@ -194,10 +195,14 @@ export async function rankTools(
 
   // Pre-compute descriptions for all tools (uses memoized cache)
   const toolDescriptions = new Map<string, string>()
+  // Cache key: tool descriptions depend on the current tools list and agents,
+  // so invalidate when those change. This prevents stale cached descriptions
+  // when MCP tools connect/disconnect between turns.
+  const cacheKey = `tools:${tools.length}:agents:${opts?.agents.length ?? 0}`
   for (const tool of tools) {
     let desc: string
     if (opts) {
-      desc = await getToolDescriptionMemoized(tool.name, tools, opts)
+      desc = await getToolDescriptionMemoized(cacheKey, tool.name, tools, opts)
     } else {
       // Fallback: name + searchHint only (fast, no async context needed)
       desc = `${tool.name} ${tool.searchHint ?? ''}`
