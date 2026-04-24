@@ -624,8 +624,27 @@ export function normalizeToolInput<T extends Tool>(
       } as z.infer<T['inputSchema']>
     }
     case FileEditTool.name: {
+      // Normalize legacy/alternative parameter names and handle missing fields
+      // from non-Claude models (same issue as FileWriteTool)
+      const legacyInput = input as Record<string, unknown>
+
+      // Map various alternative parameter names; default to empty string if missing
+      const oldString = (legacyInput.old_string ?? legacyInput.oldString ?? legacyInput.old_text ?? legacyInput.oldContent ?? '') as string
+      const newString = (legacyInput.new_string ?? legacyInput.newString ?? legacyInput.new_text ?? legacyInput.newContent ?? '') as string
+      const replaceAll = legacyInput.replace_all ?? legacyInput.replaceAll ?? false
+
+      // Log when fallback to empty string is used — indicates model didn't send required fields
+      if (!oldString && !legacyInput.old_string && !legacyInput.oldString && !legacyInput.old_text && !legacyInput.oldContent) {
+        logForDebugging(`Edit tool received no old_string field, defaulting to empty string`)
+      }
+
       // Validated upstream, won't throw
-      const parsedInput = FileEditTool.inputSchema.parse(input)
+      const parsedInput = FileEditTool.inputSchema.parse({
+        file_path: legacyInput.file_path,
+        old_string: oldString,
+        new_string: newString,
+        replace_all: replaceAll,
+      })
 
       // This is a workaround for tokens claude can't see
       const { file_path, edits } = normalizeFileEditInput({
@@ -662,6 +681,10 @@ export function normalizeToolInput<T extends Tool>(
       // Different API providers may use: new_source, source, text, data, body, file_content, contents
       // Non-Claude models may omit the content field entirely — default to empty string
       const mappedContent = legacyInput.content ?? legacyInput.new_source ?? legacyInput.source ?? legacyInput.text ?? legacyInput.data ?? legacyInput.body ?? legacyInput.file_content ?? legacyInput.contents ?? ''
+
+      if (mappedContent === '' && !legacyInput.content && !legacyInput.new_source && !legacyInput.source && !legacyInput.text && !legacyInput.data && !legacyInput.body && !legacyInput.file_content && !legacyInput.contents) {
+        logForDebugging(`Write tool received no content field, defaulting to empty string`)
+      }
 
       const normalizedInput = {
         file_path: legacyInput.file_path,
