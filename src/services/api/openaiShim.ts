@@ -816,6 +816,22 @@ export function createOpenAICompatibleShimClient(options: OpenAICompatibleClient
 
   const beta = {
     messages: {
+      /**
+       * OpenAI-compatible backends don't support Anthropic's countTokens API.
+       * Return null so callers fall back to rough estimation instead of hitting
+       * a 404 endpoint.
+       */
+      countTokens: async (_params: {
+        model: string
+        messages: Array<{ role: string; content: unknown[] | string }>
+        tools?: unknown[]
+        betas?: string[]
+        thinking?: { type: string; budget_tokens: number }
+      }): Promise<{ input_tokens: null } | null> => {
+        // OpenAI-compatible providers have no token counting endpoint
+        return null
+      },
+
       create: (
         params: {
           model: string
