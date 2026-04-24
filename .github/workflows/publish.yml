@@ -81,6 +81,10 @@ jobs:
       - name: Install dependencies
         run: bun install
 
+      # Build JS bundle (cli.mjs) — needed for Windows fallback and integration test
+      - name: Build JS bundle
+        run: bun run ./scripts/build-publish.ts --publish
+
       # musl Linux: build in Docker for musl libc
       # Note: This is a best-effort build. For production, build on actual musl distro.
       - name: Build musl Linux binary (Docker)
@@ -141,9 +145,6 @@ jobs:
       # Integration test: wrapper + binary in a clean npm workspace
       - name: Test wrapper + binary integration
         run: |
-          # Build wrapper (uses current platform's cli.mjs from build-publish step)
-          bun run ./scripts/build-publish-bin.ts --only-wrapper
-
           # Create a clean test directory to avoid root project dependencies
           TEST_DIR="$RUNNER_TEMP/ola-cc-test"
           rm -rf "$TEST_DIR"
@@ -153,20 +154,21 @@ jobs:
           # Initialize minimal package.json (no deps to resolve)
           echo '{"name":"test","private":true}' > package.json
 
-          # Install only the wrapper + binary packages (no transitive deps)
+          # Install wrapper + binary packages with scripts enabled (tests full install flow)
           AUTHORIZED=1 npm install --no-save \
-            --ignore-scripts \
             "${{ github.workspace }}/dist/publish/" \
             "${{ github.workspace }}/dist/publish-bin/${{ matrix.platform.key }}/" 2>&1
 
           if [[ "${{ matrix.platform.key }}" == win32-* ]]; then
-            # Windows: postinstall copies ola-cc.exe to bin/ (or uses JS bundle fallback)
-            node node_modules/@zyzheal/ola-cc/install.cjs 2>&1
-            npx ola-cc --version
+            # Windows: use compiled .exe or JS bundle fallback
+            if [[ -f "node_modules/@zyzheal/ola-cc/bin/ola-cc.exe" ]]; then
+              ./node_modules/@zyzheal/ola-cc/bin/ola-cc.exe --version
+            else
+              node node_modules/@zyzheal/ola-cc/bin/ola-cc.js --version
+            fi
           else
-            # macOS/Linux: run postinstall to place native binary
-            node node_modules/@zyzheal/ola-cc/install.cjs 2>&1
-            npx ola-cc --version
+            # macOS/Linux: test native binary placed by postinstall
+            ./node_modules/@zyzheal/ola-cc/bin/ola-cc --version
           fi
 
           # Cleanup
