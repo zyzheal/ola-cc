@@ -16,7 +16,7 @@ import * as vscode from 'vscode';
 import * as path from 'path';
 import * as crypto from 'crypto';
 import { StatusBarManager } from '../utils/StatusBarManager';
-import { ClaudeClient } from '../utils/ClaudeClient';
+import { ClaudeClient, ContentBlock } from '../utils/ClaudeClient';
 
 /** Message types for VSCode <-> Webview communication */
 interface WebviewMessage {
@@ -53,9 +53,21 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   private pendingSave = false;
   private saveDebounceTimer: NodeJS.Timeout | undefined;
 
+  private pendingAttachments: Array<{path: string; content: string; language: string}> = [];
+
   private messageHandlerDisposable: vscode.Disposable | undefined;
   private _onDidChangeVisibility = new vscode.EventEmitter<boolean>();
   readonly onDidChangeVisibility = this._onDidChangeVisibility.event;
+
+  /**
+   * Phase 2: Promise bridge for tool confirmation.
+   * Maps toolUseId -> { resolve } to pause/resume agentLoop.
+   */
+  private confirmationPendingTools = new Map<string, {
+    resolve: (approved: boolean) => void;
+    toolName: string;
+    input: unknown;
+  }>();
 
   constructor(context: vscode.ExtensionContext, statusBar: StatusBarManager, apiKey?: string) {
     this.context = context;
@@ -90,12 +102,30 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       }
       this.sendConfigToWebview();
       this.sendHistoryToWebview();
+      this.sendInitialStatus();
       this.isResolving = false;
     }).catch(() => {
       // If load fails, still send empty history
       this.sendConfigToWebview();
       this.sendHistoryToWebview();
+      this.sendInitialStatus();
       this.isResolving = false;
+    });
+  }
+
+  /**
+   * Send initial connection status and workspace info to webview.
+   */
+  private sendInitialStatus(): void {
+    this.postMessageToWebview({
+      command: 'connection_status',
+      status: this.client.isConfigured() ? 'connected' : 'disconnected',
+    });
+    const workspaceFolders = vscode.workspace.workspaceFolders;
+    const workspaceName = workspaceFolders?.[0]?.name || '';
+    this.postMessageToWebview({
+      command: 'workspace_info',
+      workspaceName,
     });
   }
 
@@ -165,18 +195,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
     const assistantMsgId = generateId();
     let fullContent = '';
+    let assistantContentBlocks: ContentBlock[] = [];
 
     try {
-      await this.client.streamCompletion(apiMessages, {
+      await this.client.agentLoop(apiMessages, {
         onChunk: (chunk: string) => {
           fullContent += chunk;
-          // TODO: When streaming parser is upgraded to detect tool_use content blocks,
-          // route tool_use/tool_result events to webview via postMessageToWebview:
-          //   { command: 'tool_start', toolName, input }
-          //   { command: 'tool_complete', toolName, result }
-          //   { command: 'tool_error', toolName, error }
-          //   { command: 'agent_iteration', current, max }
-          //   { command: 'agent_done' }
           this.postMessageToWebview({
             command: 'update_message',
             messageId: assistantMsgId,
@@ -184,11 +208,69 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             isStreaming: true,
           });
         },
-        onComplete: () => {
+        onToolStart: (toolUse: ContentBlock) => {
+          assistantContentBlocks.push(toolUse);
+          this.postMessageToWebview({
+            command: 'tool_start',
+            toolUseId: toolUse.id,
+            toolName: toolUse.name,
+            input: toolUse.input,
+          });
+        },
+        onToolComplete: (toolUse: ContentBlock, result: unknown) => {
+          this.postMessageToWebview({
+            command: 'tool_complete',
+            toolUseId: toolUse.id,
+            toolName: toolUse.name,
+            result,
+          });
+        },
+        onToolError: (toolUse: ContentBlock, error: string) => {
+          this.postMessageToWebview({
+            command: 'tool_error',
+            toolUseId: toolUse.id,
+            toolName: toolUse.name,
+            error,
+          });
+        },
+        onIteration: (current: number, max: number) => {
+          this.postMessageToWebview({
+            command: 'agent_iteration',
+            current,
+            max,
+          });
+        },
+        // Phase 2: Promise-based tool confirmation bridge
+        onToolConfirmation: (toolUse: ContentBlock) => {
+          const toolUseId = toolUse.id || `tool_${Date.now()}`;
+          return new Promise<boolean>((resolve) => {
+            this.confirmationPendingTools.set(toolUseId, {
+              resolve,
+              toolName: toolUse.name || 'unknown',
+              input: toolUse.input,
+            });
+            this.postMessageToWebview({
+              command: 'tool_confirmation_request',
+              toolUseId,
+              toolName: toolUse.name,
+              input: toolUse.input,
+            });
+          });
+        },
+        onComplete: (stopReason: string) => {
+          console.log(`agentLoop complete: ${stopReason}`);
+          // Build full content: text blocks + tool_use blocks for persistence
+          const contentBlocks: ContentBlock[] = [];
+          if (fullContent) {
+            contentBlocks.push({ type: 'text', text: fullContent });
+          }
+          contentBlocks.push(...assistantContentBlocks);
+
           const assistantMsg: ChatMessage = {
             id: assistantMsgId,
             role: 'assistant',
-            content: fullContent,
+            content: contentBlocks.length > 0 ? contentBlocks : fullContent,
+            displayText: fullContent,
             timestamp: Date.now(),
           };
           this.messageHistory.push(assistantMsg);
@@ -199,6 +281,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             content: fullContent,
             isStreaming: false,
           });
+          this.postMessageToWebview({ command: 'agent_done' });
           this.isStreaming = false;
           this.statusBar.updateStatus('idle');
         },
@@ -226,6 +309,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
    */
   async clearChat(): Promise<void> {
     this.messageHistory = [];
+    this.pendingAttachments = [];
     this.postMessageToWebview({
       command: 'clear_messages',
     });
@@ -288,6 +372,16 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   private async handleWebviewMessage(message: WebviewMessage): Promise<void> {
     switch (message.command) {
       case 'user_message':
+        // Handle attachments from webview (file picker)
+        if (message.attachments && Array.isArray(message.attachments)) {
+          for (const attachment of message.attachments as Array<{name: string; content: string; language: string; type: string}>) {
+            this.pendingAttachments.push({
+              path: attachment.name,
+              content: attachment.content,
+              language: attachment.language,
+            });
+          }
+        }
         await this.sendMessage({
           type: 'user_message',
           content: message.content as string,
@@ -305,6 +399,98 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       case 'open_file':
         this.openFile(message.path as string);
         break;
+
+      case 'new_chat':
+        await this.clearChat();
+        break;
+
+      case 'stop_generation':
+        this.client.cancel();
+        this.isStreaming = false;
+        this.statusBar.updateStatus('idle');
+        this.postMessageToWebview({ command: 'agent_done' });
+        break;
+
+      case 'clear_file_context':
+        this.activeFileContext = null;
+        this.postMessageToWebview({
+          command: 'update_file_context',
+          context: null,
+        });
+        break;
+
+      case 'export_chat':
+        this.exportChat(message.content as string);
+        break;
+
+      case 'run_in_terminal':
+        this.runInTerminal(message.content as string);
+        break;
+
+      case 'tool_approve': {
+        const pending = this.confirmationPendingTools.get(message.toolUseId);
+        if (pending) {
+          pending.resolve(true);
+          this.confirmationPendingTools.delete(message.toolUseId);
+        }
+        this.postMessageToWebview({ command: 'tool_approved', toolName: message.toolName });
+        break;
+      }
+
+      case 'tool_deny': {
+        const pending = this.confirmationPendingTools.get(message.toolUseId);
+        if (pending) {
+          pending.resolve(false);
+          this.confirmationPendingTools.delete(message.toolUseId);
+        }
+        this.postMessageToWebview({
+          command: 'tool_denied',
+          toolName: message.toolName,
+        });
+        break;
+      }
+
+      case 'cancel_agent_loop':
+        // Reject all pending confirmations on cancel
+        for (const [toolUseId, pending] of this.confirmationPendingTools.entries()) {
+          pending.resolve(false);
+          this.confirmationPendingTools.delete(toolUseId);
+        }
+        this.client.cancel();
+        this.isStreaming = false;
+        this.statusBar.updateStatus('idle');
+        this.postMessageToWebview({ command: 'agent_done' });
+        break;
+
+      case 'read_and_attach_file': {
+        const filePath = message.path as string;
+        try {
+          const uri = vscode.Uri.file(filePath);
+          const content = await vscode.workspace.fs.readFile(uri);
+          const text = new TextDecoder().decode(content);
+          const ext = filePath.split('.').pop() || '';
+
+          this.pendingAttachments.push({
+            path: filePath,
+            content: text,
+            language: ext,
+          });
+
+          this.postMessageToWebview({
+            command: 'file_attached',
+            fileName: path.basename(filePath),
+            language: ext,
+            content: text,
+            fileType: ext === 'png' || ext === 'jpg' || ext === 'jpeg' || ext === 'gif' || ext === 'svg' ? 'image' : 'file',
+          });
+        } catch (err) {
+          this.postMessageToWebview({
+            command: 'error',
+            message: `Cannot read file: ${filePath}`,
+          });
+        }
+        break;
+      }
     }
   }
 
@@ -330,6 +516,17 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       });
     }
 
+    // Add pending file attachments as user context
+    if (this.pendingAttachments.length > 0) {
+      for (const attachment of this.pendingAttachments) {
+        messages.push({
+          role: 'user',
+          content: `File: ${attachment.path}\nLanguage: ${attachment.language}\n\n\`\`\`${attachment.language}\n${attachment.content}\n\`\`\``,
+        });
+      }
+      this.pendingAttachments = []; // Clear after adding
+    }
+
     // Add conversation history (last N messages to stay within token limits)
     const maxHistory = 20;
     const recentHistory = this.messageHistory.slice(-maxHistory);
@@ -341,6 +538,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         });
       }
     }
+
+    // Append the current user message
+    messages.push({
+      role: 'user',
+      content: data.content,
+    });
 
     return messages;
   }
@@ -375,6 +578,32 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     } catch {
       vscode.window.showErrorMessage(`Cannot open file: ${filePath}`);
     }
+  }
+
+  /**
+   * Export chat to markdown file.
+   */
+  private async exportChat(content: string): Promise<void> {
+    const uri = await vscode.window.showSaveDialog({
+      filters: { 'Markdown': ['md'] },
+      title: 'Export Chat',
+      defaultUri: vscode.Uri.file('chat-export.md'),
+    });
+
+    if (uri) {
+      await vscode.workspace.fs.writeFile(uri, Buffer.from(content, 'utf8'));
+      vscode.window.showInformationMessage('Chat exported successfully');
+    }
+  }
+
+  /**
+   * Run code in integrated terminal.
+   */
+  private runInTerminal(code: string): Promise<void> {
+    const terminal = vscode.window.createTerminal('Claude Code');
+    terminal.show();
+    terminal.sendText(code);
+    return Promise.resolve();
   }
 
   /**
@@ -519,11 +748,97 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       flex: 1;
       overflow-y: auto;
       padding: 12px;
+      position: relative;
     }
+    #chat-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 8px 12px;
+      border-bottom: 1px solid var(--vscode-widget-border, #454545);
+      background: var(--vscode-sideBar-background);
+      gap: 8px;
+    }
+    .header-left { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
+    .header-center { flex: 1; max-width: 300px; }
+    .header-right { display: flex; align-items: center; gap: 4px; flex-shrink: 0; }
+    .header-title { font-weight: 600; font-size: 13px; white-space: nowrap; }
+    .search-input {
+      width: 100%;
+      padding: 4px 8px;
+      background: var(--vscode-input-background);
+      color: var(--vscode-input-foreground);
+      border: 1px solid var(--vscode-widget-border, #454545);
+      border-radius: 4px;
+      font-size: 11px;
+      outline: none;
+    }
+    .search-input:focus {
+      border-color: var(--vscode-focusBorder, #007fd4);
+    }
+    .search-input::placeholder {
+      color: var(--vscode-input-placeholderForeground, #888888);
+    }
+    .search-highlight {
+      background: rgba(234, 179, 8, 0.1);
+      border-left: 2px solid var(--vscode-terminal-ansiYellow);
+    }
+    .no-results {
+      text-align: center;
+      padding: 24px;
+      color: var(--vscode-descriptionForeground);
+    }
+    .header-btn {
+      padding: 4px 8px;
+      background: transparent;
+      color: var(--vscode-button-foreground);
+      border: 1px solid var(--vscode-widget-border, #454545);
+      border-radius: 4px;
+      cursor: pointer;
+      font-size: 11px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      min-width: 24px;
+      height: 24px;
+    }
+    .header-btn:hover { background: var(--vscode-list-hoverBackground, #2a2d2e); }
+    .connection-status {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      display: inline-block;
+    }
+    .status-connected { background: var(--vscode-terminal-ansiGreen, #2ea043); }
+    .status-disconnected { background: var(--vscode-terminal-ansiRed, #f85149); }
+    .status-configuring { background: var(--vscode-terminal-ansiYellow, #d29922); }
+    #messages-container { flex: 1; overflow-y: auto; }
     .message {
       margin-bottom: 16px;
       line-height: 1.5;
+      position: relative;
+      padding-right: 24px;
     }
+    .message-actions {
+      position: absolute;
+      right: 0;
+      top: 4px;
+      display: flex;
+      gap: 4px;
+      opacity: 0;
+      transition: opacity 0.2s;
+    }
+    .message:hover .message-actions { opacity: 1; }
+    .message-action-btn {
+      background: transparent;
+      border: 1px solid var(--vscode-widget-border, #454545);
+      border-radius: 4px;
+      padding: 2px 6px;
+      cursor: pointer;
+      font-size: 10px;
+      color: var(--vscode-descriptionForeground);
+    }
+    .message-action-btn:hover { background: var(--vscode-list-hoverBackground, #2a2d2e); }
     .message.user {
       background: var(--vscode-input-background);
       border-radius: 8px;
@@ -546,10 +861,90 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     }
     .message p { margin: 8px 0; }
     .message ul, .message ol { margin: 8px 0 8px 20px; }
+    .message table {
+      border-collapse: collapse;
+      margin: 8px 0;
+      width: 100%;
+    }
+    .message th, .message td {
+      border: 1px solid var(--vscode-widget-border, #454545);
+      padding: 4px 8px;
+      text-align: left;
+    }
+    .message th { background: var(--vscode-sideBar-background); }
+    .message blockquote {
+      border-left: 3px solid var(--vscode-button-background);
+      padding-left: 12px;
+      margin: 8px 0;
+      color: var(--vscode-descriptionForeground);
+    }
+    .message hr {
+      border: none;
+      border-top: 1px solid var(--vscode-widget-border, #454545);
+      margin: 12px 0;
+    }
+    .message h1, .message h2, .message h3, .message h4, .message h5, .message h6 {
+      margin: 12px 0 8px;
+      font-weight: 600;
+    }
+    .message h1 { font-size: 18px; border-bottom: 1px solid var(--vscode-widget-border); padding-bottom: 4px; }
+    .message h2 { font-size: 16px; border-bottom: 1px solid var(--vscode-widget-border); padding-bottom: 4px; }
+    .message h3 { font-size: 14px; }
+    .message input[type="checkbox"] {
+      margin-right: 6px;
+      accent-color: var(--vscode-button-background);
+    }
+    .code-block-wrapper {
+      margin: 8px 0;
+      border-radius: 6px;
+      overflow: hidden;
+      border: 1px solid var(--vscode-widget-border, #454545);
+    }
+    .code-block-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 4px 12px;
+      background: var(--vscode-sideBar-background);
+      border-bottom: 1px solid var(--vscode-widget-border, #454545);
+      font-size: 11px;
+    }
+    .code-lang { color: var(--vscode-descriptionForeground); }
+    .code-actions { display: flex; gap: 4px; }
+    .copy-code-btn, .run-code-btn {
+      background: transparent;
+      border: 1px solid var(--vscode-widget-border, #454545);
+      border-radius: 4px;
+      padding: 2px 8px;
+      cursor: pointer;
+      font-size: 10px;
+      color: var(--vscode-descriptionForeground);
+      transition: background 0.2s;
+    }
+    .copy-code-btn:hover, .run-code-btn:hover { background: var(--vscode-list-hoverBackground, #2a2d2e); }
+    .run-code-btn { color: var(--vscode-terminal-ansiGreen); }
     .chat-input-container {
       border-top: 1px solid var(--vscode-widget-border, #454545);
       padding: 8px 12px;
       background: var(--vscode-sideBar-background);
+      position: relative;
+    }
+    .chat-input-container.drag-over {
+      background: var(--vscode-list-dropBackground, rgba(0, 127, 212, 0.1));
+      border: 2px dashed var(--vscode-focusBorder, #007fd4);
+    }
+    .drop-hint {
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      padding: 8px 16px;
+      background: var(--vscode-button-background);
+      color: var(--vscode-button-foreground);
+      border-radius: 8px;
+      font-size: 12px;
+      pointer-events: none;
+      z-index: 10;
     }
     .chat-input {
       width: 100%;
@@ -580,9 +975,28 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       border-radius: 4px;
       cursor: pointer;
       font-size: var(--vscode-font-size);
+      transition: background 0.2s, opacity 0.2s;
     }
     .send-button:hover { opacity: 0.9; }
     .send-button:disabled { opacity: 0.5; cursor: not-allowed; }
+    .send-button.stop-button {
+      background: var(--vscode-terminal-ansiRed, #f85149);
+    }
+    .send-button:focus-visible {
+      outline: 2px solid var(--vscode-focusBorder, #007fd4);
+      outline-offset: 2px;
+    }
+    .retry-btn {
+      margin-top: 8px;
+      padding: 4px 12px;
+      background: var(--vscode-button-background);
+      color: var(--vscode-button-foreground);
+      border: none;
+      border-radius: 4px;
+      cursor: pointer;
+      font-size: 11px;
+    }
+    .retry-btn:hover { opacity: 0.9; }
     .typing-indicator { color: var(--vscode-descriptionForeground, #888); font-style: italic; }
     .file-context-badge {
       font-size: 11px;
@@ -591,8 +1005,82 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       background: var(--vscode-badge-background, #4d4d4d);
       border-radius: 12px;
       margin-bottom: 8px;
-      display: inline-block;
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
     }
+    .badge-close {
+      cursor: pointer;
+      font-size: 14px;
+      line-height: 1;
+      opacity: 0.7;
+    }
+    .badge-close:hover { opacity: 1; }
+    .session-restore-banner {
+      background: var(--vscode-input-background);
+      border: 1px solid var(--vscode-widget-border, #454545);
+      border-radius: 6px;
+      padding: 8px 12px;
+      margin-bottom: 12px;
+      font-size: 12px;
+      color: var(--vscode-descriptionForeground);
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+    .dismiss-banner {
+      cursor: pointer;
+      font-size: 14px;
+      opacity: 0.7;
+    }
+    .dismiss-banner:hover { opacity: 1; }
+    .toggle-collapse-btn {
+      display: block;
+      width: 100%;
+      padding: 4px;
+      background: transparent;
+      border: 1px solid var(--vscode-widget-border, #454545);
+      border-radius: 4px;
+      color: var(--vscode-descriptionForeground);
+      cursor: pointer;
+      font-size: 11px;
+      margin: 4px 0;
+      transition: background 0.2s;
+    }
+    .toggle-collapse-btn:hover { background: var(--vscode-list-hoverBackground, #2a2d2e); }
+    .collapsible-content.collapsed {
+      max-height: 300px;
+      overflow: hidden;
+      position: relative;
+    }
+    .collapsible-content.collapsed::after {
+      content: '';
+      position: absolute;
+      bottom: 0;
+      left: 0;
+      right: 0;
+      height: 60px;
+      background: linear-gradient(transparent, var(--vscode-editor-background));
+    }
+    .collapsible-content.hidden { display: none; }
+    .back-to-top-btn {
+      position: absolute;
+      bottom: 12px;
+      right: 12px;
+      padding: 6px 10px;
+      background: var(--vscode-button-background);
+      color: var(--vscode-button-foreground);
+      border: none;
+      border-radius: 50%;
+      cursor: pointer;
+      font-size: 14px;
+      opacity: 0;
+      transition: opacity 0.3s;
+      z-index: 5;
+      box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+    }
+    .back-to-top-btn.visible { opacity: 0.8; }
+    .back-to-top-btn:hover { opacity: 1; }
     .welcome-screen {
       display: flex;
       flex-direction: column;
@@ -602,6 +1090,19 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       text-align: center;
       color: var(--vscode-descriptionForeground, #888);
       padding: 24px;
+      animation: fadeIn 0.3s ease-in;
+    }
+    @keyframes fadeIn {
+      from { opacity: 0; transform: translateY(8px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+    .workspace-label {
+      font-size: 11px;
+      color: var(--vscode-button-background);
+      margin-top: 8px;
+      padding: 2px 8px;
+      background: rgba(14, 99, 156, 0.1);
+      border-radius: 12px;
     }
     .welcome-screen h2 {
       font-size: 20px;
@@ -624,14 +1125,32 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       color: var(--vscode-input-foreground);
       cursor: pointer;
       font-size: 12px;
+      transition: background 0.2s, border-color 0.2s;
     }
     .suggestion-btn:hover {
       background: var(--vscode-list-hoverBackground, #2a2d2e);
+      border-color: var(--vscode-focusBorder, #007fd4);
     }
-    .tool-card { border: 1px solid var(--vscode-widget-border); border-radius: 6px; margin: 8px 0; padding: 8px 12px; background: var(--vscode-sideBar-background); }
-    .tool-card.running { border-left: 3px solid var(--vscode-progress-foreground); }
+    .suggestion-btn:focus-visible {
+      outline: 2px solid var(--vscode-focusBorder, #007fd4);
+      outline-offset: 2px;
+    }
+    .tool-card {
+      border: 1px solid var(--vscode-widget-border);
+      border-radius: 6px;
+      margin: 8px 0;
+      padding: 8px 12px;
+      background: var(--vscode-sideBar-background);
+      transition: all 0.2s;
+    }
+    .tool-card:hover { box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2); }
+    .tool-card.running { border-left: 3px solid var(--vscode-progress-foreground); animation: pulse 1.5s infinite; }
     .tool-card.complete { border-left: 3px solid var(--vscode-terminal-ansiGreen); }
     .tool-card.error { border-left: 3px solid var(--vscode-terminal-ansiRed); }
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.7; }
+    }
     .tool-header { display: flex; justify-content: space-between; align-items: center; }
     .tool-name { font-weight: bold; font-size: 12px; }
     .tool-status { font-size: 11px; color: var(--vscode-descriptionForeground); }
@@ -641,10 +1160,25 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     .agent-progress-fill { height: 100%; background: var(--vscode-progress-foreground); border-radius: 2px; transition: width 0.3s; }
     .confirmation-dialog { border: 1px solid var(--vscode-input-border); border-radius: 6px; padding: 12px; margin: 8px 0; background: var(--vscode-input-background); }
     .confirmation-buttons { display: flex; gap: 8px; margin-top: 8px; }
-    .confirmation-buttons button { padding: 4px 12px; border: none; border-radius: 4px; cursor: pointer; }
+    .confirmation-buttons button { padding: 6px 16px; border: none; border-radius: 4px; cursor: pointer; transition: opacity 0.2s; }
+    .confirmation-buttons button:hover { opacity: 0.9; }
     .btn-approve { background: var(--vscode-button-background); color: var(--vscode-button-foreground); }
     .btn-deny { background: var(--vscode-button-secondaryBackground); color: var(--vscode-button-secondaryForeground); }
-    .cancel-btn { background: var(--vscode-errorForeground); color: white; border: none; padding: 4px 12px; border-radius: 4px; cursor: pointer; margin-top: 4px; }
+    .cancel-btn { background: var(--vscode-errorForeground); color: white; border: none; padding: 6px 16px; border-radius: 4px; cursor: pointer; margin-top: 4px; transition: opacity 0.2s; }
+    .cancel-btn:hover { opacity: 0.8; }
+    .message.error {
+      background: rgba(248, 81, 73, 0.1);
+      border: 1px solid var(--vscode-terminal-ansiRed);
+      border-radius: 6px;
+      padding: 12px;
+      margin: 8px 0;
+      color: var(--vscode-terminal-ansiRed);
+    }
+    /* Scrollbar styling */
+    ::-webkit-scrollbar { width: 10px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb { background: var(--vscode-scrollbarSlider-background, rgba(121, 121, 121, 0.4)); border-radius: 5px; }
+    ::-webkit-scrollbar-thumb:hover { background: var(--vscode-scrollbarSlider-hoverBackground, rgba(100, 100, 100, 0.7)); }
   </style>
 </head>
 <body>
@@ -691,7 +1225,9 @@ Guidelines:
 interface ChatMessage {
   id: string;
   role: 'user' | 'assistant' | 'system';
-  content: string;
+  content: string | ContentBlock[];
+  /** Plain text extracted from content for display in the UI */
+  displayText?: string;
   timestamp: number;
   isStreaming?: boolean;
 }
@@ -701,7 +1237,7 @@ interface ChatMessage {
  */
 interface ApiMessage {
   role: 'system' | 'user' | 'assistant';
-  content: string;
+  content: string | ContentBlock[];
 }
 
 /**
