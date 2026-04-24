@@ -230,11 +230,9 @@ jobs:
       - name: Publish wrapper package
         run: |
           echo "@zyzheal:registry=https://registry.npmjs.org/" >> .npmrc
-          echo "//registry.npmjs.org/:_authToken=${NPM_TOKEN}" >> .npmrc
+          echo "//registry.npmjs.org/:_authToken=${{ secrets.GITHUB }}" >> .npmrc
           cd dist/publish
           npm publish --access public
-        env:
-          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
 
       - name: Publish platform binary packages
         run: |
@@ -242,9 +240,7 @@ jobs:
             cd "$dir"
             echo "Publishing $(pwd)..."
             echo "@zyzheal:registry=https://registry.npmjs.org/" >> .npmrc
-            echo "//registry.npmjs.org/:_authToken=${NPM_TOKEN}" >> .npmrc
+            echo "//registry.npmjs.org/:_authToken=${{ secrets.GITHUB }}" >> .npmrc
             npm publish --access public
             cd "$GITHUB_WORKSPACE"
           done
-        env:
-          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
