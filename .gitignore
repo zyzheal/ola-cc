@@ -7,3 +7,6 @@ dist/cli-dev
 *.tgz
 anthropic-ai-claude-code-*.tgz
 dist/publish-bin/darwin-arm64/ola-cc
+cli
+cli-dev
+*.js.map
