@@ -371,6 +371,9 @@ async function* queryLoop(
 
   // eslint-disable-next-line no-constant-condition
   while (true) {
+    // DIAGNOSTIC: Track loop iteration entry
+    logForDebugging?.(`[QUERY LOOP] iteration start: messages=${state.messages.length}, turnCount=${state.turnCount}, reason=${state.transition?.reason ?? 'initial'}`)
+
     // Destructure state at the top of each iteration. toolUseContext alone
     // is reassigned within an iteration (queryTracking, messages updates);
     // the rest are read-only between continue sites.
@@ -458,6 +461,7 @@ async function* queryLoop(
           .map(t => t.name),
       ),
     )
+    logForDebugging?.(`[QUERY LOOP] checkpoint: after applyToolResultBudget, messagesForQuery=${messagesForQuery.length}`)
 
     // Apply snip before microcompact (both may run — they are not mutually exclusive).
     // snipTokensFreed is plumbed to autocompact so its threshold check reflects
@@ -490,6 +494,7 @@ async function* queryLoop(
       ? microcompactResult.compactionInfo?.pendingCacheEdits
       : undefined
     queryCheckpoint('query_microcompact_end')
+    logForDebugging?.(`[QUERY LOOP] checkpoint: after microcompact, messagesForQuery=${messagesForQuery.length}`)
 
     // Memory-pressure escape valve with incremental tracking.
     // The byte tracker does a full JSON.stringify scan every 30 turns;
@@ -505,9 +510,24 @@ async function* queryLoop(
       // Use full scan every 10th check (i.e. every 100 turns), quick estimate otherwise.
       // This balances accuracy against peak memory pressure.
       const useFullScan = turnCount % (MEMORY_CHECK_INTERVAL * 10) === 0
-      const estimatedBytes = useFullScan
-        ? estimateMessageArrayByteSize(messagesForQuery)
-        : messagesForQuery.reduce((sum, msg) => sum + quickMessageByteEstimate(msg), 0)
+      let estimatedBytes: number
+      try {
+        estimatedBytes = useFullScan
+          ? estimateMessageArrayByteSize(messagesForQuery)
+          : messagesForQuery.reduce((sum, msg) => sum + quickMessageByteEstimate(msg), 0)
+      } catch (err) {
+        // If byte estimation fails, skip memory check rather than crashing
+        // the query loop. This can happen with circular refs or extreme message sizes.
+        logEvent('tengu_memory_estimation_failed', {
+          messageCount: messagesForQuery.length,
+          useFullScan,
+          error: (err as Error).message,
+        })
+        logForDebugging(
+          `[MEMORY CHECK] byte estimation failed (${useFullScan ? 'fullScan' : 'quick'}, ${messagesForQuery.length} msgs): ${(err as Error).message}, skipping check`,
+        )
+        estimatedBytes = 0
+      }
 
       // Track the estimate for diagnostics (log every 30 checks to avoid spam)
       if (turnCount % (MEMORY_CHECK_INTERVAL * 3) === 0) {
@@ -551,6 +571,8 @@ async function* queryLoop(
       }
     }
 
+    logForDebugging?.(`[QUERY LOOP] checkpoint: after memory check, messagesForQuery=${messagesForQuery.length}`)
+
     // Project the collapsed context view and maybe commit more collapses.
     // Runs BEFORE autocompact so that if collapse gets us under the
     // autocompact threshold, autocompact is a no-op and we keep granular
@@ -572,11 +594,13 @@ async function* queryLoop(
       messagesForQuery = collapseResult.messages
     }
 
+    logForDebugging?.(`[QUERY LOOP] after context collapse: messagesForQuery=${messagesForQuery.length}`)
     const fullSystemPrompt = asSystemPrompt(
       appendSystemContext(systemPrompt, systemContext),
     )
 
     queryCheckpoint('query_autocompact_start')
+    logForDebugging?.(`[QUERY LOOP] entering autocompact setup`)
     const { compactionResult, consecutiveFailures } = await deps.autocompact(
       messagesForQuery,
       toolUseContext,
@@ -592,6 +616,7 @@ async function* queryLoop(
       snipTokensFreed,
     )
     queryCheckpoint('query_autocompact_end')
+    logForDebugging?.(`[QUERY LOOP] setup complete, entering API loop: messagesForQuery=${messagesForQuery.length}, compactionResult=${!!compactionResult}`)
 
     if (compactionResult) {
       const {
@@ -751,6 +776,7 @@ async function* queryLoop(
     // it predates the experiment and is already the control-arm baseline.
     const mediaRecoveryEnabled =
       reactiveCompact?.isReactiveCompactEnabled() ?? false
+    logForDebugging?.(`[QUERY LOOP] checkpoint: before blocking limit check, compactionResult=${!!compactionResult}, querySource=${querySource}`)
     if (
       !compactionResult &&
       querySource !== 'compact' &&
@@ -760,11 +786,16 @@ async function* queryLoop(
       ) &&
       !collapseOwnsIt
     ) {
+      const tokenCount = tokenCountWithEstimation(messagesForQuery) - snipTokensFreed
+      const modelForCheck = toolUseContext.options.mainLoopModel
+      logForDebugging?.(`[QUERY LOOP] checkpoint: computing token warning state, tokenCount=${tokenCount}, model=${modelForCheck}`)
       const { isAtBlockingLimit } = calculateTokenWarningState(
-        tokenCountWithEstimation(messagesForQuery) - snipTokensFreed,
-        toolUseContext.options.mainLoopModel,
+        tokenCount,
+        modelForCheck,
       )
+      logForDebugging?.(`[QUERY LOOP] checkpoint: isAtBlockingLimit=${isAtBlockingLimit}`)
       if (isAtBlockingLimit) {
+        logForDebugging?.(`[QUERY LOOP] exit: blocking_limit reached`)
         yield createAssistantAPIErrorMessage({
           content: PROMPT_TOO_LONG_ERROR_MESSAGE,
           error: 'invalid_request',
@@ -1386,10 +1417,12 @@ async function* queryLoop(
       // real response — hooks evaluating it create a death spiral:
       // error → hook blocking → retry → error → …
       if (lastMessage?.isApiErrorMessage) {
+        logForDebugging?.(`[QUERY LOOP] exit: API error message, reason=completed`)
         void executeStopFailureHooks(lastMessage, toolUseContext)
         return { reason: 'completed' }
       }
 
+      logForDebugging?.(`[QUERY LOOP] entering stop hooks: assistantMessages=${assistantMessages.length}`)
       const stopHookResult = yield* handleStopHooks(
         messagesForQuery,
         assistantMessages,
@@ -1402,6 +1435,7 @@ async function* queryLoop(
       )
 
       if (stopHookResult.preventContinuation) {
+        logForDebugging?.(`[QUERY LOOP] exit: stop_hook_prevented`)
         return { reason: 'stop_hook_prevented' }
       }
 
@@ -1533,6 +1567,7 @@ async function* queryLoop(
       }
     }
     queryCheckpoint('query_tool_execution_end')
+    logForDebugging?.(`[QUERY LOOP] tool execution complete: toolResults=${toolResults.length}, shouldPreventContinuation=${shouldPreventContinuation}, aborted=${toolUseContext.abortController.signal.aborted}`)
 
     // Generate tool use summary after tool batch completes — passed to next recursive call
     let nextPendingToolUseSummary:
@@ -1838,6 +1873,7 @@ async function* queryLoop(
     }
 
     queryCheckpoint('query_recursive_call')
+    logForDebugging?.(`[QUERY LOOP] continuing to next turn: messages=${[...messagesForQuery, ...assistantMessages, ...toolResults].length}, turnCount=${nextTurnCount}`)
     const next: State = {
       messages: [...messagesForQuery, ...assistantMessages, ...toolResults],
       toolUseContext: toolUseContextWithQueryTracking,

@@ -1206,16 +1206,28 @@ async function* queryModel(
   // or when the tool count is already reasonable.
   const TOOL_RANKING_THRESHOLD = 25
   if (!useToolSearch && filteredTools.length > TOOL_RANKING_THRESHOLD) {
-    const query = extractQueryFromMessages(messages)
-    const rankedTools = await rankTools(filteredTools, query, {
-      getToolPermissionContext: options.getToolPermissionContext,
-      agents: options.agents,
-      allowedAgentTypes: options.allowedAgentTypes,
-    })
-    logForDebugging(
-      `Tool ranking: ${rankedTools.length}/${filteredTools.length} tools selected (query: "${query.slice(0, 80)}")`,
-    )
-    filteredTools = rankedTools
+    try {
+      const query = extractQueryFromMessages(messages)
+      const rankedTools = await rankTools(filteredTools, query, {
+        getToolPermissionContext: options.getToolPermissionContext,
+        agents: options.agents,
+        allowedAgentTypes: options.allowedAgentTypes,
+      })
+      logForDebugging(
+        `Tool ranking: ${rankedTools.length}/${filteredTools.length} tools selected (query: "${query.slice(0, 80)}")`,
+      )
+      filteredTools = rankedTools
+    } catch (err) {
+      // Tool ranking should never block API calls — fall back to sending all tools.
+      // This path indicates an unexpected error in the ranking pipeline (e.g.
+      // tool.prompt() threw despite its internal try/catch, or opts were invalid).
+      // Log loudly so we can diagnose, but don't break the conversation.
+      logError(err as Error)
+      logEvent('tengu_tool_ranking_failed', {
+        tool_count: filteredTools.length,
+        querySource: options.querySource,
+      })
+    }
   }
 
   // Add tool search beta header if enabled - required for defer_loading to be accepted
