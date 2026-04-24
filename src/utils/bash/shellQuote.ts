@@ -35,6 +35,13 @@ export function tryParseShellCommand(
     return { success: true, tokens }
   } catch (error) {
     if (error instanceof Error) {
+      // "Bad substitution" is thrown by shell-quote for valid bash variable
+      // expansion patterns it doesn't understand (e.g., ${var:-default},
+      // ${var?error}). Callers already handle { success: false } gracefully,
+      // so logging these as errors creates noise.
+      if (error.message === 'Bad substitution') {
+        return { success: false, error: error.message }
+      }
       logError(error)
     }
     return {
