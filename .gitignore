@@ -10,3 +10,8 @@ dist/publish-bin/darwin-arm64/ola-cc
 cli
 cli-dev
 *.js.map
+
+# Build outputs
+dist/publish/cli.mjs
+dist/publish/cli.js
+dist/publish/vendor/
