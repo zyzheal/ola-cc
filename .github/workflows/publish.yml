@@ -187,8 +187,9 @@ jobs:
           echo '{"name":"test","private":true}' > package.json
 
           # Install from tarballs
+          # For JS bundle platforms (darwin-x64 on arm64 runner), --force skips os/cpu platform check
           echo "=== Running npm install ==="
-          AUTHORIZED=1 npm install --foreground-scripts --no-save ./wrapper.tgz ./binary.tgz 2>&1
+          AUTHORIZED=1 npm install --foreground-scripts --no-save --force ./wrapper.tgz ./binary.tgz 2>&1
 
           # Verify the binary was placed by postinstall
           # JS bundle platforms (darwin-x64, win32): cli.mjs is in the binary package
