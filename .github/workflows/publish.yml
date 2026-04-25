@@ -147,12 +147,20 @@ jobs:
       - name: Test wrapper + binary integration
         run: |
           # Pack wrapper and binary packages into tarballs
-          WRAPPER_TGZ=$(cd dist/publish && npm pack 2>&1 | tail -1)
-          WRAPPER_TGZ="dist/publish/$WRAPPER_TGZ"
+          echo "=== Packing wrapper ==="
+          WRAPPER_TGZ=$(cd dist/publish && npm pack 2>&1)
+          echo "npm pack output: $WRAPPER_TGZ"
+          WRAPPER_TGZ="dist/publish/$(echo "$WRAPPER_TGZ" | tail -1)"
+          echo "Wrapper tarball: $WRAPPER_TGZ"
+          ls -la "$WRAPPER_TGZ" || echo "TARBALL NOT FOUND"
 
           BIN_DIR="dist/publish-bin/${{ matrix.platform.key }}"
-          BIN_TGZ=$(cd "$BIN_DIR" && npm pack 2>&1 | tail -1)
-          BIN_TGZ="$BIN_DIR/$BIN_TGZ"
+          echo "=== Packing binary ==="
+          BIN_TGZ=$(cd "$BIN_DIR" && npm pack 2>&1)
+          echo "npm pack output: $BIN_TGZ"
+          BIN_TGZ="$BIN_DIR/$(echo "$BIN_TGZ" | tail -1)"
+          echo "Binary tarball: $BIN_TGZ"
+          ls -la "$BIN_TGZ" || echo "TARBALL NOT FOUND"
 
           # Create a clean test directory
           TEST_DIR="$RUNNER_TEMP/ola-cc-test"
@@ -164,7 +172,18 @@ jobs:
           echo '{"name":"test","private":true}' > package.json
 
           # Install from tarballs — this triggers postinstall correctly
+          echo "=== Running npm install ==="
           AUTHORIZED=1 npm install --no-save "$GITHUB_WORKSPACE/$WRAPPER_TGZ" "$GITHUB_WORKSPACE/$BIN_TGZ" 2>&1
+
+          # Debug: show what was installed
+          echo "=== Installed packages ==="
+          ls -la node_modules/@zyzheal/ 2>/dev/null || echo "No @zyzheal packages found"
+          echo "=== Wrapper bin directory ==="
+          ls -la node_modules/@zyzheal/ola-cc/bin/ 2>/dev/null || echo "bin/ NOT found"
+          echo "=== Platform package ==="
+          ls -la node_modules/@zyzheal/ola-cc-${{ matrix.platform.key }}/ 2>/dev/null || echo "platform package NOT found"
+          echo "=== postinstall debug log ==="
+          cat /tmp/ola-cc-postinstall.log 2>/dev/null || echo "No debug log found"
 
           # Verify the binary was placed by postinstall
           if [[ "${{ matrix.platform.key }}" == win32-* ]]; then
