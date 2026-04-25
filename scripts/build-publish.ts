@@ -16,7 +16,7 @@ import { mkdirSync, cpSync, writeFileSync, chmodSync } from 'fs'
 import { join } from 'path'
 import { PUBLISH_PACKAGE_NAME } from './publish-config.ts'
 
-const pkg = await Bun.file(new URL('../package.json', import.meta.url)).json() as {
+const pkg = await Bun.file(join(process.cwd(), 'package.json')).json() as {
   name: string
   version: string
 }
