@@ -29,6 +29,11 @@ const pkgRoot = __dirname
 const nodeModules = join(pkgRoot, '..', '..')  // resolve up to node_modules/ root
 const binDir = join(pkgRoot, 'bin')
 
+// Debug output
+console.error(`[ola-cc postinstall] pkgRoot: ${pkgRoot}`)
+console.error(`[ola-cc postinstall] nodeModules: ${nodeModules}`)
+console.error(`[ola-cc postinstall] binDir: ${binDir}`)
+
 function detectPlatform() {
   const platform = process.platform
   const arch = process.arch
@@ -62,6 +67,10 @@ function main() {
   const platformKey = detectPlatform()
   const depName = PLATFORM_MAP[platformKey]
 
+  // Debug
+  console.error(`[ola-cc postinstall] platformKey: ${platformKey}`)
+  console.error(`[ola-cc postinstall] depName: ${depName}`)
+
   // Binary name based on platform - hardcode for reliability
   const isWindows = process.platform === 'win32'
   const binaryName = isWindows ? 'ola-cc.exe' : 'ola-cc'
@@ -73,6 +82,7 @@ function main() {
   }
 
   const depPath = join(nodeModules, depName)
+  console.error(`[ola-cc postinstall] depPath: ${depPath}`)
 
   if (!existsSync(depPath)) {
     console.error(`Warning: Platform package ${depName} not installed.`)
