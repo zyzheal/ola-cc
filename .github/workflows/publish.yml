@@ -146,15 +146,15 @@ jobs:
       # Integration test: simulate real npm install from packed tarballs
       - name: Test wrapper + binary integration
         run: |
-          # Pack wrapper package (npm pack always outputs to cwd)
+          # Pack wrapper package
           cd dist/publish && npm pack --quiet 2>/dev/null; cd "$GITHUB_WORKSPACE"
-          WRAPPER_TGZ=$(ls dist/publish/*.tgz 2>/dev/null | head -1)
+          WRAPPER_TGZ="$GITHUB_WORKSPACE/$(ls dist/publish/*.tgz 2>/dev/null | head -1)"
           echo "Wrapper tarball: $WRAPPER_TGZ"
 
           # Pack binary package
           BIN_DIR="dist/publish-bin/${{ matrix.platform.key }}"
           cd "$BIN_DIR" && npm pack --quiet 2>/dev/null; cd "$GITHUB_WORKSPACE"
-          BIN_TGZ=$(ls "$BIN_DIR"/*.tgz 2>/dev/null | head -1)
+          BIN_TGZ="$GITHUB_WORKSPACE/$(ls "$BIN_DIR"/*.tgz 2>/dev/null | head -1)"
           echo "Binary tarball: $BIN_TGZ"
 
           # Show tarball contents
