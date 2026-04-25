@@ -75,12 +75,17 @@ function main() {
   const srcBinary = join(depPath, binaryName)
 
   if (!existsSync(srcBinary)) {
-    // Fallback: try cli.mjs for JS bundle (Windows)
+    // Fallback: cli.mjs available for JS bundle mode (Windows)
+    // bin/ola-cc.js already exists in the tarball as a CommonJS wrapper
+    // that delegates to cli.mjs — just verify it's there.
     const jsBundle = join(depPath, 'cli.mjs')
-    if (existsSync(jsBundle)) {
-      mkdirSync(binDir, { recursive: true })
-      cpSync(jsBundle, join(binDir, 'ola-cc.js'))
-      console.log('ola-cc: Installed JS bundle fallback')
+    const existingBin = join(binDir, 'ola-cc.js')
+    if (existsSync(jsBundle) && existsSync(existingBin)) {
+      console.log('ola-cc: Using existing bin/ola-cc.js (JS bundle mode)')
+      return
+    }
+    if (existsSync(jsBundle) && !existsSync(existingBin)) {
+      console.warn('ola-cc: cli.mjs available but bin/ola-cc.js is missing')
       return
     }
     console.warn(`ola-cc: Binary not found at ${srcBinary}`)
