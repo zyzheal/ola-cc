@@ -268,7 +268,7 @@ if (fs.existsSync(nativeBin)) {
     },
     scripts: {
       postinstall: 'node install.cjs',
-      prepare: 'node -e "if (!process.env.AUTHORIZED) { console.error(\'ERROR: Direct publishing is not allowed.\\nPlease see the release workflow documentation to publish this package.\'); process.exit(1); }"',
+      prepublishOnly: 'node -e "if (!process.env.AUTHORIZED) { console.error(\'ERROR: Direct publishing is not allowed.\\nPlease see the release workflow documentation to publish this package.\'); process.exit(1); }"',
     },
     repository: {
       type: 'git',
