@@ -487,7 +487,7 @@ function buildWindowsPackage(platformDir: string, currentKey: string, currentArc
     return
   }
 
-  const pkgCmd = [process.execPath, pkgBinPath, cliBundleSrc, '--target', nodeTarget, '--output', exeOutput]
+  const pkgCmd = [process.execPath, pkgBinPath, cliBundleSrc, '--target', nodeTarget, '--output', exeOutput, '--no-bytecode', '--public']
 
   const pkgProc = Bun.spawnSync({
     cmd: pkgCmd,
