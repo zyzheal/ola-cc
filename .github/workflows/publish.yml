@@ -100,6 +100,9 @@ jobs:
       # JS bundle platforms: darwin-x64 (no cross-compile) and win32 (pkg unreliable)
       - name: Build JS bundle package
         if: matrix.platform.jsbundle
+        env:
+          BUILD_PUBLISH_BIN_PLATFORM: ${{ matrix.platform.key == 'darwin-x64' && 'darwin' || '' }}
+          BUILD_PUBLISH_BIN_ARCH: ${{ matrix.platform.key == 'darwin-x64' && 'x64' || '' }}
         run: bun run ./scripts/build-publish-bin.ts --only-bin
 
       # Native build for macOS arm64 and Linux
