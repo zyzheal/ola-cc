@@ -26,7 +26,7 @@ const PLATFORM_MAP = {
 }
 
 const pkgRoot = __dirname
-const nodeModules = join(pkgRoot, 'node_modules')
+const nodeModules = join(pkgRoot, '..', '..')  // resolve up to node_modules/ root
 const binDir = join(pkgRoot, 'bin')
 
 function detectPlatform() {
@@ -57,8 +57,14 @@ function detectPlatform() {
 }
 
 function main() {
+  // Determine binary name - platform packages store binary at root level
+  // Windows packages may have .exe extension, others don't
   const platformKey = detectPlatform()
   const depName = PLATFORM_MAP[platformKey]
+
+  // Binary name based on platform - hardcode for reliability
+  const isWindows = process.platform === 'win32'
+  const binaryName = isWindows ? 'ola-cc.exe' : 'ola-cc'
 
   if (!depName) {
     console.error(`Warning: Unsupported platform ${process.platform} ${process.arch}.`)
@@ -74,25 +80,22 @@ function main() {
     return
   }
 
-  // Read the platform package to find the binary
-  const platformPkgPath = join(depPath, 'package.json')
-  if (!existsSync(platformPkgPath)) {
-    console.error(`Warning: Platform package ${depName} is missing package.json`)
-    return
-  }
-
-  const platformPkg = JSON.parse(readFileSync(platformPkgPath, 'utf8'))
-  const binName = platformPkg.bin
-    ? (typeof platformPkg.bin === 'string' ? platformPkg.bin : platformPkg.bin['ola-cc'])
-    : (platformPkg.files && platformPkg.files.find(f => f.endsWith('.exe') || f === 'ola-cc'))
-
-  if (!binName) {
-    console.error(`Warning: No binary found in ${depName}`)
-    return
-  }
-
-  const srcBinary = join(depPath, binName)
+  // Binary is at the root of the platform package
+  const srcBinary = join(depPath, binaryName)
   if (!existsSync(srcBinary)) {
+    // Fallback: try cli.mjs for JS bundle fallback (Windows)
+    const jsBundle = join(depPath, 'cli.mjs')
+    if (existsSync(jsBundle)) {
+      const destName = 'ola-cc.js'
+      const destBinary = join(binDir, destName)
+      try {
+        cpSync(jsBundle, destBinary)
+        console.log(`ola-cc: Installed JS bundle for ${platformKey}`)
+      } catch (err) {
+        console.error(`ola-cc: Failed to install JS bundle: ${err.message}`)
+      }
+      return
+    }
     console.error(`Warning: Binary not found at ${srcBinary}`)
     return
   }
