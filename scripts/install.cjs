@@ -29,10 +29,21 @@ const pkgRoot = __dirname
 const nodeModules = join(pkgRoot, '..', '..')  // resolve up to node_modules/ root
 const binDir = join(pkgRoot, 'bin')
 
-// Debug output
-console.error(`[ola-cc postinstall] pkgRoot: ${pkgRoot}`)
-console.error(`[ola-cc postinstall] nodeModules: ${nodeModules}`)
-console.error(`[ola-cc postinstall] binDir: ${binDir}`)
+// Debug output - use console.log (not .error) so npm shows it
+const debugLog = (msg) => {
+  console.log(`[ola-cc postinstall] ${msg}`)
+}
+
+debugLog(`pkgRoot: ${pkgRoot}`)
+debugLog(`nodeModules: ${nodeModules}`)
+debugLog(`binDir: ${binDir}`)
+
+// Also write to a file so we can debug even if console is swallowed
+const { writeFileSync: writeDebugFile } = require('fs')
+try {
+  writeDebugFile('/tmp/ola-cc-postinstall.log',
+    `pkgRoot=${pkgRoot}\nnodeModules=${nodeModules}\nbinDir=${binDir}\nplatform=${process.platform}\narch=${process.arch}\n`)
+} catch {}
 
 function detectPlatform() {
   const platform = process.platform
@@ -68,8 +79,8 @@ function main() {
   const depName = PLATFORM_MAP[platformKey]
 
   // Debug
-  console.error(`[ola-cc postinstall] platformKey: ${platformKey}`)
-  console.error(`[ola-cc postinstall] depName: ${depName}`)
+  debugLog(`platformKey: ${platformKey}`)
+  debugLog(`depName: ${depName}`)
 
   // Binary name based on platform - hardcode for reliability
   const isWindows = process.platform === 'win32'
@@ -82,7 +93,7 @@ function main() {
   }
 
   const depPath = join(nodeModules, depName)
-  console.error(`[ola-cc postinstall] depPath: ${depPath}`)
+  debugLog(`depPath: ${depPath}`)
 
   if (!existsSync(depPath)) {
     console.error(`Warning: Platform package ${depName} not installed.`)
