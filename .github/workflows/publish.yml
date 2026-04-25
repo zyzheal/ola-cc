@@ -149,42 +149,50 @@ jobs:
       # Integration test: simulate real npm install from packed tarballs
       - name: Test wrapper + binary integration
         run: |
+          set -e
+
           # Pack wrapper package
-          cd dist/publish && npm pack --quiet 2>/dev/null; cd "$GITHUB_WORKSPACE"
-          WRAPPER_TGZ="$GITHUB_WORKSPACE/$(ls dist/publish/*.tgz 2>/dev/null | head -1)"
+          cd dist/publish
+          npm pack --quiet 2>/dev/null
+          WRAPPER_TGZ="$(find . -name '*.tgz' -maxdepth 1 | head -1)"
           echo "Wrapper tarball: $WRAPPER_TGZ"
 
-          # Pack binary package
-          BIN_DIR="dist/publish-bin/${{ matrix.platform.key }}"
-          cd "$BIN_DIR" && npm pack --quiet 2>/dev/null; cd "$GITHUB_WORKSPACE"
-          BIN_TGZ="$GITHUB_WORKSPACE/$(ls "$BIN_DIR"/*.tgz 2>/dev/null | head -1)"
-          echo "Binary tarball: $BIN_TGZ"
-
-          # Show tarball contents
+          # Show wrapper tarball contents
           echo "=== Wrapper tarball contents ==="
           tar -tzf "$WRAPPER_TGZ"
 
           echo "=== Wrapper package.json ==="
           tar -xzf "$WRAPPER_TGZ" -O package/package.json
 
-          echo "=== Binary tarball contents ==="
-          tar -tzf "$BIN_TGZ"
-
           echo "=== Wrapper install.cjs ==="
           tar -xzf "$WRAPPER_TGZ" -O package/install.cjs | head -5
 
-          # Create a clean test directory
+          # Pack binary package
+          BIN_DIR="dist/publish-bin/${{ matrix.platform.key }}"
+          cd "$GITHUB_WORKSPACE/$BIN_DIR"
+          npm pack --quiet 2>/dev/null
+          BIN_TGZ="$(find . -name '*.tgz' -maxdepth 1 | head -1)"
+          echo "Binary tarball: $BIN_TGZ"
+
+          echo "=== Binary tarball contents ==="
+          tar -tzf "$BIN_TGZ"
+
+          # Create a clean test directory and copy tarballs there
           TEST_DIR="$RUNNER_TEMP/ola-cc-test"
           rm -rf "$TEST_DIR"
           mkdir -p "$TEST_DIR"
           cd "$TEST_DIR"
 
+          # Copy tarballs using find + cp to avoid path issues on Windows
+          cp "$GITHUB_WORKSPACE/dist/publish/$WRAPPER_TGZ" ./wrapper.tgz
+          cp "$GITHUB_WORKSPACE/$BIN_DIR/$BIN_TGZ" ./binary.tgz
+
           # Initialize minimal package.json
           echo '{"name":"test","private":true}' > package.json
 
-          # Install from tarballs with foreground-scripts to see lifecycle output
+          # Install from tarballs
           echo "=== Running npm install ==="
-          AUTHORIZED=1 npm install --foreground-scripts --no-save "$WRAPPER_TGZ" "$BIN_TGZ" 2>&1
+          AUTHORIZED=1 npm install --foreground-scripts --no-save ./wrapper.tgz ./binary.tgz 2>&1
 
           # Verify the binary was placed by postinstall
           if [[ "${{ matrix.platform.key }}" == win32-* ]]; then
