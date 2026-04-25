@@ -66,9 +66,8 @@ jobs:
           # musl platforms: requires actual musl system to build, skip for now
           # - { label: linux-x64-musl, runner: ubuntu-22.04,   key: linux-x64-musl, musl: true }
           # - { label: linux-arm64-musl, runner: ubuntu-24.04-arm, key: linux-arm64-musl, musl: true }
-          # NOTE: Windows temporarily disabled for faster iteration
-          # - { label: win32-x64,      runner: windows-latest, key: win32-x64 }
-          # - { label: win32-arm64,    runner: windows-11-arm, key: win32-arm64 }
+          - { label: win32-x64,      runner: windows-latest, key: win32-x64 }
+          - { label: win32-arm64,    runner: windows-11-arm, key: win32-arm64 }
 
     steps:
       - uses: actions/checkout@v4
