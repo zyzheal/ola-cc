@@ -97,11 +97,10 @@ jobs:
              bun install ---cache node_modules.cache; \
              bun run ./scripts/build-publish-bin.ts --only-bin || echo 'musl build skipped'"
 
-      # Windows: install pkg before building (npx uses local copy if available)
-      - name: Install pkg (Windows)
+      # Windows: build JS bundle package
+      - name: Build Windows JS bundle
         if: startsWith(matrix.platform.key, 'win32')
-        run: npm install @yao-pkg/pkg@6.18.1 --save-dev --no-save
-        shell: bash
+        run: bun run ./scripts/build-publish-bin.ts --only-bin
 
       # Native build for macOS/Linux, pkg build for Windows
       - name: Build platform binary
@@ -113,17 +112,11 @@ jobs:
         run: bun run ./scripts/build-publish-bin.ts --only-wrapper
 
       # ─── Test phase ──────────────────────────────────────
-      # Windows: test compiled .exe (or JS bundle fallback)
+      # Windows: test JS bundle
       - name: Test Windows binary
         if: startsWith(matrix.platform.key, 'win32')
         run: |
-          if [[ -f "dist/publish-bin/${{ matrix.platform.key }}/ola-cc.exe" ]]; then
-            echo "Found compiled .exe"
-            ./dist/publish-bin/${{ matrix.platform.key }}/ola-cc.exe --version
-          else
-            echo "Using JS bundle fallback"
-            node dist/publish-bin/${{ matrix.platform.key }}/cli.mjs --version
-          fi
+          node dist/publish-bin/${{ matrix.platform.key }}/cli.mjs --version
         shell: bash
 
       # macOS/Linux: test native binary

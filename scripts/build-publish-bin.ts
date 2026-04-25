@@ -361,9 +361,10 @@ function buildBinPackages() {
 
   // Windows: use JS bundle (cli.mjs) instead of compiled Bun binary.
   // Bun-compiled binaries are unstable on Windows (segfault issues).
+  // pkg also fails with ESM + external modules ("no bytecode" or "module not found").
   // The JS bundle runs reliably under Node.js on Windows.
   if (currentPlatform === 'win32') {
-    buildWindowsPackage(platformDir, currentKey, currentArch)
+    buildWindowsJsPackage(platformDir, currentKey, currentArch)
   } else {
     // macOS/Linux: compile native binary
     const compiledBinary = compileBinary()
@@ -456,9 +457,8 @@ function buildBinPackages() {
   generateBuildAllsScript()
 }
 
-// ─── Windows Package (pkg-compiled .exe) ───────────────────
-function buildWindowsPackage(platformDir: string, currentKey: string, currentArch: string) {
-  // Copy JS bundle from the publish build
+// ─── Windows Package (JS bundle) ────────────────────────────
+function buildWindowsJsPackage(platformDir: string, currentKey: string, currentArch: string) {
   const cliBundleSrc = join(process.cwd(), 'dist', 'publish', 'cli.mjs')
 
   if (!existsSync(cliBundleSrc)) {
@@ -466,102 +466,32 @@ function buildWindowsPackage(platformDir: string, currentKey: string, currentArc
     return
   }
 
-  // Compile .exe using @yao-pkg/pkg (active fork of pkg)
-  // pkg bundles the JS into a standalone Node.js executable
-  const exeOutput = join(platformDir, 'ola-cc.exe')
-  const nodeTarget = currentArch === 'arm64' ? 'node22-win-arm64' : 'node22-win-x64'
+  const cliBundleDest = join(platformDir, 'cli.mjs')
+  copyFileSync(cliBundleSrc, cliBundleDest)
+  const bundleSize = Bun.file(cliBundleDest).size
+  console.log(`[publish-bin] Windows JS bundle: ${(bundleSize / 1024 / 1024).toFixed(2)} MB`)
 
-  console.log(`[publish-bin] Compiling Windows .exe with pkg (${nodeTarget})...`)
-
-  // Use locally installed @yao-pkg/pkg (installed via CI step)
-  // Run pkg via node directly to avoid npx issues on Windows
-  const pkgBinPath = join(process.cwd(), 'node_modules', '@yao-pkg', 'pkg', 'lib-es5', 'bin.js')
-
-  if (!existsSync(pkgBinPath)) {
-    console.error('[publish-bin] pkg not found at', pkgBinPath)
-    // Fallback: copy JS bundle directly
-    console.error('[publish-bin] Falling back to JS bundle distribution')
-    const cliBundleDest = join(platformDir, 'cli.mjs')
-    copyFileSync(cliBundleSrc, cliBundleDest)
-    writeWindowsPackage(platformDir, currentKey, currentArch, false)
-    return
+  const platformPkg = {
+    name: `${packageName}-${currentKey}`,
+    version: publishVersion,
+    description: `Ola CC (Node.js bundle) for ${currentKey}`,
+    license: 'SEE LICENSE IN LICENSE.md',
+    os: ['win32'],
+    cpu: [currentArch],
+    bin: {
+      'ola-cc': './cli.mjs',
+    },
+    files: [
+      'cli.mjs',
+    ],
   }
 
-  const pkgCmd = [process.execPath, pkgBinPath, cliBundleSrc, '--target', nodeTarget, '--output', exeOutput, '--no-bytecode', '--public']
+  writeFileSync(
+    join(platformDir, 'package.json'),
+    JSON.stringify(platformPkg, null, 2) + '\n',
+  )
 
-  const pkgProc = Bun.spawnSync({
-    cmd: pkgCmd,
-    cwd: process.cwd(),
-    stdout: 'inherit',
-    stderr: 'inherit',
-    env: { ...process.env, PKG_CACHE_PATH: join(process.cwd(), '.pkg-cache') },
-  })
-
-  if (pkgProc.exitCode !== 0) {
-    console.error('[publish-bin] pkg compilation failed')
-    // Fallback: copy JS bundle directly
-    console.error('[publish-bin] Falling back to JS bundle distribution')
-    const cliBundleDest = join(platformDir, 'cli.mjs')
-    copyFileSync(cliBundleSrc, cliBundleDest)
-    writeWindowsPackage(platformDir, currentKey, currentArch, false)
-    return
-  }
-
-  const exeSize = Bun.file(exeOutput).size
-  console.log(`[publish-bin] Compiled Windows .exe: ${(exeSize / 1024 / 1024).toFixed(2)} MB`)
-  writeWindowsPackage(platformDir, currentKey, currentArch, true)
-}
-
-function writeWindowsPackage(platformDir: string, currentKey: string, currentArch: string, hasExe: boolean) {
-  if (hasExe) {
-    // Generate platform package.json with .exe binary
-    const platformPkg = {
-      name: `${packageName}-${currentKey}`,
-      version: publishVersion,
-      description: `Ola CC (compiled binary) for ${currentKey}`,
-      license: 'SEE LICENSE IN LICENSE.md',
-      os: ['win32'],
-      cpu: [currentArch],
-      bin: {
-        'ola-cc': './ola-cc.exe',
-      },
-      files: [
-        'ola-cc.exe',
-      ],
-    }
-
-    writeFileSync(
-      join(platformDir, 'package.json'),
-      JSON.stringify(platformPkg, null, 2) + '\n',
-    )
-
-    console.log(`[publish-bin] Windows platform package: ${currentKey} (compiled .exe)`)
-  } else {
-    // Fallback: JS bundle distribution
-    const platformPkg = {
-      name: `${packageName}-${currentKey}`,
-      version: publishVersion,
-      description: `Ola CC (Node.js bundle) for ${currentKey}`,
-      license: 'SEE LICENSE IN LICENSE.md',
-      os: ['win32'],
-      cpu: [currentArch],
-      bin: {
-        'ola-cc': './cli.mjs',
-      },
-      files: [
-        'cli.mjs',
-        'ola-cc.cmd',
-      ],
-    }
-
-    writeFileSync(
-      join(platformDir, 'package.json'),
-      JSON.stringify(platformPkg, null, 2) + '\n',
-    )
-
-    console.log(`[publish-bin] Windows platform package: ${currentKey} (JS bundle fallback)`)
-  }
-
+  console.log(`[publish-bin] Windows platform package: ${currentKey} (JS bundle)`)
   console.log(`  Output: ${platformDir}/`)
   console.log(`  To publish: cd ${platformDir} && npm publish`)
 }
