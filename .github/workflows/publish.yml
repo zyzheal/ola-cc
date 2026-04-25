@@ -147,20 +147,25 @@ jobs:
       - name: Test wrapper + binary integration
         run: |
           # Pack wrapper and binary packages into tarballs
-          echo "=== Packing wrapper ==="
-          WRAPPER_TGZ=$(cd dist/publish && npm pack 2>&1)
-          echo "npm pack output: $WRAPPER_TGZ"
-          WRAPPER_TGZ="dist/publish/$(echo "$WRAPPER_TGZ" | tail -1)"
+          WRAPPER_TGZ=$(cd dist/publish && npm pack 2>&1 | grep '\.tgz$' | head -1)
+          if [ -z "$WRAPPER_TGZ" ]; then
+            WRAPPER_TGZ=$(ls dist/publish/*.tgz 2>/dev/null | head -1)
+          fi
           echo "Wrapper tarball: $WRAPPER_TGZ"
-          ls -la "$WRAPPER_TGZ" || echo "TARBALL NOT FOUND"
 
           BIN_DIR="dist/publish-bin/${{ matrix.platform.key }}"
-          echo "=== Packing binary ==="
-          BIN_TGZ=$(cd "$BIN_DIR" && npm pack 2>&1)
-          echo "npm pack output: $BIN_TGZ"
-          BIN_TGZ="$BIN_DIR/$(echo "$BIN_TGZ" | tail -1)"
+          BIN_TGZ=$(cd "$BIN_DIR" && npm pack 2>&1 | grep '\.tgz$' | head -1)
+          if [ -z "$BIN_TGZ" ]; then
+            BIN_TGZ=$(ls "$BIN_DIR"/*.tgz 2>/dev/null | head -1)
+          fi
           echo "Binary tarball: $BIN_TGZ"
-          ls -la "$BIN_TGZ" || echo "TARBALL NOT FOUND"
+
+          # Show tarball contents
+          echo "=== Wrapper tarball contents ==="
+          tar -tzf "$GITHUB_WORKSPACE/$WRAPPER_TGZ" | head -30
+
+          echo "=== Binary tarball contents ==="
+          tar -tzf "$GITHUB_WORKSPACE/$BIN_TGZ" | head -10
 
           # Create a clean test directory
           TEST_DIR="$RUNNER_TEMP/ola-cc-test"
@@ -171,19 +176,15 @@ jobs:
           # Initialize minimal package.json
           echo '{"name":"test","private":true}' > package.json
 
-          # Install from tarballs — this triggers postinstall correctly
+          # Install from tarballs with foreground-scripts to see lifecycle output
           echo "=== Running npm install ==="
-          AUTHORIZED=1 npm install --no-save "$GITHUB_WORKSPACE/$WRAPPER_TGZ" "$GITHUB_WORKSPACE/$BIN_TGZ" 2>&1
+          AUTHORIZED=1 npm install --foreground-scripts --no-save "$GITHUB_WORKSPACE/$WRAPPER_TGZ" "$GITHUB_WORKSPACE/$BIN_TGZ" 2>&1
 
-          # Debug: show what was installed
-          echo "=== Installed packages ==="
-          ls -la node_modules/@zyzheal/ 2>/dev/null || echo "No @zyzheal packages found"
-          echo "=== Wrapper bin directory ==="
-          ls -la node_modules/@zyzheal/ola-cc/bin/ 2>/dev/null || echo "bin/ NOT found"
-          echo "=== Platform package ==="
+          # Debug output
+          echo "=== Installed wrapper files ==="
+          find node_modules/@zyzheal/ola-cc/ -type f 2>/dev/null | head -20
+          echo "=== Installed platform package ==="
           ls -la node_modules/@zyzheal/ola-cc-${{ matrix.platform.key }}/ 2>/dev/null || echo "platform package NOT found"
-          echo "=== postinstall debug log ==="
-          cat /tmp/ola-cc-postinstall.log 2>/dev/null || echo "No debug log found"
 
           # Verify the binary was placed by postinstall
           if [[ "${{ matrix.platform.key }}" == win32-* ]]; then
