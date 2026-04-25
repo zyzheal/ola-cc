@@ -198,11 +198,14 @@ jobs:
           if [[ "${{ matrix.platform.key }}" == win32-* ]]; then
             # On Windows, postinstall may install JS bundle fallback instead of .exe
             if [[ -f "node_modules/@zyzheal/ola-cc/bin/ola-cc.js" ]]; then
-              node node_modules/@zyzheal/ola-cc/bin/ola-cc.js --version
+              echo "Found bin/ola-cc.js, running with node..."
+              node "node_modules/@zyzheal/ola-cc/bin/ola-cc.js" --version
             elif [[ -f "node_modules/@zyzheal/ola-cc/bin/ola-cc.exe" ]]; then
+              echo "Found bin/ola-cc.exe, running..."
               ./node_modules/@zyzheal/ola-cc/bin/ola-cc.exe --version
             else
               echo "ERROR: No Windows binary found"
+              ls -la node_modules/@zyzheal/ola-cc/bin/ 2>/dev/null || true
               exit 1
             fi
           else
