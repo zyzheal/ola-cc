@@ -159,10 +159,16 @@ jobs:
 
           # Show tarball contents
           echo "=== Wrapper tarball contents ==="
-          tar -tzf "$WRAPPER_TGZ" | head -30
+          tar -tzf "$WRAPPER_TGZ"
+
+          echo "=== Wrapper package.json ==="
+          tar -xzf "$WRAPPER_TGZ" -O package/package.json
 
           echo "=== Binary tarball contents ==="
-          tar -tzf "$BIN_TGZ" | head -10
+          tar -tzf "$BIN_TGZ"
+
+          echo "=== Wrapper install.cjs ==="
+          tar -xzf "$WRAPPER_TGZ" -O package/install.cjs | head -5
 
           # Create a clean test directory
           TEST_DIR="$RUNNER_TEMP/ola-cc-test"
