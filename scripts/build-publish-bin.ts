@@ -473,12 +473,21 @@ function buildWindowsPackage(platformDir: string, currentKey: string, currentArc
 
   console.log(`[publish-bin] Compiling Windows .exe with pkg (${nodeTarget})...`)
 
-  // Use locally installed @yao-pkg/pkg (locked to version in CI)
-  // On Windows, resolve the .cmd wrapper for npx compatibility
-  const pkgBin = process.platform === 'win32'
-    ? 'npx.cmd'
-    : 'npx'
-  const pkgCmd = [pkgBin, '@yao-pkg/pkg@6.18.1', 'pkg', cliBundleSrc, '--target', nodeTarget, '--output', exeOutput]
+  // Use locally installed @yao-pkg/pkg (installed via CI step)
+  // Run pkg via node directly to avoid npx issues on Windows
+  const pkgBinPath = join(process.cwd(), 'node_modules', '@yao-pkg', 'pkg', 'lib-es5', 'bin.js')
+
+  if (!existsSync(pkgBinPath)) {
+    console.error('[publish-bin] pkg not found at', pkgBinPath)
+    // Fallback: copy JS bundle directly
+    console.error('[publish-bin] Falling back to JS bundle distribution')
+    const cliBundleDest = join(platformDir, 'cli.mjs')
+    copyFileSync(cliBundleSrc, cliBundleDest)
+    writeWindowsPackage(platformDir, currentKey, currentArch, false)
+    return
+  }
+
+  const pkgCmd = [process.execPath, pkgBinPath, cliBundleSrc, '--target', nodeTarget, '--output', exeOutput]
 
   const pkgProc = Bun.spawnSync({
     cmd: pkgCmd,
