@@ -359,12 +359,14 @@ function buildBinPackages() {
   const platformDir = join(binOutDir, currentKey)
   mkdirSync(platformDir, { recursive: true })
 
-  // Windows: use JS bundle (cli.mjs) instead of compiled Bun binary.
-  // Bun-compiled binaries are unstable on Windows (segfault issues).
-  // pkg also fails with ESM + external modules ("no bytecode" or "module not found").
-  // The JS bundle runs reliably under Node.js on Windows.
-  if (currentPlatform === 'win32') {
-    buildWindowsJsPackage(platformDir, currentKey, currentArch)
+  // macOS arm64: compile native binary
+  // macOS x64: use JS bundle (cross-compilation not supported by bun --compile)
+  // Linux: compile native binary
+  const isMacOSX64 = currentPlatform === 'darwin' && currentArch === 'x64'
+  const isWindows = currentPlatform === 'win32'
+
+  if (isMacOSX64 || isWindows) {
+    buildJsPackage(platformDir, currentKey, currentArch)
   } else {
     // macOS/Linux: compile native binary
     const compiledBinary = compileBinary()
@@ -457,8 +459,8 @@ function buildBinPackages() {
   generateBuildAllsScript()
 }
 
-// ─── Windows Package (JS bundle) ────────────────────────────
-function buildWindowsJsPackage(platformDir: string, currentKey: string, currentArch: string) {
+// ─── JS Bundle Package (for platforms without native compilation) ─────
+function buildJsPackage(platformDir: string, currentKey: string, currentArch: string) {
   const cliBundleSrc = join(process.cwd(), 'dist', 'publish', 'cli.mjs')
 
   if (!existsSync(cliBundleSrc)) {
@@ -469,14 +471,14 @@ function buildWindowsJsPackage(platformDir: string, currentKey: string, currentA
   const cliBundleDest = join(platformDir, 'cli.mjs')
   copyFileSync(cliBundleSrc, cliBundleDest)
   const bundleSize = Bun.file(cliBundleDest).size
-  console.log(`[publish-bin] Windows JS bundle: ${(bundleSize / 1024 / 1024).toFixed(2)} MB`)
+  console.log(`[publish-bin] JS bundle (${currentKey}): ${(bundleSize / 1024 / 1024).toFixed(2)} MB`)
 
   const platformPkg = {
     name: `${packageName}-${currentKey}`,
     version: publishVersion,
     description: `Ola CC (Node.js bundle) for ${currentKey}`,
     license: 'SEE LICENSE IN LICENSE.md',
-    os: ['win32'],
+    os: [currentPlatform === 'darwin' ? 'darwin' : currentPlatform === 'win32' ? 'win32' : 'linux'],
     cpu: [currentArch],
     bin: {
       'ola-cc': './cli.mjs',
@@ -491,7 +493,7 @@ function buildWindowsJsPackage(platformDir: string, currentKey: string, currentA
     JSON.stringify(platformPkg, null, 2) + '\n',
   )
 
-  console.log(`[publish-bin] Windows platform package: ${currentKey} (JS bundle)`)
+  console.log(`[publish-bin] Platform package: ${currentKey} (JS bundle)`)
   console.log(`  Output: ${platformDir}/`)
   console.log(`  To publish: cd ${platformDir} && npm publish`)
 }

@@ -60,14 +60,14 @@ jobs:
       matrix:
         platform:
           - { label: darwin-arm64,   runner: macos-14,       key: darwin-arm64 }
-          - { label: darwin-x64,     runner: macos-13,       key: darwin-x64 }
+          - { label: darwin-x64,     runner: macos-14,       key: darwin-x64, jsbundle: true }
           - { label: linux-x64,      runner: ubuntu-22.04,   key: linux-x64 }
           - { label: linux-arm64,    runner: ubuntu-24.04-arm, key: linux-arm64 }
           # musl platforms: requires actual musl system to build, skip for now
           # - { label: linux-x64-musl, runner: ubuntu-22.04,   key: linux-x64-musl, musl: true }
           # - { label: linux-arm64-musl, runner: ubuntu-24.04-arm, key: linux-arm64-musl, musl: true }
-          - { label: win32-x64,      runner: windows-latest, key: win32-x64 }
-          - { label: win32-arm64,    runner: windows-11-arm, key: win32-arm64 }
+          - { label: win32-x64,      runner: windows-latest, key: win32-x64, jsbundle: true }
+          - { label: win32-arm64,    runner: windows-11-arm, key: win32-arm64, jsbundle: true }
 
     steps:
       - uses: actions/checkout@v4
@@ -97,14 +97,14 @@ jobs:
              bun install ---cache node_modules.cache; \
              bun run ./scripts/build-publish-bin.ts --only-bin || echo 'musl build skipped'"
 
-      # Windows: build JS bundle package
-      - name: Build Windows JS bundle
-        if: startsWith(matrix.platform.key, 'win32')
+      # JS bundle platforms: darwin-x64 (no cross-compile) and win32 (pkg unreliable)
+      - name: Build JS bundle package
+        if: matrix.platform.jsbundle
         run: bun run ./scripts/build-publish-bin.ts --only-bin
 
-      # Native build for macOS/Linux, pkg build for Windows
+      # Native build for macOS arm64 and Linux
       - name: Build platform binary
-        if: "!matrix.platform.musl"
+        if: "!matrix.platform.musl && !matrix.platform.jsbundle"
         run: bun run ./scripts/build-publish-bin.ts --only-bin
 
       # Build wrapper package.json for integration test
@@ -112,16 +112,16 @@ jobs:
         run: bun run ./scripts/build-publish-bin.ts --only-wrapper
 
       # ─── Test phase ──────────────────────────────────────
-      # Windows: test JS bundle
-      - name: Test Windows binary
-        if: startsWith(matrix.platform.key, 'win32')
+      # JS bundle platforms: darwin-x64 and win32
+      - name: Test JS bundle binary
+        if: matrix.platform.jsbundle
         run: |
           node dist/publish-bin/${{ matrix.platform.key }}/cli.mjs --version
         shell: bash
 
-      # macOS/Linux: test native binary
+      # macOS arm64/Linux: test native binary
       - name: Test native binary
-        if: "!startsWith(matrix.platform.key, 'win32')"
+        if: "!matrix.platform.musl && !matrix.platform.jsbundle"
         run: |
           ./dist/publish-bin/${{ matrix.platform.key }}/ola-cc --version
         shell: bash
@@ -188,20 +188,13 @@ jobs:
           AUTHORIZED=1 npm install --foreground-scripts --no-save ./wrapper.tgz ./binary.tgz 2>&1
 
           # Verify the binary was placed by postinstall
-          if [[ "${{ matrix.platform.key }}" == win32-* ]]; then
-            # On Windows, the JS bundle (cli.mjs) is the working binary
+          # JS bundle platforms (darwin-x64, win32): cli.mjs is in the binary package
+          if [[ "${{ matrix.platform.jsbundle }}" == "true" ]]; then
             if [[ -f "node_modules/@zyzheal/ola-cc/cli.mjs" ]]; then
-              echo "Running cli.mjs directly..."
               node "node_modules/@zyzheal/ola-cc/cli.mjs" --version
-            elif [[ -f "node_modules/@zyzheal/ola-cc/bin/ola-cc.js" ]]; then
-              echo "Running bin/ola-cc.js..."
-              node "node_modules/@zyzheal/ola-cc/bin/ola-cc.js" --version
-            elif [[ -f "node_modules/@zyzheal/ola-cc/bin/ola-cc.exe" ]]; then
-              echo "Running bin/ola-cc.exe..."
-              ./node_modules/@zyzheal/ola-cc/bin/ola-cc.exe --version
             else
-              echo "ERROR: No Windows binary found"
-              ls -la node_modules/@zyzheal/ola-cc/bin/ 2>/dev/null || true
+              echo "ERROR: cli.mjs not found"
+              ls -la node_modules/@zyzheal/ola-cc/ 2>/dev/null || true
               exit 1
             fi
           else
