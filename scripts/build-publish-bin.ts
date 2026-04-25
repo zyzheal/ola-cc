@@ -31,6 +31,7 @@
 
 import { mkdirSync, cpSync, writeFileSync, chmodSync, existsSync, readFileSync, copyFileSync } from 'fs'
 import { join } from 'path'
+import { PUBLISH_PACKAGE_NAME } from './publish-config.ts'
 
 const pkg = await Bun.file(new URL('../package.json', import.meta.url)).json() as {
   name: string
@@ -43,7 +44,7 @@ const onlyBin = args.includes('--only-bin')
 
 // ─── Version ───────────────────────────────────────────────
 const publishVersion = pkg.version
-const packageName = '@zyzheal/ola-cc'
+const packageName = PUBLISH_PACKAGE_NAME
 
 // ─── Platform Definitions ──────────────────────────────────
 const PLATFORMS = [

@@ -31,7 +31,11 @@
     "publish:npm": "cd dist/publish && npm publish",
     "build:bin": "bun run ./scripts/build-publish-bin.ts",
     "build:bin:wrapper": "bun run ./scripts/build-publish-bin.ts --only-wrapper",
-    "build:bin:platform": "bun run ./scripts/build-publish-bin.ts --only-bin"
+    "build:bin:platform": "bun run ./scripts/build-publish-bin.ts --only-bin",
+    "version:bump": "bun run ./scripts/bump-version.ts",
+    "version:bump:patch": "bun run ./scripts/bump-version.ts patch",
+    "version:bump:minor": "bun run ./scripts/bump-version.ts minor",
+    "version:bump:major": "bun run ./scripts/bump-version.ts major"
   },
   "dependencies": {
     "@alcalzone/ansi-tokenize": "^0.2.4",
