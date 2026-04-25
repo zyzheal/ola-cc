@@ -1,0 +1,72 @@
+# Gitee Go 流水线配置
+# 用于构建多平台产物并发布到 npm
+
+version: '1.0'
+name: publish-npm
+displayName: 发布到NPM仓库
+
+stages:
+  - stage:
+      name: build-stage
+      displayName: 构建
+      strategy: naturally
+      trigger: manual
+      steps:
+        - step: checkout
+          name: checkout
+          uses: checkout@0.0.1
+          with:
+            submodules: false
+
+        - step: shell
+          name: setup
+          displayName: 安装Bun
+          script: |
+            curl -fsSL https://bun.sh/install | bash
+            export PATH="$HOME/.bun/bin:$PATH"
+            bun --version
+
+        - step: shell
+          name: build-all
+          displayName: 构建所有平台产物
+          script: |
+            export PATH="$HOME/.bun/bin:$PATH"
+
+            # 安装依赖
+            bun install
+
+            # 构建 wrapper + JS bundle
+            bun run ./scripts/build-publish.ts --publish
+
+            # 构建 darwin-arm64 原生二进制
+            bun run ./scripts/build-publish-bin.ts --only-bin
+
+            echo "构建完成"
+
+        - step: shell
+          name: publish
+          displayName: 发布到NPM
+          script: |
+            export PATH="$HOME/.bun/bin:$PATH"
+
+            # 发布 wrapper
+            cd dist/publish
+            AUTHORIZED=1 npm publish --access public
+            cd ../..
+
+            # 发布平台包
+            for dir in dist/publish-bin/*/; do
+              cd "$dir"
+              echo "Publishing $(pwd)..."
+              AUTHORIZED=1 npm publish --access public
+              cd "$GITEE_WORKSPACE"
+            done
+
+            echo "发布完成"
+          env:
+            NPM_TOKEN: ${NPM_TOKEN}
+
+triggers:
+  push:
+    tags:
+      - 'v*'
