@@ -341,9 +341,9 @@ function buildBinPackages() {
   const binOutDir = './dist/publish-bin'
   mkdirSync(binOutDir, { recursive: true })
 
-  // Determine current platform key
-  const currentPlatform = process.platform
-  const currentArch = process.arch
+  // Allow platform override for cross-compilation (e.g. darwin-x64 on darwin-arm64 runner)
+  const currentPlatform = process.env.BUILD_PUBLISH_BIN_PLATFORM || process.platform
+  const currentArch = process.env.BUILD_PUBLISH_BIN_ARCH || process.arch
   const isMusl = detectMusl()
   const currentKey = currentPlatform === 'linux'
     ? `linux-${currentArch}${isMusl ? '-musl' : ''}`
@@ -366,7 +366,7 @@ function buildBinPackages() {
   const isWindows = currentPlatform === 'win32'
 
   if (isMacOSX64 || isWindows) {
-    buildJsPackage(platformDir, currentKey, currentArch)
+    buildJsPackage(platformDir, currentKey, currentArch, currentPlatform)
   } else {
     // macOS/Linux: compile native binary
     const compiledBinary = compileBinary()
@@ -460,7 +460,7 @@ function buildBinPackages() {
 }
 
 // ─── JS Bundle Package (for platforms without native compilation) ─────
-function buildJsPackage(platformDir: string, currentKey: string, currentArch: string) {
+function buildJsPackage(platformDir: string, currentKey: string, currentArch: string, plat: string) {
   const cliBundleSrc = join(process.cwd(), 'dist', 'publish', 'cli.mjs')
 
   if (!existsSync(cliBundleSrc)) {
@@ -473,12 +473,13 @@ function buildJsPackage(platformDir: string, currentKey: string, currentArch: st
   const bundleSize = Bun.file(cliBundleDest).size
   console.log(`[publish-bin] JS bundle (${currentKey}): ${(bundleSize / 1024 / 1024).toFixed(2)} MB`)
 
+  const osName = plat === 'darwin' ? 'darwin' : plat === 'win32' ? 'win32' : 'linux'
   const platformPkg = {
     name: `${packageName}-${currentKey}`,
     version: publishVersion,
     description: `Ola CC (Node.js bundle) for ${currentKey}`,
     license: 'SEE LICENSE IN LICENSE.md',
-    os: [currentPlatform === 'darwin' ? 'darwin' : currentPlatform === 'win32' ? 'win32' : 'linux'],
+    os: [osName],
     cpu: [currentArch],
     bin: {
       'ola-cc': './cli.mjs',
