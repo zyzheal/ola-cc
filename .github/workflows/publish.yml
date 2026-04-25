@@ -109,6 +109,10 @@ jobs:
         if: "!matrix.platform.musl"
         run: bun run ./scripts/build-publish-bin.ts --only-bin
 
+      # Build wrapper package.json for integration test
+      - name: Build wrapper for integration test
+        run: bun run ./scripts/build-publish-bin.ts --only-wrapper
+
       # ─── Test phase ──────────────────────────────────────
       # Windows: test compiled .exe (or JS bundle fallback)
       - name: Test Windows binary
