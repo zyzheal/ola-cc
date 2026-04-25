@@ -14,6 +14,7 @@
 
 import { mkdirSync, cpSync, writeFileSync, chmodSync } from 'fs'
 import { join } from 'path'
+import { PUBLISH_PACKAGE_NAME } from './publish-config.ts'
 
 const pkg = await Bun.file(new URL('../package.json', import.meta.url)).json() as {
   name: string
@@ -178,7 +179,7 @@ console.log(`[publish-build] cli.mjs: ${(size / 1024 / 1024).toFixed(2)} MB`)
 
 // ─── Generate publish package.json ──────────────────────────
 const publishPkg = {
-  name: '@zyzheal/ola-cc',
+  name: PUBLISH_PACKAGE_NAME,
   version: publishVersion,
   description: 'Claude Code - AI coding assistant in your terminal',
   license: 'SEE LICENSE IN LICENSE.md',
@@ -372,9 +373,13 @@ if (buildVscode) {
   const vscodeDir = join(process.cwd(), 'vscode-extension')
   const vscePkgPath = join(vscodeDir, 'package.json')
   const vscePkg = await Bun.file(vscePkgPath).json()
-  vscePkg.version = publishVersion
-  await Bun.write(vscePkgPath, JSON.stringify(vscePkg, null, 2) + '\n')
+  const originalVersion = vscePkg.version
 
+  // Write modified version to a temp copy to avoid polluting source file
+  const vscePkgModified = { ...vscePkg, version: publishVersion }
+  await Bun.write(vscePkgPath, JSON.stringify(vscePkgModified, null, 2) + '\n')
+
+  try {
   // Build
   const buildProc = Bun.spawnSync({
     cmd: ['bun', 'run', 'build'],
@@ -420,4 +425,9 @@ if (buildVscode) {
   }
 
   console.log(`[publish] VSIX: ${join(outDir, '..', `claude-code-vscode-${publishVersion}.vsix`)}`)
+  } finally {
+    // Restore original package.json to avoid polluting source file
+    vscePkg.version = originalVersion
+    await Bun.write(vscePkgPath, JSON.stringify(vscePkg, null, 2) + '\n')
+  }
 }

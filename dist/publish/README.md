@@ -139,40 +139,6 @@ Ola CC 的配置存储在 `~/.claude/` 目录中。
 | `CLAUDE_CHROME_HTTP` | 启用 Chrome HTTP 桥接（1=启用） | 否 |
 | `CLAUDE_CHROME_HTTP_PORT` | HTTP 桥接端口（默认 12306） | 否 |
 
-#### 模型配置环境变量
-
-以下环境变量用于配置各个模型的实际名称，适用于代理端点（如 DashScope、LiteLLM 等）：
-
-| 变量 | 说明 | 默认值 |
-|------|------|--------|
-| `CLAUDE_CODE_MODEL_HAIKU_35` | Haiku 3.5 模型名 | `haiku-3-5` |
-| `CLAUDE_CODE_MODEL_HAIKU_45` | Haiku 4.5 模型名 | `haiku-4-5` |
-| `CLAUDE_CODE_MODEL_SONNET_35` | Sonnet 3.5 模型名 | `sonnet-3-5` |
-| `CLAUDE_CODE_MODEL_SONNET_37` | Sonnet 3.7 模型名 | `sonnet-3-7` |
-| `CLAUDE_CODE_MODEL_SONNET_40` | Sonnet 4.0 模型名 | `sonnet-4` |
-| `CLAUDE_CODE_MODEL_SONNET_45` | Sonnet 4.5 模型名 | `sonnet-4-5` |
-| `CLAUDE_CODE_MODEL_SONNET_46` | Sonnet 4.6 模型名 | `sonnet-4-6` |
-| `CLAUDE_CODE_MODEL_OPUS_40` | Opus 4.0 模型名 | `opus-4` |
-| `CLAUDE_CODE_MODEL_OPUS_41` | Opus 4.1 模型名 | `opus-4-1` |
-| `CLAUDE_CODE_MODEL_OPUS_45` | Opus 4.5 模型名 | `opus-4-5` |
-| `CLAUDE_CODE_MODEL_OPUS_46` | Opus 4.6 模型名 | `opus-4-6` |
-| `ANTHROPIC_DEFAULT_HAIKU_MODEL` | 默认 Haiku 模型（覆盖上述） | - |
-
-**示例：配置 DashScope 端点**
-
-```json
-{
-  "env": {
-    "OPENAI_API_KEY": "sk-xxx",
-    "OPENAI_BASE_URL": "https://dashscope.aliyuncs.com/compatible-mode/v1",
-    "CLAUDE_CODE_USE_OPENAI": "1",
-    "CLAUDE_CODE_MODEL_HAIKU_45": "qwen-plus",
-    "CLAUDE_CODE_MODEL_SONNET_46": "qwen-plus",
-    "CLAUDE_CODE_MODEL_OPUS_46": "qwen-max"
-  }
-}
-```
-
 #### model 字段 — 模型选择
 
 ```json
