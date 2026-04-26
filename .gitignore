@@ -15,3 +15,15 @@ cli-dev
 dist/publish/cli.mjs
 dist/publish/cli.js
 dist/publish/vendor/
+dist/publish/ola-cc-temp
+dist/publish-bin/
+dist/publish/package.json
+dist/publish/README.md
+dist/publish/sdk-tools.d.ts
+dist/publish/LICENSE.md
+dist/publish/install.cjs
+dist/publish/cli-wrapper.cjs
+dist/publish/bin/
+
+# Dev tools
+.superpowers/
