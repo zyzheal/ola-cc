@@ -25,10 +25,17 @@ export function registerCleanup(cleanupFn: () => Promise<void>): () => void {
  * Set size to zero after shutdown completes (no memory leak in daemon mode).
  * Failures in one cleanup function are logged but do not prevent others
  * from running.
+ *
+ * **Important**: If a cleanup function registers additional cleanup functions
+ * *during* shutdown, those newly registered functions will NOT be executed,
+ * because the Set is cleared before execution begins. This is intentional —
+ * shutdown should be a single pass, not an open-ended chain.
  */
 export async function runCleanupFunctions(): Promise<void> {
   const fns = Array.from(cleanupFunctions)
-  cleanupFunctions.clear() // One-shot: remove all so repeated shutdown signals don't re-run
+  cleanupFunctions.clear() // One-shot: snapshot + clear before execution.
+                          // Any cleanup functions registered during this call
+                          // will NOT run — shutdown is a single pass.
 
   const results = await Promise.allSettled(fns.map(fn => fn()))
   const rejections = results.filter((r): r is PromiseRejectedResult => r.status === 'rejected')
