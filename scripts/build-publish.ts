@@ -40,7 +40,14 @@ if (binaryMode) {
 }
 
 // ─── Feature Flags ───────────────────────────────────────────
-const defaultFeatures = ['VOICE_MODE', 'BUDDY']
+const defaultFeatures = [
+  'VOICE_MODE', 'BUDDY', 'AGENT_TRIGGERS',
+  'QUICK_SEARCH', 'MESSAGE_ACTIONS', 'HOOK_PROMPTS',
+  'NEW_INIT', 'TOKEN_BUDGET', 'ULTRATHINK',
+  'TREE_SITTER_BASH', 'BASH_CLASSIFIER', 'POWERSHELL_AUTO_MODE',
+  'UNATTENDED_RETRY', 'LODESTONE', 'COMPACTION_REMINDERS',
+  'SHOT_STATS', 'EXTRACT_MEMORIES', 'TEAMMEM',
+]
 const featureSet = new Set(defaultFeatures)
 
 const fullExperimentalFeatures = [

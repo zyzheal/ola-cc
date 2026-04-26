@@ -80,7 +80,31 @@ function getVersionChangelog(): string {
   )
 }
 
-const defaultFeatures = ['VOICE_MODE', 'BUDDY', 'AGENT_TRIGGERS']
+const defaultFeatures = [
+  // Core features
+  'VOICE_MODE',
+  'BUDDY',
+  'AGENT_TRIGGERS',
+  // Prompt & UX improvements (all 100% implemented)
+  'QUICK_SEARCH',       // Global ripgrep search + FuzzyPicker
+  'MESSAGE_ACTIONS',    // Message edit/copy/expand/collapse toolbar
+  'HOOK_PROMPTS',       // Hook prompt injection in REPL
+  'NEW_INIT',           // 8-stage initialization flow
+  'TOKEN_BUDGET',       // Token budget tracking + progress bar
+  'ULTRATHINK',         // Deep thinking mode + keyword detection
+  // Security & reliability
+  'TREE_SITTER_BASH',   // tree-sitter AST parsing of bash commands
+  'BASH_CLASSIFIER',    // AI classification of bash command safety
+  'POWERSHELL_AUTO_MODE', // PowerShell auto-mode support
+  'UNATTENDED_RETRY',   // Unattended retry with exponential backoff
+  // Collaboration & remote
+  'LODESTONE',          // Deep link URI handling (10+ terminals)
+  'COMPACTION_REMINDERS', // Context compaction reminders
+  'SHOT_STATS',         // API retry distribution stats
+  // Memory & context (require OAuth backend)
+  'EXTRACT_MEMORIES',   // Auto memory extraction (forked agent)
+  'TEAMMEM',            // Team memory sync system
+]
 const featureSet = new Set(defaultFeatures)
 for (let i = 0; i < args.length; i += 1) {
   const arg = args[i]
