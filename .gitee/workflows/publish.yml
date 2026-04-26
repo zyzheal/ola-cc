@@ -49,6 +49,9 @@ stages:
           script: |
             export PATH="$HOME/.bun/bin:$PATH"
 
+            # 设置 npm 认证
+            npm config set "//registry.npmjs.org/:_authToken" "${NPM_TOKEN}"
+
             # 发布 wrapper
             cd dist/publish
             AUTHORIZED=1 npm publish --access public
