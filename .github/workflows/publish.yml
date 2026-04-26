@@ -142,8 +142,23 @@ jobs:
           fi
         shell: bash
 
-      # Integration test: simulate real npm install from packed tarballs
+      # Integration test: darwin-x64 JS bundle (cross-platform on arm64 runner)
+      # Note: Cannot fully simulate darwin-x64 npm install on arm64 runner,
+      # since install.cjs detects the runner's actual platform (darwin-arm64).
+      # Just verify the JS bundle is valid.
+      - name: Test darwin-x64 JS bundle
+        if: matrix.platform.key == 'darwin-x64'
+        run: |
+          set -e
+          BIN_DIR="dist/publish-bin/${{ matrix.platform.key }}"
+          echo "=== darwin-x64 binary package contents ==="
+          ls -la "$BIN_DIR/"
+          echo "=== Testing JS bundle ==="
+          node "$BIN_DIR/cli.mjs" --version
+
+      # Integration test: simulate real npm install from packed tarballs (all other platforms)
       - name: Test wrapper + binary integration
+        if: matrix.platform.key != 'darwin-x64'
         run: |
           set -e
 
@@ -187,9 +202,8 @@ jobs:
           echo '{"name":"test","private":true}' > package.json
 
           # Install from tarballs
-          # For JS bundle platforms (darwin-x64 on arm64 runner), --force skips os/cpu platform check
           echo "=== Running npm install ==="
-          AUTHORIZED=1 npm install --foreground-scripts --no-save --force ./wrapper.tgz ./binary.tgz 2>&1
+          AUTHORIZED=1 npm install --foreground-scripts --no-save ./wrapper.tgz ./binary.tgz 2>&1
 
           # Verify the binary was placed by postinstall
           # All platforms: use bin/ola-cc.js which delegates to native binary or JS bundle
