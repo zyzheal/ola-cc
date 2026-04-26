@@ -238,6 +238,9 @@ if (fs.existsSync(nativeBin)) {
   try { childProcess.execFileSync(nativeBin, process.argv.slice(2), { stdio: 'inherit' }); process.exit(0) }
   catch (err) { if (err.code !== 'ENOENT') process.exit(err.status || 1) }
 }
+// Try JS bundle in the same bin directory (for JS bundle platforms like darwin-x64)
+var localJs = path.join(binDir, 'cli.mjs')
+if (fs.existsSync(localJs)) { childProcess.execFileSync(process.execPath, [localJs].concat(process.argv.slice(2)), { stdio: 'inherit' }); process.exit(0) }
 // Fall back to JS bundle from optionalDependencies platform package
 try {
   var platKey = process.platform + '-' + process.arch
