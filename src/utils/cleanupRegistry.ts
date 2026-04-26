@@ -19,7 +19,20 @@ export function registerCleanup(cleanupFn: () => Promise<void>): () => void {
 /**
  * Run all registered cleanup functions.
  * Used internally by gracefulShutdown.
+ *
+ * Each cleanup function is executed once and then removed from the registry.
+ * This prevents double-execution on repeated shutdown signals and bounds the
+ * Set size to zero after shutdown completes (no memory leak in daemon mode).
+ * Failures in one cleanup function are logged but do not prevent others
+ * from running.
  */
 export async function runCleanupFunctions(): Promise<void> {
-  await Promise.all(Array.from(cleanupFunctions).map(fn => fn()))
+  const fns = Array.from(cleanupFunctions)
+  cleanupFunctions.clear() // One-shot: remove all so repeated shutdown signals don't re-run
+
+  const results = await Promise.allSettled(fns.map(fn => fn()))
+  const rejections = results.filter((r): r is PromiseRejectedResult => r.status === 'rejected')
+  for (const r of rejections) {
+    console.error('Cleanup function failed:', r.reason)
+  }
 }
