@@ -221,9 +221,7 @@ jobs:
     name: Publish to npm
     needs: [wrapper, platform-binary]
     runs-on: ubuntu-latest
-    if: >-
-      (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) ||
-      (github.event_name == 'workflow_dispatch' && github.event.inputs.publish == 'true')
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     steps:
       - uses: actions/checkout@v4
         with:
@@ -268,7 +266,6 @@ jobs:
           for dir in dist/publish-bin/*/; do
             cd "$dir"
             echo "Publishing $(pwd)..."
-            echo "@zyzheal:registry=https://registry.npmjs.org/" >> .npmrc
             echo "//registry.npmjs.org/:_authToken=${{ secrets.NPM_TOKEN }}" >> .npmrc
             AUTHORIZED=1 npm publish --access public
             cd "$GITHUB_WORKSPACE"
