@@ -192,18 +192,8 @@ jobs:
           AUTHORIZED=1 npm install --foreground-scripts --no-save --force ./wrapper.tgz ./binary.tgz 2>&1
 
           # Verify the binary was placed by postinstall
-          # JS bundle platforms (darwin-x64, win32): cli.mjs is in the binary package
-          if [[ "${{ matrix.platform.jsbundle }}" == "true" ]]; then
-            if [[ -f "node_modules/@zyzheal/ola-cc/cli.mjs" ]]; then
-              node "node_modules/@zyzheal/ola-cc/cli.mjs" --version
-            else
-              echo "ERROR: cli.mjs not found"
-              ls -la node_modules/@zyzheal/ola-cc/ 2>/dev/null || true
-              exit 1
-            fi
-          else
-            ./node_modules/@zyzheal/ola-cc/bin/ola-cc --version
-          fi
+          # All platforms: use bin/ola-cc.js which delegates to native binary or JS bundle
+          ./node_modules/@zyzheal/ola-cc/bin/ola-cc --version
 
           # Cleanup
           rm -rf "$TEST_DIR"
