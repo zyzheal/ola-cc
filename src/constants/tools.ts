@@ -95,10 +95,7 @@ export const IN_PROCESS_TEAMMATE_ALLOWED_TOOLS = new Set([
  * - TaskStopTool: Requires access to main thread task state.
  * - TungstenTool: Uses singleton virtual terminal abstraction that conflicts between agents.
  *
- * ENABLE LATER (NEED WORK):
- * - MCPTool: TBD
- * - ListMcpResourcesTool: TBD
- * - ReadMcpResourceTool: TBD
+ * Note: MCP tools (mcp__*) are allowed for async agents — see filterToolsForAgent().
  */
 
 /**
