@@ -17,7 +17,6 @@ import { createStore } from '../state/store.js'
 import type { SDKMessage } from '../entrypoints/sdk/coreTypes.js'
 import { asSessionId } from '../types/ids.js'
 import { FileStateCache, READ_FILE_STATE_CACHE_SIZE } from '../utils/fileStateCache.js'
-import { createToolUseContext } from '../utils/forkedAgent.js'
 import type { PermissionDecision } from '../utils/permissions/PermissionResult.js'
 import type { Tool, ToolUseContext } from '../Tool.js'
 
@@ -152,6 +151,11 @@ export function createHeadlessQuery(options: HeadlessQueryOptions): HeadlessQuer
     signal.addEventListener('abort', () => abortController.abort(), { once: true })
   }
 
+  // Register global error handler for headless mode (bypasses init.ts).
+  // Placed at function top-level so handlers are active even if consumer
+  // creates a query but never iterates the generator.
+  registerHeadlessErrorHandlers()
+
   return {
     async *messages() {
 
@@ -162,8 +166,7 @@ export function createHeadlessQuery(options: HeadlessQueryOptions): HeadlessQuer
       ;(globalThis as Record<string, unknown>).__CLAUDE_CODE_PROJECT_ROOT = cwd
       ;(globalThis as Record<string, unknown>).__CLAUDE_CODE_IS_NON_INTERACTIVE = true
 
-      // 2.5 Register global error handler for headless mode (bypasses init.ts)
-      registerHeadlessErrorHandlers()
+      // 2.5 Error handlers already registered at function top-level
 
       // 3. Create state store
       const { getAppState, setAppState } = createHeadlessStore()
