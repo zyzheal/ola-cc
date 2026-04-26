@@ -259,13 +259,6 @@ process.exit(1)
   chmodSync(binJsPath, 0o755)
   console.log('[publish-bin] bin/ola-cc.js created')
 
-  // Create placeholder bin
-  const placeholderBin = join(outDir, 'bin', 'ola-cc.exe')
-  if (!existsSync(placeholderBin)) {
-    writeFileSync(placeholderBin, `#!/bin/sh\necho "Error: ola-cc native binary not installed."\necho "Run the postinstall script: node install.cjs"\nexit 1\n`)
-    chmodSync(placeholderBin, 0o755)
-  }
-
   // Generate wrapper package.json
   const wrapperPkg = {
     name: packageName,
@@ -299,7 +292,6 @@ process.exit(1)
       [`${packageName}-win32-arm64`]: publishVersion,
     },
     files: [
-      'bin/ola-cc.exe',
       'bin/ola-cc.js',
       'install.cjs',
       'cli-wrapper.cjs',
@@ -365,16 +357,14 @@ function buildBinPackages() {
   const platformDir = join(binOutDir, currentKey)
   mkdirSync(platformDir, { recursive: true })
 
-  // macOS arm64: compile native binary
   // macOS x64: use JS bundle (cross-compilation not supported by bun --compile)
-  // Linux: compile native binary
+  // All other platforms: compile native binary
   const isMacOSX64 = currentPlatform === 'darwin' && currentArch === 'x64'
-  const isWindows = currentPlatform === 'win32'
 
-  if (isMacOSX64 || isWindows) {
+  if (isMacOSX64) {
     buildJsPackage(platformDir, currentKey, currentArch, currentPlatform)
   } else {
-    // macOS/Linux: compile native binary
+    // macOS arm64/Linux/Windows: compile native binary
     const compiledBinary = compileBinary()
     if (!compiledBinary) {
       console.error('[publish-bin] Failed to compile binary, skipping platform packages')

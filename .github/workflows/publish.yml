@@ -66,8 +66,8 @@ jobs:
           # musl platforms: requires actual musl system to build, skip for now
           # - { label: linux-x64-musl, runner: ubuntu-22.04,   key: linux-x64-musl, musl: true }
           # - { label: linux-arm64-musl, runner: ubuntu-24.04-arm, key: linux-arm64-musl, musl: true }
-          - { label: win32-x64,      runner: windows-latest, key: win32-x64, jsbundle: true }
-          - { label: win32-arm64,    runner: windows-11-arm, key: win32-arm64, jsbundle: true }
+          - { label: win32-x64,      runner: windows-latest, key: win32-x64 }
+          - { label: win32-arm64,    runner: windows-11-arm, key: win32-arm64 }
 
     steps:
       - uses: actions/checkout@v4
@@ -115,16 +115,16 @@ jobs:
         run: bun run ./scripts/build-publish-bin.ts --only-wrapper
 
       # ─── Test phase ──────────────────────────────────────
-      # JS bundle platforms: darwin-x64 and win32
-      - name: Test JS bundle binary
-        if: matrix.platform.jsbundle
+      # Windows: test native .exe binary
+      - name: Test Windows binary
+        if: startsWith(matrix.platform.key, 'win32')
         run: |
-          node dist/publish-bin/${{ matrix.platform.key }}/cli.mjs --version
+          ./dist/publish-bin/${{ matrix.platform.key }}/ola-cc --version
         shell: bash
 
       # macOS arm64/Linux: test native binary
       - name: Test native binary
-        if: "!matrix.platform.musl && !matrix.platform.jsbundle"
+        if: "!matrix.platform.musl && !matrix.platform.jsbundle && !startsWith(matrix.platform.key, 'win32')"
         run: |
           ./dist/publish-bin/${{ matrix.platform.key }}/ola-cc --version
         shell: bash
