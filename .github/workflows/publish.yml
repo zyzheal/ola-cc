@@ -239,6 +239,7 @@ jobs:
       - name: Reconstruct package structure
         run: |
           # Wrapper
+          mkdir -p dist/publish
           cp -r dist/artifacts/wrapper-package/* dist/publish/
 
           # Binary packages
