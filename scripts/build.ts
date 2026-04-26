@@ -104,6 +104,8 @@ const defaultFeatures = [
   // Memory & context (require OAuth backend)
   'EXTRACT_MEMORIES',   // Auto memory extraction (forked agent)
   'TEAMMEM',            // Team memory sync system
+  // Cache optimization
+  'CACHED_MICROCOMPACT', // Cache-editing based tool result compaction
 ]
 const featureSet = new Set(defaultFeatures)
 for (let i = 0; i < args.length; i += 1) {
