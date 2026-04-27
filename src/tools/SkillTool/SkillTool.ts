@@ -60,6 +60,7 @@ import { resolveSkillModelOverride } from '../../utils/model/model.js'
 import { recordSkillUsage } from '../../utils/suggestions/skillUsageTracking.js'
 import { createAgentId } from '../../utils/uuid.js'
 import { runAgent } from '../AgentTool/runAgent.js'
+import { getAgentDefinitionsWithOverrides } from '../AgentTool/loadAgentsDir.js'
 import {
   getToolUseIDFromParentMessage,
   tagMessagesWithToolUseID,
@@ -401,6 +402,22 @@ export const SkillTool: Tool<InputSchema, Output, Progress> = buildTool({
     // Check if command exists
     const foundCommand = findCommand(normalizedCommandName, commands)
     if (!foundCommand) {
+      // Check if it's an Agent name - if so, give helpful error message
+      // Use getAgentDefinitionsWithOverrides to check all agent sources:
+      // built-in, plugin, and local/custom agents
+      const { activeAgents } = await getAgentDefinitionsWithOverrides(
+        getProjectRoot(),
+      )
+      const matchingAgent = activeAgents.find(
+        agent => agent.agentType === normalizedCommandName,
+      )
+      if (matchingAgent) {
+        return {
+          result: false,
+          message: `'${normalizedCommandName}' is an Agent, not a Skill. Use the Agent tool with subagent_type='${normalizedCommandName}' instead.`,
+          errorCode: 2,
+        }
+      }
       return {
         result: false,
         message: `Unknown skill: ${normalizedCommandName}`,
