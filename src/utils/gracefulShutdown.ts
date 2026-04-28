@@ -170,14 +170,16 @@ function printResumeHint(): void {
         resumeArg = sessionId
       }
 
-      // After EXIT_ALT_SCREEN restores cursor position via DECRC, ensure we're
-      // at the start of a new line before writing the resume hint. The leading
-      // \r\n forces cursor to a fresh line start, preventing the hint from
-      // overlapping with stale content from the restored cursor position.
+      // After EXIT_ALT_SCREEN restores cursor position via DECRC, the cursor
+      // may be at an arbitrary row/column (wherever it was when alt-screen
+      // was entered). Move to the bottom-left corner before printing the
+      // resume hint. \x1b[999E moves cursor down 999 lines (clamped to last
+      // row), then \r ensures column 0. This guarantees the hint appears
+      // at the bottom of the screen where the shell prompt will follow.
       writeSync(
         1,
         chalk.dim(
-          `\r\nResume this session with:\r\nola-cc --resume ${resumeArg}\r\n`,
+          `\x1b[999E\rResume this session with:\r\nola-cc --resume ${resumeArg}\r\n`,
         ),
       )
       resumeHintPrinted = true
