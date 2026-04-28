@@ -25,7 +25,11 @@ const PLATFORM_MAP = {
 }
 
 const pkgRoot = __dirname
-const nodeModules = join(pkgRoot, '..', '..')
+// npm installs optionalDependencies inside the package's node_modules directory
+// when using global install or certain package managers (pnpm, yarn).
+// Check both locations to support all installation modes.
+const nodeModulesNested = join(pkgRoot, 'node_modules')  // npm global / pnpm / yarn
+const nodeModulesTopLevel = join(pkgRoot, '..', '..')    // npm local (legacy behavior)
 const binDir = join(pkgRoot, 'bin')
 
 function detectPlatform() {
@@ -54,6 +58,20 @@ function detectPlatform() {
     : `${platform}-${arch}`
 }
 
+function findPlatformPackage(depName) {
+  // Try nested location first (npm global, pnpm, yarn)
+  const nestedPath = join(nodeModulesNested, depName)
+  if (existsSync(nestedPath)) {
+    return nestedPath
+  }
+  // Try top-level location (npm local install legacy behavior)
+  const topLevelPath = join(nodeModulesTopLevel, depName)
+  if (existsSync(topLevelPath)) {
+    return topLevelPath
+  }
+  return null
+}
+
 function main() {
   const platformKey = detectPlatform()
   const depName = PLATFORM_MAP[platformKey]
@@ -63,9 +81,9 @@ function main() {
     return
   }
 
-  const depPath = join(nodeModules, depName)
+  const depPath = findPlatformPackage(depName)
 
-  if (!existsSync(depPath)) {
+  if (!depPath) {
     console.warn(`ola-cc: Platform package ${depName} not installed.`)
     return
   }
