@@ -1475,7 +1475,23 @@ export default class Ink {
     // Non-TTY environments don't handle erasing ansi escapes well, so it's better to
     // only render last frame of non-static output
     const diff = this.log.renderPreviousOutput_DEPRECATED(this.frontFrame);
-    writeDiffToTerminal(this.terminal, optimize(diff));
+    // Use writeSync instead of writeDiffToTerminal's async write to ensure
+    // all output is flushed before EXIT_ALT_SCREEN restores cursor position
+    // via DECRC. This prevents the resume hint from being overwritten by
+    // late-arriving diff output.
+    if (diff.length > 0) {
+      let buffer = '';
+      for (const patch of diff) {
+        if (patch.type === 'stdout') {
+          buffer += patch.content;
+        } else if (patch.type === 'cursorShow') {
+          buffer += SHOW_CURSOR;
+        }
+      }
+      if (buffer) {
+        writeSync(1, buffer);
+      }
+    }
 
     // Clean up terminal modes synchronously before process exit.
     // React's componentWillUnmount won't run in time when process.exit() is called,
