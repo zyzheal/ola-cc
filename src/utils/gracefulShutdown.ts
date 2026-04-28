@@ -170,10 +170,14 @@ function printResumeHint(): void {
         resumeArg = sessionId
       }
 
+      // After EXIT_ALT_SCREEN restores cursor position via DECRC, ensure we're
+      // at the start of a new line before writing the resume hint. The leading
+      // \r\n forces cursor to a fresh line start, preventing the hint from
+      // overlapping with stale content from the restored cursor position.
       writeSync(
         1,
         chalk.dim(
-          `\nResume this session with:\nola-cc --resume ${resumeArg}\n`,
+          `\r\nResume this session with:\r\nola-cc --resume ${resumeArg}\r\n`,
         ),
       )
       resumeHintPrinted = true
