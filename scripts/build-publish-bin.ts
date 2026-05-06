@@ -103,6 +103,88 @@ function detectMusl(): boolean {
   return report != null && report.header?.glibcVersionRuntime === undefined
 }
 
+/**
+ * 检测 Linux 发行版类型和 glibc 版本
+ * 用于确保构建的二进制兼容目标平台
+ */
+function detectLinuxDistro(): { isRedHat: boolean; isRocky: boolean; isAlma: boolean; isMusl: boolean; glibcVersion: string } {
+  if (process.platform !== 'linux') {
+    return { isRedHat: false, isRocky: false, isAlma: false, isMusl: false, glibcVersion: '0' }
+  }
+  
+  // 先检测 musl
+  const isMusl = detectMusl()
+  
+  let isRedHat = false
+  let isRocky = false
+  let isAlma = false
+  let glibcVersion = '0'
+  
+  // 读取 os-release 文件识别发行版
+  const osReleasePaths = [
+    '/etc/os-release',
+    '/usr/lib/os-release',
+  ]
+  
+  for (const relPath of osReleasePaths) {
+    try {
+      const content = Bun.file(relPath).text()
+      const idMatch = content.match(/^ID="?([^"\n]+)"?/m)
+      const versionMatch = content.match(/^VERSION_ID="?(\d+)"?/m)
+      
+      if (idMatch) {
+        const id = idMatch[1].toLowerCase()
+        isRedHat = id.includes('rhel') || id.includes('redhat') || id.includes('centos')
+        isRocky = id === 'rocky'
+        isAlma = id === 'alma'
+      }
+      
+      if (versionMatch && (isRedHat || isRocky || isAlma)) {
+        const majorVersion = parseInt(versionMatch[1], 10)
+        // RHEL/CentOS 8+, Rocky 8+, Alma 8+ 使用 glibc 2.28+
+        if (majorVersion >= 8) {
+          glibcVersion = '2.28'
+        } else if (majorVersion >= 7) {
+          glibcVersion = '2.17'
+        }
+      }
+      
+      if (isRedHat || isRocky || isAlma) break
+    } catch {
+      // 文件不存在，继续尝试下一个
+    }
+  }
+  
+  // 如果无法从 os-release 获取，尝试通过 glibc 版本直接判断
+  if (glibcVersion === '0') {
+    try {
+      const report = typeof process.report?.getReport === 'function'
+        ? process.report.getReport()
+        : null
+      if (report?.header?.glibcVersionRuntime) {
+        glibcVersion = report.header.glibcVersionRuntime
+      }
+    } catch {}
+  }
+  
+  return { isRedHat, isRocky, isAlma, isMusl, glibcVersion }
+}
+
+/**
+ * 获取目标平台的最小 glibc 版本要求
+ * 这是确保跨平台兼容的关键
+ */
+function getTargetGlibcVersion(platformKey: string): string {
+  // Rock8/AlmaLinux 8 = glibc 2.28, CentOS 7 = glibc 2.17
+  // 默认使用较旧的 glibc 版本以确保最大兼容性
+  if (platformKey.startsWith('linux-')) {
+    // 使用 glibc 2.28 作为所有 Linux 目标的基础
+    // 因为它是 RHEL 8/Rocky 8 的标准版本
+    return '2.28'
+  }
+  return '0'
+}
+
 // ─── Compile Binary ────────────────────────────────────────
 function compileBinary(target?: string): string | null {
   const outfile = join(process.cwd(), 'dist', 'publish', 'ola-cc-temp')
