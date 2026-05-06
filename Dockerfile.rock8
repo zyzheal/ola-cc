@@ -1,0 +1,42 @@
+# Rock8 (RHEL 8 / Rocky Linux 8 / AlmaLinux 8) 交叉编译 Docker 配置
+# 用于在非 Linux 系统上构建兼容 Rock8 的二进制
+
+FROM --platform=linux/amd64 rockylinux/rockylinux:8
+
+# 安装构建工具
+RUN dnf -y install \
+    gcc \
+    gcc-c++ \
+    make \
+    python3 \
+    git \
+    curl \
+    bun \
+    && dnf clean all
+
+# 安装 node-gyp 依赖
+RUN dnf -y install \
+    python3-devel \
+    libuv-devel \
+    libffi-devel \
+    openssl-devel \
+    && dnf clean all
+
+# 设置工作目录
+WORKDIR /workspace
+
+# 复制项目文件
+COPY . .
+
+# 安装依赖
+RUN bun install
+
+# 编译 node-pty (确保在 Rock8 环境编译)
+RUN cd node_modules/node-pty && npm run build_release
+
+# 构建二进制（使用 glibc 2.28 兼容设置）
+ENV USE_GLIBC_228=1
+RUN bun run build:bin
+
+# 输出到 dist 目录
+CMD ["ls", "-la", "dist/"]

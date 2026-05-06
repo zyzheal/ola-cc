@@ -37,6 +37,8 @@ function detectPlatform() {
   const arch = process.arch
 
   let isMusl = false
+  let isRedHatCompatible = false
+
   if (platform === 'linux') {
     try {
       const report = typeof process.report?.getReport === 'function'
@@ -46,11 +48,48 @@ function detectPlatform() {
     } catch {
       try {
         const ldd = require('child_process').execSync('ldd --version 2>&1', { encoding: 'utf8' })
-        isMusl = ldd.toLowerCase().includes('musl')
+        const lddLower = ldd.toLowerCase()
+        isMusl = lddLower.includes('musl')
+        // 检测 glibc 版本 - RHEL/Rocky/AlmaLinux 8+ 使用 glibc 2.28
+        // CentOS 7 使用 glibc 2.17
+        const glibcMatch = ldd.match(/glibc(?:64)?\s+(\d+)\.(\d+)/)
+        if (glibcMatch) {
+          const major = parseInt(glibcMatch[1], 10)
+          const minor = parseInt(glibcMatch[2], 10)
+          // glibc 2.28+ (RHEL 8+, Rocky 8+, AlmaLinux 8+)
+          isRedHatCompatible = major > 2 || (major === 2 && minor >= 28)
+        }
       } catch {
         // Assume glibc if we can't determine
       }
     }
+
+    // 尝试读取 /etc/os-release 获取更精确的发行版信息
+    try {
+      const osRelease = require('fs').readFileSync('/etc/os-release', 'utf8')
+      const idMatch = osRelease.match(/^ID="?([^"\n]+)"?/m)
+      if (idMatch) {
+        const id = idMatch[1].toLowerCase()
+        // Rocky Linux, AlmaLinux, RHEL, CentOS Stream 都使用 glibc 2.28+ (version 8+)
+        if (id === 'rocky' || id === 'alma' || id === 'rhel' || id === 'centos') {
+          const versionMatch = osRelease.match(/^VERSION_ID="?(\d+)"?/m)
+          if (versionMatch) {
+            const majorVersion = parseInt(versionMatch[1], 10)
+            if (majorVersion >= 8) {
+              isRedHatCompatible = true
+            }
+          }
+        }
+      }
+    } catch {
+      // 无法读取 os-release
+    }
+  }
+
+  // 对于 Red Hat 兼容系统 (Rock8, Alma8, RHEL 8+) 使用标准 glibc 版本
+  // 而不是 musl 版本
+  if (platform === 'linux' && isRedHatCompatible && !isMusl) {
+    return `${platform}-${arch}`
   }
 
   return platform === 'linux'
