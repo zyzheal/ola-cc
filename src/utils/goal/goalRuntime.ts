@@ -16,6 +16,7 @@ export type GoalRuntimeEvent =
 export interface GoalRuntimeContext {
   goal: Goal
   runtime: GoalRuntimeState
+  currentTokenUsage: TokenUsage  // Pass current token usage from caller
   injectPrompt: (prompt: string) => Promise<void>
   updateGoal: (goal: Goal) => void
 }
@@ -24,23 +25,6 @@ export interface GoalRuntimeContext {
 export interface GoalRuntimeResult {
   shouldContinue: boolean
   injectedPrompt?: string
-}
-
-// Current token usage (placeholder - actual implementation depends on query.ts integration)
-let currentTokenUsage: TokenUsage = {
-  inputTokens: 0,
-  cachedInputTokens: 0,
-  outputTokens: 0,
-  reasoningOutputTokens: 0,
-  totalTokens: 0,
-}
-
-export function setCurrentTokenUsage(usage: TokenUsage): void {
-  currentTokenUsage = usage
-}
-
-function getCurrentTokenUsage(): TokenUsage {
-  return currentTokenUsage
 }
 
 // Process goal runtime events
@@ -67,8 +51,8 @@ export function processGoalRuntimeEvent(
         return { shouldContinue: true }
       }
       
-      // Account token usage
-      const usage = getCurrentTokenUsage()
+      // Account token usage - get from context
+      const usage = context.currentTokenUsage
       const lastUsage = runtime.accounting.turn?.lastTokenUsage || usage
       const tokenDelta = tokenDeltaSinceLastAccounting(lastUsage, usage)
       const timeDelta = timeDeltaSinceLastAccounted(

@@ -114,7 +114,7 @@ import {
 } from './bootstrap/state.js'
 import { createBudgetTracker, checkTokenBudget } from './query/tokenBudget.js'
 import { count } from './utils/array.js'
-import { processGoalRuntimeEvent, setCurrentTokenUsage } from './utils/goal/goalRuntime.js'
+import { processGoalRuntimeEvent } from './utils/goal/goalRuntime.js'
 import { ThreadGoalStatus, type Goal, type TokenUsage } from './commands/goal/types.js'
 
 /**
@@ -760,6 +760,7 @@ async function* queryLoop(
         {
           goal: appState.goal,
           runtime: appState.goalRuntime,
+          currentTokenUsage,
           injectPrompt: async () => {},
           updateGoal: (goal: Goal) => {
             toolUseContext.setAppState(prev => ({
@@ -1104,7 +1105,8 @@ async function* queryLoop(
           const lastAssistantMsg = assistantMessages.at(-1)
           const apiUsage = lastAssistantMsg?.message.usage
           if (apiUsage) {
-            setCurrentTokenUsage({
+            // Update local token tracking variable
+            currentTokenUsage = {
               inputTokens: apiUsage.input_tokens,
               cachedInputTokens: apiUsage.cache_read_input_tokens || 0,
               outputTokens: apiUsage.output_tokens,
@@ -1112,7 +1114,7 @@ async function* queryLoop(
                 (apiUsage as unknown as Record<string, number>).reasoning_tokens ||
                 0,
               totalTokens: apiUsage.input_tokens + apiUsage.output_tokens,
-            })
+            }
           }
         } catch (innerError) {
           if (innerError instanceof FallbackTriggeredError && fallbackModel) {
@@ -1932,11 +1934,20 @@ async function* queryLoop(
     // Check if goal should auto-continue after turn completion
     const currentAppState = toolUseContext.getAppState()
     if (currentAppState.goal.id && currentAppState.goal.status === ThreadGoalStatus.Active) {
+      // Create token usage from current goal state
+      const goalTokenUsage: TokenUsage = {
+        inputTokens: currentAppState.goal.tokensUsed,
+        cachedInputTokens: 0,
+        outputTokens: 0,
+        reasoningOutputTokens: 0,
+        totalTokens: currentAppState.goal.tokensUsed,
+      }
       const goalResult = processGoalRuntimeEvent(
         { type: 'turn_finished', turnCompleted: true },
         {
           goal: currentAppState.goal,
           runtime: currentAppState.goalRuntime,
+          currentTokenUsage: goalTokenUsage,
           injectPrompt: async (prompt: string) => {
             // Store the prompt to be injected at the start of next iteration
             pendingGoalPrompt = prompt

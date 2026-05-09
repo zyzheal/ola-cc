@@ -16,7 +16,7 @@ export function GoalProgress() {
       [ThreadGoalStatus.Paused]: '⏸️',
       [ThreadGoalStatus.BudgetLimited]: '⚠️',
       [ThreadGoalStatus.Complete]: '✅',
-    }[goal.status];
+    }[goal.status] || '📌'  // Default for empty/idle status;
 
     const progress = goal.tokenBudget
       ? Math.min(100, (goal.tokensUsed / goal.tokenBudget) * 100)
