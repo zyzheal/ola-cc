@@ -42,83 +42,71 @@ function parseGoalArgs(args: string[]): GoalCommandArgs {
   return { objective: args.join(' '), tokenBudget }
 }
 
-export function goalCommand(args: string[]): { message: string; goal?: Goal } {
-  const goal = useAppState.getState().goal
-
-  const { objective, action, tokenBudget } = parseGoalArgs(args)
-
-  if (action === 'status') {
-    if (!goal.id || goal.status === ThreadGoalStatus.Complete) {
-      return { message: 'No active goal. Use /goal <objective> [--budget <tokens>] to set one.' }
-    }
-
-    const remaining = goal.tokenBudget
-      ? `${goal.tokenBudget - goal.tokensUsed} remaining`
-      : 'unbounded'
-
-    return {
-      message:
-        `🎯 Goal: ${goal.objective}\n` +
-        `Status: ${goal.status}\n` +
-        `Tokens: ${goal.tokensUsed} / ${goal.tokenBudget ?? 'unbounded'} (${remaining})\n` +
-        `Time: ${goal.timeUsedSeconds}s`,
-    }
-  }
-
-  if (action === 'clear') {
-    useSetAppState.getState()((s) => ({ ...s, goal: { ...IDLE_GOAL } }))
-    return { message: 'Goal cleared.' }
-  }
-
-  if (action === 'pause' || action === 'resume') {
-    if (!goal.id) {
-      return { message: 'No active goal to pause/resume. Use /goal <objective> first.' }
-    }
-
-    const newStatus = action === 'pause' ? ThreadGoalStatus.Paused : ThreadGoalStatus.Active
-
-    useSetAppState.getState()((s) => ({
-      ...s,
-      goal: { ...s.goal, status: newStatus, updatedAt: Date.now() },
-    }))
-
-    return { message: `Goal ${action}d.` }
-  }
-
-  // Create new goal
-  const newGoal: Goal = {
-    id: randomUUID(),
-    threadId: 'default',
-    objective: objective || '',
-    status: ThreadGoalStatus.Active,
-    tokenBudget: tokenBudget ?? null,
-    tokensUsed: 0,
-    timeUsedSeconds: 0,
-    createdAt: Date.now(),
-    updatedAt: Date.now(),
-  }
-
-  useSetAppState.getState()((s) => ({
-    ...s,
-    goal: newGoal,
-  }))
-
-  return {
-    message:
-      `🎯 Goal set: ${objective}${tokenBudget ? `\nToken budget: ${tokenBudget}` : ''}\n` +
-      `Use /goal to check status, /goal pause to pause, /goal clear to cancel.`,
-    goal: newGoal,
-  }
-}
-
 export function GoalCommand(props: { args: string[] } & LocalJSXCommandOnDone) {
-  const $ = _c(2)
+  const $ = _c(3)
+  const goal = useAppState(s => s.goal)
+  const setAppState = useSetAppState()
 
   let t0
   if ($[0] === Symbol.for('react.memo_cache_sentinel')) {
     t0 = () => {
-      const result = goalCommand(props.args)
-      props.onDone(true, result.message)
+      const { objective, action, tokenBudget } = parseGoalArgs(props.args)
+
+      // status
+      if (action === 'status') {
+        if (!goal.id || !goal.status || goal.status === ThreadGoalStatus.Complete) {
+          props.onDone(true, 'No active goal. Use /goal <objective> [--budget <tokens>] to set one.')
+          return
+        }
+        const remaining = goal.tokenBudget
+          ? `${goal.tokenBudget - goal.tokensUsed} remaining`
+          : 'unbounded'
+        props.onDone(true,
+          `🎯 Goal: ${goal.objective}\nStatus: ${goal.status}\nTokens: ${goal.tokensUsed} / ${goal.tokenBudget ?? 'unbounded'} (${remaining})\nTime: ${goal.timeUsedSeconds}s`
+        )
+        return
+      }
+
+      // clear
+      if (action === 'clear') {
+        setAppState(s => ({ ...s, goal: { ...IDLE_GOAL } }))
+        props.onDone(true, 'Goal cleared.')
+        return
+      }
+
+      // pause/resume
+      if (action === 'pause' || action === 'resume') {
+        if (!goal.id) {
+          props.onDone(true, 'No active goal to pause/resume. Use /goal <objective> first.')
+          return
+        }
+        const newStatus = action === 'pause' ? ThreadGoalStatus.Paused : ThreadGoalStatus.Active
+        setAppState(s => ({
+          ...s,
+          goal: { ...s.goal, status: newStatus, updatedAt: Date.now() }
+        }))
+        props.onDone(true, `Goal ${action}d.`)
+        return
+      }
+
+      // Create new goal
+      const newGoal: Goal = {
+        id: randomUUID(),
+        threadId: 'default',
+        objective: objective || '',
+        status: ThreadGoalStatus.Active,
+        tokenBudget: tokenBudget ?? null,
+        tokensUsed: 0,
+        timeUsedSeconds: 0,
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      }
+
+      setAppState(s => ({ ...s, goal: newGoal }))
+
+      props.onDone(true,
+        `🎯 Goal set: ${objective}${tokenBudget ? `\nToken budget: ${tokenBudget}` : ''}\nUse /goal to check status, /goal pause to pause, /goal clear to cancel.`
+      )
     }
     $[0] = t0
   } else {

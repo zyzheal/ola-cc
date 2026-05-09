@@ -68,6 +68,7 @@ import { TaskCreateTool } from './tools/TaskCreateTool/TaskCreateTool.js'
 import { TaskGetTool } from './tools/TaskGetTool/TaskGetTool.js'
 import { TaskUpdateTool } from './tools/TaskUpdateTool/TaskUpdateTool.js'
 import { TaskListTool } from './tools/TaskListTool/TaskListTool.js'
+import { UpdateGoalTool } from './tools/UpdateGoalTool/UpdateGoalTool.js'
 import uniqBy from 'lodash-es/uniqBy.js'
 // All tools enabled - no conditional imports
 // Use try-catch for tools that may not exist
@@ -203,6 +204,7 @@ export function getAllBaseTools(): Tools {
     ...(SubscribePRTool ? [SubscribePRTool] : []),
     ...(CtxInspectTool ? [CtxInspectTool] : []),
     ...(ListPeersTool ? [ListPeersTool] : []),
+    UpdateGoalTool,
   ].filter(Boolean)
 }
 
