@@ -349,6 +349,7 @@ async function* queryLoop(
   // Goal auto-continue state
   let pendingGoalPrompt: string | undefined = undefined
   let autoContinue = false
+  let currentTokenUsage: TokenUsage | undefined = undefined
 
   const budgetTracker = feature('TOKEN_BUDGET') ? createBudgetTracker() : null
 
@@ -706,6 +707,22 @@ async function* queryLoop(
 
       // Continue on with the current query call using the post compact messages
       messagesForQuery = postCompactMessages
+
+      // Account for compact token usage against the active goal's budget
+      if (appState.goal.id && appState.goal.status === ThreadGoalStatus.Active) {
+        const compactUsage = compactionResult.compactionUsage
+        if (compactUsage) {
+          const compactDelta = compactUsage.input_tokens + compactUsage.output_tokens
+          toolUseContext.setAppState(prev => ({
+            ...prev,
+            goal: {
+              ...prev.goal,
+              tokensUsed: prev.goal.tokensUsed + compactDelta,
+              updatedAt: Date.now(),
+            },
+          }))
+        }
+      }
     } else if (consecutiveFailures !== undefined) {
       // Autocompact failed — propagate failure count so the circuit breaker
       // can stop retrying on the next iteration.
@@ -744,8 +761,8 @@ async function* queryLoop(
 
     // Trigger turn_started event at the beginning of each turn for goal tracking
     if (appState.goal.id && appState.goal.status === ThreadGoalStatus.Active) {
-      const currentTokenUsage: TokenUsage = {
-        inputTokens: 0,
+      const turnBaselineUsage: TokenUsage = {
+        inputTokens: appState.goal.tokensUsed,
         cachedInputTokens: 0,
         outputTokens: 0,
         reasoningOutputTokens: 0,
@@ -755,12 +772,12 @@ async function* queryLoop(
         {
           type: 'turn_started',
           turnId: tracking.turnId,
-          tokenUsage: currentTokenUsage,
+          tokenUsage: turnBaselineUsage,
         },
         {
           goal: appState.goal,
           runtime: appState.goalRuntime,
-          currentTokenUsage,
+          currentTokenUsage: currentTokenUsage ?? turnBaselineUsage,
           injectPrompt: async () => {},
           updateGoal: (goal: Goal) => {
             toolUseContext.setAppState(prev => ({
@@ -1106,7 +1123,7 @@ async function* queryLoop(
           const apiUsage = lastAssistantMsg?.message.usage
           if (apiUsage) {
             // Update local token tracking variable
-            currentTokenUsage = {
+            currentTokenUsage ??= {
               inputTokens: apiUsage.input_tokens,
               cachedInputTokens: apiUsage.cache_read_input_tokens || 0,
               outputTokens: apiUsage.output_tokens,

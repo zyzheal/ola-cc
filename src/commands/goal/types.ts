@@ -9,7 +9,7 @@ export interface Goal {
   id: string
   threadId: string
   objective: string
-  status: ThreadGoalStatus
+  status: ThreadGoalStatus | ''
   tokenBudget: number | null
   tokensUsed: number
   timeUsedSeconds: number
@@ -38,7 +38,7 @@ export const IDLE_GOAL: Goal = {
   id: '',
   threadId: '',
   objective: '',
-  status: '' as ThreadGoalStatus,
+  status: '',
   tokenBudget: null,
   tokensUsed: 0,
   timeUsedSeconds: 0,

@@ -89,16 +89,47 @@ export function processGoalRuntimeEvent(
       if (!event.turnCompleted) {
         return { shouldContinue: true }
       }
-      
+
       // Clear turn accounting
+      const lastTurn = runtime.accounting.turn
       runtime.accounting.turn = null
-      
+
+      // Accumulate token usage for this turn
+      if (lastTurn && goal.status === Status.Active) {
+        const usage = context.currentTokenUsage
+        const tokenDelta = tokenDeltaSinceLastAccounting(lastTurn.lastTokenUsage, usage)
+        const timeDelta = timeDeltaSinceLastAccounted(
+          runtime.accounting.wallClock.lastAccountedAt
+        )
+
+        let updatedGoal: Goal = {
+          ...goal,
+          tokensUsed: goal.tokensUsed + tokenDelta,
+          timeUsedSeconds: goal.timeUsedSeconds + timeDelta,
+          updatedAt: Date.now(),
+        }
+
+        // Check budget exhaustion
+        if (isBudgetExhausted(updatedGoal) && runtime.budgetLimitReportedGoalId !== goal.id) {
+          updatedGoal = {
+            ...updatedGoal,
+            status: Status.BudgetLimited,
+          }
+          runtime.budgetLimitReportedGoalId = goal.id
+          context.updateGoal(updatedGoal)
+          const budgetPrompt = buildBudgetLimitPrompt(updatedGoal)
+          return { shouldContinue: true, injectedPrompt: budgetPrompt }
+        }
+
+        context.updateGoal(updatedGoal)
+      }
+
       // If goal is still active, inject continuation prompt
       if (goal.status === Status.Active) {
         const continuationPrompt = buildContinuationPrompt(goal)
         return { shouldContinue: true, injectedPrompt: continuationPrompt }
       }
-      
+
       return { shouldContinue: false }
     }
     

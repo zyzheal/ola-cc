@@ -455,7 +455,6 @@ export type AppState = DeepImmutable<{
 }
 
 export type AppStateStore = Store<AppState>
-export type AppStateStore = Store<AppState>
 
 export function getDefaultAppState(): AppState {
   // Determine initial permission mode for teammates spawned with plan_mode_required
@@ -570,7 +569,7 @@ export function getDefaultAppState(): AppState {
       id: '',
       threadId: '',
       objective: '',
-      status: 'active',
+      status: '',
       tokenBudget: null,
       tokensUsed: 0,
       timeUsedSeconds: 0,
