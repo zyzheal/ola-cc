@@ -89,6 +89,7 @@ import plugin from './commands/plugin/index.js'
 import reloadPlugins from './commands/reload-plugins/index.js'
 import rewind from './commands/rewind/index.js'
 import heapDump from './commands/heapdump/index.js'
+import goal from './commands/goal/index.js'
 import mockLimits from './commands/mock-limits/index.js'
 import bridgeKick from './commands/bridge-kick.js'
 import version from './commands/version.js'
@@ -229,6 +230,7 @@ const COMMANDS = memoize((): Command[] => [
   fast,
   files,
   heapDump,
+  goal,
   help,
   ide,
   init,
