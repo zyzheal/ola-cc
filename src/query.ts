@@ -115,7 +115,7 @@ import {
 import { createBudgetTracker, checkTokenBudget } from './query/tokenBudget.js'
 import { count } from './utils/array.js'
 import { processGoalRuntimeEvent, setCurrentTokenUsage } from './utils/goal/goalRuntime.js'
-import { ThreadGoalStatus, type Goal } from './commands/goal/types.js'
+import { ThreadGoalStatus, type Goal, type TokenUsage } from './commands/goal/types.js'
 
 /**
  * Quick (non-stringify) estimate of a single message's byte size.
@@ -741,6 +741,36 @@ async function* queryLoop(
       : null
 
     const appState = toolUseContext.getAppState()
+
+    // Trigger turn_started event at the beginning of each turn for goal tracking
+    if (appState.goal.id && appState.goal.status === ThreadGoalStatus.Active) {
+      const currentTokenUsage: TokenUsage = {
+        inputTokens: 0,
+        cachedInputTokens: 0,
+        outputTokens: 0,
+        reasoningOutputTokens: 0,
+        totalTokens: appState.goal.tokensUsed,
+      }
+      processGoalRuntimeEvent(
+        {
+          type: 'turn_started',
+          turnId: tracking.turnId,
+          tokenUsage: currentTokenUsage,
+        },
+        {
+          goal: appState.goal,
+          runtime: appState.goalRuntime,
+          injectPrompt: async () => {},
+          updateGoal: (goal: Goal) => {
+            toolUseContext.setAppState(prev => ({
+              ...prev,
+              goal,
+            }))
+          },
+        }
+      )
+    }
+
     const permissionMode = appState.toolPermissionContext.mode
     let currentModel = getRuntimeMainLoopModel({
       permissionMode,

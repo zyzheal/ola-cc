@@ -38,7 +38,7 @@ export const IDLE_GOAL: Goal = {
   id: '',
   threadId: '',
   objective: '',
-  status: ThreadGoalStatus.Active,
+  status: '' as ThreadGoalStatus,
   tokenBudget: null,
   tokensUsed: 0,
   timeUsedSeconds: 0,
