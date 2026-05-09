@@ -5,10 +5,23 @@ import type { Goal } from '../../commands/goal/types.js'
 
 const TEMPLATES_DIR = join(dirname(fileURLToPath(import.meta.url)), '../../commands/goal/templates')
 
+// Lazy-loaded template cache to avoid repeated file I/O
+const templateCache = new Map<string, string>()
+
+function getTemplate(templateName: string): string {
+  if (!templateCache.has(templateName)) {
+    const content = readFileSync(join(TEMPLATES_DIR, templateName), 'utf-8')
+    templateCache.set(templateName, content)
+  }
+  return templateCache.get(templateName)!
+}
+
 function renderTemplate(templateName: string, vars: Record<string, string>): string {
-  let template = readFileSync(join(TEMPLATES_DIR, templateName), 'utf-8')
+  let template = getTemplate(templateName)
   for (const [key, value] of Object.entries(vars)) {
-    template = template.replace(new RegExp(`{{${key}}}`, 'g'), value)
+    // Escape regex special characters in key to prevent injection
+    const safeKey = key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+    template = template.replace(new RegExp(`{{${safeKey}}}`, 'g'), value)
   }
   return template
 }
