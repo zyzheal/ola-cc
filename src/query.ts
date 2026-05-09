@@ -114,6 +114,8 @@ import {
 } from './bootstrap/state.js'
 import { createBudgetTracker, checkTokenBudget } from './query/tokenBudget.js'
 import { count } from './utils/array.js'
+import { processGoalRuntimeEvent, setCurrentTokenUsage } from './utils/goal/goalRuntime.js'
+import { ThreadGoalStatus, type Goal } from './commands/goal/types.js'
 
 /**
  * Quick (non-stringify) estimate of a single message's byte size.
@@ -343,6 +345,11 @@ async function* queryLoop(
     pendingToolUseSummary: undefined,
     transition: undefined,
   }
+
+  // Goal auto-continue state
+  let pendingGoalPrompt: string | undefined = undefined
+  let autoContinue = false
+
   const budgetTracker = feature('TOKEN_BUDGET') ? createBudgetTracker() : null
 
   // task_budget.remaining tracking across compaction boundaries. Undefined
@@ -388,6 +395,21 @@ async function* queryLoop(
       stopHookActive,
       turnCount,
     } = state
+
+    // Goal auto-continue: consume any pending prompt from previous turn
+    if (pendingGoalPrompt) {
+      state.messages = [
+        ...state.messages,
+        createUserMessage({
+          content: pendingGoalPrompt,
+          isMeta: true,
+        }),
+      ]
+      pendingGoalPrompt = undefined
+    }
+
+    // Reset autoContinue for this iteration - will be set to true if goal wants to continue
+    autoContinue = false
 
     // Skill discovery prefetch — per-iteration (uses findWritePivot guard
     // that returns early on non-write iterations). Discovery runs while the
@@ -1046,6 +1068,21 @@ async function* queryLoop(
                 [],
               )
             }
+          }
+
+          // Update goal accounting with token usage from API response
+          const lastAssistantMsg = assistantMessages.at(-1)
+          const apiUsage = lastAssistantMsg?.message.usage
+          if (apiUsage) {
+            setCurrentTokenUsage({
+              inputTokens: apiUsage.input_tokens,
+              cachedInputTokens: apiUsage.cache_read_input_tokens || 0,
+              outputTokens: apiUsage.output_tokens,
+              reasoningOutputTokens:
+                (apiUsage as unknown as Record<string, number>).reasoning_tokens ||
+                0,
+              totalTokens: apiUsage.input_tokens + apiUsage.output_tokens,
+            })
           }
         } catch (innerError) {
           if (innerError instanceof FallbackTriggeredError && fallbackModel) {
@@ -1859,6 +1896,35 @@ async function* queryLoop(
             ...toolResults,
           ],
         })
+      }
+    }
+
+    // Check if goal should auto-continue after turn completion
+    const currentAppState = toolUseContext.getAppState()
+    if (currentAppState.goal.id && currentAppState.goal.status === ThreadGoalStatus.Active) {
+      const goalResult = processGoalRuntimeEvent(
+        { type: 'turn_finished', turnCompleted: true },
+        {
+          goal: currentAppState.goal,
+          runtime: currentAppState.goalRuntime,
+          injectPrompt: async (prompt: string) => {
+            // Store the prompt to be injected at the start of next iteration
+            pendingGoalPrompt = prompt
+          },
+          updateGoal: (updatedGoal: Goal) => {
+            // Update the goal in app state via setAppState
+            toolUseContext.setAppState(prev => ({
+              ...prev,
+              goal: updatedGoal,
+            }))
+          },
+        }
+      )
+
+      if (goalResult.injectedPrompt) {
+        // Goal wants to continue - set flag for next iteration
+        pendingGoalPrompt = goalResult.injectedPrompt
+        autoContinue = true
       }
     }
 
