@@ -2,6 +2,7 @@ import type { Notification } from 'src/context/notifications.js'
 import type { TodoList } from 'src/utils/todo/types.js'
 import type { BridgePermissionCallbacks } from '../bridge/bridgePermissionCallbacks.js'
 import type { Command } from '../commands.js'
+import type { Goal, GoalRuntimeState } from '../commands/goal/types.js'
 import type { ChannelPermissionCallbacks } from '../services/mcp/channelPermissions.js'
 import type { ElicitationRequestEvent } from '../services/mcp/elicitationHandler.js'
 import type {
@@ -445,12 +446,15 @@ export type AppState = DeepImmutable<{
   isUltraplanMode?: boolean
   // Always-on bridge: permission callbacks for bidirectional permission checks
   replBridgePermissionCallbacks?: BridgePermissionCallbacks
-  // Channel permission callbacks — permission prompts over Telegram/iMessage/etc.
   // Races against local UI + bridge + hooks + classifier via claim() in
   // interactiveHandler.ts. Constructed once in useManageMCPConnections.
   channelPermissionCallbacks?: ChannelPermissionCallbacks
+  // Goal state for thread-based goal tracking
+  goal: Goal
+  goalRuntime: GoalRuntimeState
 }
 
+export type AppStateStore = Store<AppState>
 export type AppStateStore = Store<AppState>
 
 export function getDefaultAppState(): AppState {
@@ -562,8 +566,27 @@ export function getDefaultAppState(): AppState {
     },
     authVersion: 0,
     initialMessage: null,
+    goal: {
+      id: '',
+      threadId: '',
+      objective: '',
+      status: 'active',
+      tokenBudget: null,
+      tokensUsed: 0,
+      timeUsedSeconds: 0,
+      createdAt: 0,
+      updatedAt: 0,
+    },
+    goalRuntime: {
+      accounting: {
+        turn: null,
+        wallClock: { lastAccountedAt: 0, activeGoalId: null },
+      },
+      budgetLimitReportedGoalId: null,
+      continuationTurnId: null,
+    },
     effortValue: undefined,
-    activeOverlays: new Set<string>(),
     fastMode: false,
+    activeOverlays: new Set<string>(),
   }
 }
