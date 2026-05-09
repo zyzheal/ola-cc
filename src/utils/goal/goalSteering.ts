@@ -2,6 +2,7 @@ import { readFileSync } from 'fs'
 import { fileURLToPath } from 'url'
 import { dirname, join } from 'path'
 import type { Goal } from '../../commands/goal/types.js'
+import { getRemainingBudget } from './goalAccounting.js'
 
 const TEMPLATES_DIR = join(dirname(fileURLToPath(import.meta.url)), '../../commands/goal/templates')
 
@@ -28,10 +29,9 @@ function renderTemplate(templateName: string, vars: Record<string, string>): str
 
 export function buildContinuationPrompt(goal: Goal): string {
   const tokenBudget = goal.tokenBudget?.toString() ?? 'unbounded'
-  const remaining = goal.tokenBudget 
-    ? Math.max(0, goal.tokenBudget - goal.tokensUsed).toString() 
-    : 'unbounded'
-  
+  const remainingVal = getRemainingBudget(goal)
+  const remaining = remainingVal === 'unbounded' ? 'unbounded' : remainingVal.toString()
+
   return renderTemplate('continuation.md', {
     objective: escapeXml(goal.objective),
     tokens_used: goal.tokensUsed.toString(),

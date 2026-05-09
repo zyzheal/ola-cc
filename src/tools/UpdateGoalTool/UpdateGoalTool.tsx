@@ -74,13 +74,7 @@ export const UpdateGoalTool: ToolDef<InputSchema, Output> = buildTool({
       }
     }
 
-    const statusMap: Record<string, ThreadGoalStatus> = {
-      active: 'active' as ThreadGoalStatus,
-      paused: 'paused' as ThreadGoalStatus,
-      complete: 'complete' as ThreadGoalStatus,
-    }
-
-    const newStatus = statusMap[input.status]
+    const newStatus = input.status as ThreadGoalStatus
 
     setAppState((prev) => ({
       ...prev,
