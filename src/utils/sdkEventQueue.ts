@@ -84,33 +84,11 @@ export function enqueueSdkEvent(event: SdkEvent): void {
     queue.shift()
   }
   queue.push(event)
+
+  // Also route to NATS if available (fire-and-forget)
+  routeEventToNats(event).catch(() => {})
 }
 
-export function drainSdkEvents(): Array<
-  SdkEvent & { uuid: UUID; session_id: string }
-> {
-  if (queue.length === 0) {
-    return []
-  }
-  const events = queue.splice(0)
-  return events.map(e => ({
-    ...e,
-    uuid: randomUUID(),
-    session_id: getSessionId(),
-  }))
-}
-
-/**
- * Emit a task_notification SDK event for a task reaching a terminal state.
- *
- * registerTask() always emits task_started; this is the closing bookend.
- * Call this from any exit path that sets a task terminal WITHOUT going
- * through enqueuePendingNotification-with-<task-id> (print.ts parses that
- * XML into the same SDK event, so paths that do both would double-emit).
- * Paths that suppress the XML notification (notified:true pre-set, kill
- * paths, abort branches) must call this directly so SDK consumers
- * (Scuttle's bg-task dot, VS Code subagent panel) see the task close.
- */
 export function emitTaskTerminatedSdk(
   taskId: string,
   status: 'completed' | 'failed' | 'stopped',
@@ -131,4 +109,81 @@ export function emitTaskTerminatedSdk(
     summary: opts?.summary ?? '',
     usage: opts?.usage,
   })
+}
+
+// --- NATS Event Router Integration ---
+
+let eventRouter: import('../services/eventBus/EventRouter.js').EventRouter | null = null
+let eventRouterInitPromise: Promise<void> | null = null
+
+export async function initEventRouter(): Promise<void> {
+  if (eventRouterInitPromise) return eventRouterInitPromise
+
+  eventRouterInitPromise = (async () => {
+    const { isNatsEnabled, getNatsConfig } = await import('../services/eventBus/config.js')
+    const { EventRouter } = await import('../services/eventBus/EventRouter.js')
+
+    if (!isNatsEnabled()) return
+
+    try {
+      const config = getNatsConfig()
+      eventRouter = new EventRouter({
+        natsConfig: config,
+        enableNats: true,
+        sessionId: getSessionId(),
+      })
+      await eventRouter.initialize()
+    } catch {
+      // Fallback to memory queue only
+      eventRouter = null
+    }
+  })()
+
+  return eventRouterInitPromise
+}
+
+export async function routeEventToNats(event: SdkEvent): Promise<void> {
+  // Initialize lazily
+  if (!eventRouterInitPromise) {
+    initEventRouter().catch(() => {})
+  }
+
+  if (!eventRouter) {
+    // No NATS, event already in memory queue via enqueueSdkEvent
+    return
+  }
+
+  await eventRouter.routeEvent({
+    ...event,
+    uuid: randomUUID(),
+    session_id: getSessionId(),
+    timestamp: Date.now(),
+  }).catch(() => {})
+}
+
+export function getEventRouter(): import('../services/eventBus/EventRouter.js').EventRouter | null {
+  return eventRouter
+}
+
+export function drainSdkEvents(): Array<
+  SdkEvent & { uuid: UUID; session_id: string }
+> {
+  // First, drain any events from NATS memory queue
+  if (eventRouter) {
+    const natsQueueEvents = eventRouter.drainMemoryQueue()
+    for (const e of natsQueueEvents) {
+      if (queue.length >= MAX_QUEUE_SIZE) queue.shift()
+      queue.push(e)
+    }
+  }
+
+  if (queue.length === 0) {
+    return []
+  }
+  const events = queue.splice(0)
+  return events.map(e => ({
+    ...e,
+    uuid: randomUUID(),
+    session_id: getSessionId(),
+  }))
 }
