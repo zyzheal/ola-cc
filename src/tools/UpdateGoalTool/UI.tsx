@@ -1,37 +1,41 @@
-import type { ToolResultBlockParam } from '@anthropic-ai/sdk/resources/index.mjs'
-import type { UpdateGoalInput, UpdateGoalTool } from './UpdateGoalTool.js'
+import * as React from 'react'
+import { Box, Text } from '../../ink.js'
+import type { UpdateGoalInput } from './UpdateGoalTool.js'
 
+// Safely render tool use message with error handling
+// Returns a string (will be wrapped in <Text> by caller)
 export function renderToolUseMessage(
-  tool: typeof UpdateGoalTool,
-  input: UpdateGoalInput,
-): ToolResultBlockParam {
-  return {
-    type: 'tool_use',
-    id: tool.name,
-    name: tool.name,
-    input,
+  _tool: unknown,
+  input: UpdateGoalInput | null | undefined,
+): React.ReactNode {
+  try {
+    if (!input) return null
+    const status = input.status ?? 'unknown'
+    const summary = input.summary ? `, summary: ${String(input.summary).slice(0, 50)}...` : ''
+    return `status=${status}${summary}`
+  } catch {
+    return 'update_goal'
   }
 }
 
+// Safely render tool result message with error handling - Returns ReactNode (directly rendered)
 export function renderToolResultMessage(
-  tool: typeof UpdateGoalTool,
-  result: { message: string },
-): ToolResultBlockParam {
-  return {
-    type: 'tool_result',
-    tool_use_id: tool.name,
-    content: result.message,
+  _tool: unknown,
+  result: { message: string } | null | undefined,
+): React.ReactNode {
+  try {
+    if (!result) return null
+    return (
+      <Box flexDirection="column">
+        <Text color="green">{String(result.message ?? 'Goal updated')}</Text>
+      </Box>
+    )
+  } catch {
+    return <Text color="green">Goal updated</Text>
   }
 }
 
-export function renderToolUseRejectedMessage(
-  tool: typeof UpdateGoalTool,
-  input: UpdateGoalInput,
-): ToolResultBlockParam {
-  return {
-    type: 'tool_result',
-    tool_use_id: tool.name,
-    content: `Permission denied to update goal status.`,
-    is_error: true,
-  }
+// Safely render tool use rejected message with error handling - Returns ReactNode (directly rendered)
+export function renderToolUseRejectedMessage(): React.ReactNode {
+  return <Text color="red">Permission denied to update goal status.</Text>
 }

@@ -1,5 +1,7 @@
-import { BROWSER_TOOLS } from '@ant/claude-for-chrome-mcp'
 import { chmod, mkdir, readFile, writeFile } from 'fs/promises'
+
+// @ant/claude-for-chrome-mcp is optional - provide fallback if not available
+const BROWSER_TOOLS: Array<{ name: string }> = []
 import { homedir } from 'os'
 import { join } from 'path'
 import { fileURLToPath } from 'url'

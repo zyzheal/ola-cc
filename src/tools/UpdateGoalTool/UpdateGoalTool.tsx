@@ -2,7 +2,8 @@ import { z } from 'zod/v4'
 import { lazySchema } from '../../utils/lazySchema.js'
 import { buildTool, type ToolDef } from '../../Tool.js'
 import type { AppState } from '../../state/AppStateStore.js'
-import type { ThreadGoalStatus } from '../../commands/goal/types.js'
+import type { ThreadGoalStatus, Goal, TokenUsage } from '../../commands/goal/types.js'
+import { processGoalRuntimeEvent } from '../../utils/goal/goalRuntime.js'
 import {
   renderToolUseMessage,
   renderToolResultMessage,
@@ -56,42 +57,89 @@ export const UpdateGoalTool: ToolDef<InputSchema, Output> = buildTool({
   async checkPermissions(input: InputSchema) {
     return { behavior: 'allow' as const, updatedInput: input }
   },
+  async prompt() {
+    return 'Update the current goal status. Call this when you complete a goal or need to pause. Use status="complete" to mark the goal as achieved.'
+  },
   renderToolUseMessage,
   renderToolResultMessage,
   renderToolUseRejectedMessage,
   async call(input: InputSchema, context): Promise<{ data: Output }> {
-    const { getAppState, setAppState } = context as {
-      getAppState: () => AppState
-      setAppState: SetAppState
+    // Safely access context functions
+    const getAppState = context?.getAppState
+    const setAppState = context?.setAppState
+
+    if (!getAppState || !setAppState) {
+      return {
+        data: { message: 'Error: Context functions not available.' },
+      }
     }
 
     const appState = getAppState()
-    const currentGoal = appState.goal
+    const currentGoal = appState?.goal
 
-    if (!currentGoal.id) {
+    if (!currentGoal?.id) {
       return {
         data: { message: 'No active goal to update.' },
       }
     }
 
-    const newStatus = input.status as ThreadGoalStatus
+    // Codex-style restriction: update_goal can only mark complete
+    // pause/resume are controlled by user via /goal pause|resume commands
+    if (input.status !== 'complete') {
+      return {
+        data: {
+          message: 'update_goal can only mark goals complete. Use /goal pause or /goal resume commands for status changes.',
+        },
+      }
+    }
 
-    setAppState((prev) => ({
-      ...prev,
-      goal: {
-        ...prev.goal,
-        status: newStatus,
-        updatedAt: Date.now(),
-      },
-    }))
+    // Trigger goal runtime event for completion (Codex-style)
+    const currentTokenUsage: TokenUsage = {
+      inputTokens: currentGoal.tokensUsed,
+      cachedInputTokens: 0,
+      outputTokens: 0,
+      reasoningOutputTokens: 0,
+      totalTokens: currentGoal.tokensUsed,
+    }
 
-    let response = `Goal status updated to "${input.status}".`
+    processGoalRuntimeEvent(
+      { type: 'tool_completed_goal' },
+      {
+        goal: currentGoal,
+        runtime: appState.goalRuntime,
+        currentTokenUsage,
+        injectPrompt: async () => {},
+        updateGoal: (updatedGoal: Goal) => {
+          setAppState(prev => ({
+            ...prev,
+            goal: updatedGoal,
+          }))
+        },
+      }
+    )
+
+    // Generate completion report (matching Codex behavior)
+    const updatedGoal = getAppState().goal
+    let response = `Goal completed: "${updatedGoal.objective}"\n`
+    response += `Time elapsed: ${updatedGoal.timeUsedSeconds}s\n`
+    if (updatedGoal.tokenBudget) {
+      response += `Token budget used: ${updatedGoal.tokensUsed} / ${updatedGoal.tokenBudget}\n`
+    } else {
+      response += `Tokens consumed: ${updatedGoal.tokensUsed}\n`
+    }
     if (input.summary) {
-      response += ` Progress: ${input.summary}`
+      response += `\nSummary: ${input.summary}`
     }
 
     return {
       data: { message: response },
+    }
+  },
+  mapToolResultToToolResultBlockParam(data: Output, toolUseID: string) {
+    return {
+      tool_use_id: toolUseID,
+      type: 'tool_result' as const,
+      content: data.message,
     }
   },
 })

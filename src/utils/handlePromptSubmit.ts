@@ -26,6 +26,7 @@ import { fileHistoryEnabled, fileHistoryMakeSnapshot } from './fileHistory.js'
 import { gracefulShutdownSync } from './gracefulShutdown.js'
 import { enqueue } from './messageQueueManager.js'
 import { resolveSkillModelOverride } from './model/model.js'
+import { createUserMessage } from './messages.js'
 import type { ProcessUserInputContext } from './processUserInput/processUserInput.js'
 import { processUserInput } from './processUserInput/processUserInput.js'
 import type { QueryGuard } from './QueryGuard.js'
@@ -269,8 +270,12 @@ export async function handlePromptSubmit(
       )
 
       let doneWasCalled = false
+      let shouldQueryAfterDone = false
+      let metaMessagesForQuery: string[] = []
       const onDone: LocalJSXCommandOnDone = (result, options) => {
         doneWasCalled = true
+        shouldQueryAfterDone = options?.shouldQuery ?? false
+        metaMessagesForQuery = options?.metaMessages ?? []
         // Use clearLocalJSX to explicitly clear the local JSX command
         setToolJSX({
           jsx: null,
@@ -295,6 +300,17 @@ export async function handlePromptSubmit(
 
       const impl = await immediateCommand.load()
       const jsx = await impl.call(onDone, context, commandArgs)
+
+      // If command requested a query after completion (e.g. /goal auto-execute)
+      if (shouldQueryAfterDone && metaMessagesForQuery.length > 0) {
+        const queryMessages = metaMessagesForQuery.map(content => createUserMessage({
+          content,
+          isMeta: true,
+        }))
+        const newAbortController = createAbortController()
+        setAbortController(newAbortController)
+        void onQuery(queryMessages, newAbortController, true, [], mainLoopModel)
+      }
 
       // Skip if onDone already fired — prevents stuck isLocalJSXCommand
       // (see processSlashCommand.tsx local-jsx case for full mechanism).

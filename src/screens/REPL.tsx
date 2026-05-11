@@ -67,6 +67,7 @@ import type { SSHSession } from '../ssh/createSSHSession.js';
 import { SkillImprovementSurvey } from '../components/SkillImprovementSurvey.js';
 import { useSkillImprovementSurvey } from '../hooks/useSkillImprovementSurvey.js';
 import { useMoreRight } from '../moreright/useMoreRight.js';
+import { GoalProgressWithBoundary } from '../components/goal/GoalProgress.js';
 import { SpinnerWithVerb, BriefIdleStatus, type SpinnerMode } from '../components/Spinner.js';
 import { getSystemPrompt } from '../constants/prompts.js';
 import { buildEffectiveSystemPrompt } from '../utils/systemPrompt.js';
@@ -739,6 +740,7 @@ export function REPL({
   const ultraplanPendingChoice = useAppState(s => s.ultraplanPendingChoice);
   const ultraplanLaunchPending = useAppState(s => s.ultraplanLaunchPending);
   const viewingAgentTaskId = useAppState(s => s.viewingAgentTaskId);
+  const goal = useAppState(s => s.goal);
   const setAppState = useSetAppState();
 
   // Bootstrap: retained local_agent that hasn't loaded disk yet → read
@@ -1779,8 +1781,8 @@ export function REPL({
   // Hide spinner when the only in-progress tool is Sleep
   const onlySleepToolActive = useMemo(() => {
     const lastAssistant = messages.findLast(m => m.type === 'assistant');
-    if (lastAssistant?.type !== 'assistant') return false;
-    const inProgressToolUses = lastAssistant.message.content.filter(b => b.type === 'tool_use' && inProgressToolUseIDs.has(b.id));
+    if (lastAssistant?.type !== 'assistant' || !lastAssistant?.message?.content) return false;
+    const inProgressToolUses = lastAssistant.message.content.filter(b => b.type === 'tool_use' && b.id && inProgressToolUseIDs.has(b.id));
     return inProgressToolUses.length > 0 && inProgressToolUses.every(b => b.type === 'tool_use' && b.name === SLEEP_TOOL_NAME);
   }, [messages, inProgressToolUseIDs]);
   const {
@@ -2306,7 +2308,9 @@ export function REPL({
           ...prev
         };
         for (const image of result.images) {
-          newContents[image.id] = image;
+          if (image?.id) {
+            newContents[image.id] = image;
+          }
         }
         return newContents;
       });
@@ -3337,11 +3341,16 @@ export function REPL({
         // Execute the command directly
         const executeImmediateCommand = async (): Promise<void> => {
           let doneWasCalled = false;
+          let shouldQueryAfterDone = false;
+          let metaMessagesForQuery: string[] = [];
           const onDone = (result?: string, doneOptions?: {
             display?: CommandResultDisplay;
             metaMessages?: string[];
+            shouldQuery?: boolean;
           }): void => {
             doneWasCalled = true;
+            shouldQueryAfterDone = doneOptions?.shouldQuery ?? false;
+            metaMessagesForQuery = doneOptions?.metaMessages ?? [];
             setToolJSX({
               jsx: null,
               shouldHidePromptInput: false,
@@ -3393,6 +3402,17 @@ export function REPL({
           const context = getToolUseContext(messagesRef.current, [], createAbortController(), mainLoopModel);
           const mod = await matchingCommand.load();
           const jsx = await mod.call(onDone, context, commandArgs);
+
+          // If command requested a query after completion (e.g. /goal auto-execute)
+          if (shouldQueryAfterDone && metaMessagesForQuery.length > 0) {
+            const queryMessages = metaMessagesForQuery.map(content => createUserMessage({
+              content,
+              isMeta: true,
+            }));
+            const newAbortController = createAbortController();
+            setAbortController(newAbortController);
+            void onQuery(queryMessages, newAbortController, true, [], mainLoopModel);
+          }
 
           // Skip if onDone already fired — prevents stuck isLocalJSXCommand
           // (see processSlashCommand.tsx local-jsx case for full mechanism).
@@ -3875,6 +3895,8 @@ export function REPL({
   const handleRestoreMessage = useCallback(async (message: UserMessage) => {
     setImmediate((restore, message) => restore(message), restoreMessageSync, message);
   }, [restoreMessageSync]);
+
+  // Goal auto-execute: removed - query.ts handles pendingGoalPrompt internally
 
   // Not memoized — hook stores caps via ref, reads latest closure at dispatch.
   // 24-char prefix: deriveUUID preserves first 24, renderable uuid prefix-matches raw source.
@@ -4758,6 +4780,10 @@ export function REPL({
                 {!showSpinner && !toolJSX?.isLocalJSXCommand && showExpandedTodos && tasksV2 && tasksV2.length > 0 && <Box width="100%" flexDirection="column">
                       <TaskListV2 tasks={tasksV2} isStandalone={true} />
                     </Box>}
+                {/* Goal progress temporarily disabled for debugging */}
+                {/* {goal?.id && goal?.status && <Box width="100%" flexDirection="column">
+                      <GoalProgressWithBoundary />
+                    </Box>} */}
                 {focusedInputDialog === 'sandbox-permission' && <SandboxPermissionRequest key={sandboxPermissionRequestQueue[0]!.hostPattern.host} hostPattern={sandboxPermissionRequestQueue[0]!.hostPattern} onUserResponse={(response: {
             allow: boolean;
             persistToSettings: boolean;

@@ -15,6 +15,8 @@ export interface Goal {
   timeUsedSeconds: number
   createdAt: number
   updatedAt: number
+  // 方案 C: 关联 TodoWrite 列表
+  todoListId?: string  // 关联的 TodoWrite 列表 ID（sessionId 或 agentId）
 }
 
 export interface GoalRuntimeState {

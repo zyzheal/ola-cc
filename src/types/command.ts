@@ -144,6 +144,12 @@ export type LocalJSXCommandModule = {
 type LocalJSXCommand = {
   type: 'local-jsx'
   /**
+   * Whether this command supports non-interactive (headless) mode.
+   * If true, the command will be available in -p/--print mode.
+   * Defaults to false (only available in interactive REPL).
+   */
+  supportsNonInteractive?: boolean
+  /**
    * Lazy-load the command implementation.
    * Returns a module with a call() function.
    * This defers loading heavy dependencies until the command is invoked.

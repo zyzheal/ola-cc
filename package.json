@@ -39,7 +39,6 @@
   },
   "dependencies": {
     "@alcalzone/ansi-tokenize": "^0.2.4",
-    "@ant/claude-for-chrome-mcp": "file:./shims/ant-claude-for-chrome-mcp",
     "@ant/computer-use-input": "file:./shims/ant-computer-use-input",
     "@ant/computer-use-mcp": "file:./shims/ant-computer-use-mcp",
     "@ant/computer-use-swift": "file:./shims/ant-computer-use-swift",
@@ -50,7 +49,7 @@
     "@aws-sdk/client-bedrock-runtime": "*",
     "@commander-js/extra-typings": "*",
     "@growthbook/growthbook": "*",
-    "@modelcontextprotocol/sdk": "*",
+    "@modelcontextprotocol/sdk": "^1.29.0",
     "@opentelemetry/api": "*",
     "@opentelemetry/api-logs": "*",
     "@opentelemetry/core": "*",
