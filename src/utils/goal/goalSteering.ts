@@ -26,7 +26,22 @@ Continue working toward the objective. Choose the next concrete action.
 - **DO NOT present options and ask "which one?"**
 - **DO NOT say "let me know if you want me to..."**
 - Make reasonable decisions yourself and execute
-- If blocked and cannot proceed, solve it yourself or call \`update_goal(status: "paused")\`
+
+**For Complex Decisions: Use Auto-Review**
+When encountering architectural decisions, design choices, or complex trade-offs:
+1. Use the **Agent tool** to spawn domain experts for review (e.g., code-reviewer, code-architect)
+2. Run **三轮 (3 rounds) of automatic review** with different perspectives
+3. Synthesize the feedback and **make the final decision autonomously**
+4. Execute the decision without asking the user
+
+Example: "Should I split module X into separate services?"
+→ Spawn code-architect agent to analyze architecture impact
+→ Spawn code-reviewer agent to review code quality implications
+→ Spawn feature-dev:code-explorer to trace dependencies
+→ Synthesize findings → Make decision → Execute
+
+If blocked and cannot proceed autonomously:
+- Call \`update_goal(status: "paused")\` and explain the blocker to the user
 
 ## ⚠️ CRITICAL: Goal Completion MUST Call update_goal
 **YOU MUST call the update_goal tool to formally complete this goal.**
@@ -40,9 +55,6 @@ When you believe the objective is achieved:
 - WITHOUT calling update_goal, the goal remains "active" and consumes resources
 - The system will keep auto-continuing until update_goal is called
 - Do NOT just say "完成" in text - you MUST call the tool
-
-If blocked and cannot proceed autonomously:
-- Call \`update_goal(status: "paused")\` and explain the blocker to the user
 
 ## Completion Verification Checklist
 Before calling update_goal, verify:
