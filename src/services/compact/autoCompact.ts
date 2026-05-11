@@ -327,6 +327,7 @@ export async function autoCompactIfNeeded(
       messages,
       toolUseContext.agentId,
       recompactionInfo.autoCompactThreshold,
+      toolUseContext.getAppState,
     )
   } else {
     logForDebugging(

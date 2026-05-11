@@ -205,6 +205,20 @@ Model configuration is multi-layered (`src/utils/model/`):
 
 Messages in `src/types/message.ts` include `UserMessage`, `AssistantMessage`, and various system message types. **`AssistantMessage.message` is optional** (`message?: { content, usage, ... }`). Code that accesses `message.message.content` or `message.message.usage` must defensively check `message.message` existence — compact flows, streaming fallback, and API error paths can produce messages with `message` set to `undefined`.
 
+### Safety Check Classification
+
+Safety checks (`checkPathSafetyForAutoEdit` in `src/utils/permissions/filesystem.ts`) are classified into two categories based on `classifierApprovable`:
+
+| Type | classifierApprovable | Behavior in auto/bypass mode |
+|------|---------------------|------------------------------|
+| Non-approvable | `false` | Always requires manual approval (e.g., Windows suspicious patterns, UNC paths) |
+| Approvable | `true` | Can be approved by classifier in auto mode, bypassed in bypassPermissions mode (e.g., .claude/, .git/, shell configs) |
+
+**Permission flow:**
+1. `checkRuleBasedPermissions` checks rule-level blocks (deny/ask rules, non-approvable safety checks)
+2. `hasPermissionsToUseToolInner` step 1g confirms classifierApprovable safety checks don't block
+3. Step 2a `bypassPermissions` allows classifierApprovable safety checks when mode is `bypassPermissions`
+
 ## Important Files
 
 | File | Purpose |
