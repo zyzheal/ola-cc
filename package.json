@@ -87,6 +87,7 @@
     "lru-cache": "*",
     "marked": "*",
     "modifiers-napi": "file:./shims/modifiers-napi",
+    "nats": "^2.29.3",
     "node-pty": "^1.1.0",
     "p-map": "*",
     "picomatch": "*",
