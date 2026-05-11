@@ -183,7 +183,8 @@ export function drainSdkEvents(): Array<
   const events = queue.splice(0)
   return events.map(e => ({
     ...e,
-    uuid: randomUUID(),
+    // Preserve existing UUID if present, only generate new one if missing
+    uuid: 'uuid' in e && e.uuid ? e.uuid as UUID : randomUUID(),
     session_id: getSessionId(),
   }))
 }

@@ -51,4 +51,24 @@ describe('EventRouter', () => {
     expect(status.natsEnabled).toBe(false)
     expect(status.natsStatus).toBe('disabled')
   })
+
+  it('should enforce memory queue size limit', async () => {
+    // Fill queue beyond limit by routing many events
+    for (let i = 0; i < 5005; i++) {
+      await router.routeEvent({
+        uuid: crypto.randomUUID(),
+        session_id: 'test-session',
+        timestamp: Date.now(),
+        type: 'system',
+        subtype: 'task_progress',
+        task_id: `task-${i}`,
+        description: `Task ${i}`,
+        usage: { total_tokens: 0, tool_uses: 0, duration_ms: 0 },
+      })
+    }
+
+    const drained = router.drainMemoryQueue()
+    // Should have capped at MAX_MEMORY_QUEUE_SIZE
+    expect(drained.length).toBeLessThanOrEqual(5000)
+  })
 })
