@@ -347,6 +347,9 @@ export async function autoCompactIfNeeded(
       notifyCompaction(querySource ?? 'compact', toolUseContext.agentId)
     }
     markPostCompaction()
+    // NOTE: goalRuntime accounting.turn reset is handled by the caller (query.ts)
+    // after buildPostCompactMessages, via resetGoalRuntimeAfterCompact.
+    // SM-compact doesn't call API, so compactionUsage is undefined → delta = 0
     return {
       wasCompacted: true,
       compactionResult: sessionMemoryResult,
