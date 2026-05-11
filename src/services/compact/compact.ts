@@ -31,6 +31,7 @@ import type {
   SystemMessage,
   UserMessage,
 } from '../../types/message.js'
+import type { AppState } from '../../state/AppStateStore.js'
 import {
   createAttachmentMessage,
   generateFileAttachment,
@@ -118,6 +119,9 @@ import {
   getCompactUserSummaryMessage,
   getPartialCompactPrompt,
 } from './prompt.js'
+import { type Goal, ThreadGoalStatus } from '../../commands/goal/types.js'
+import { buildContinuationPrompt } from '../../utils/goal/goalSteering.js'
+import { getSessionId } from '../../bootstrap/state.js'
 
 export const POST_COMPACT_MAX_FILES_TO_RESTORE = 5
 export const POST_COMPACT_TOKEN_BUDGET = 50_000
@@ -560,6 +564,20 @@ export async function compactConversation(
       postCompactFileAttachments.push(skillAttachment)
     }
 
+    // Add goal continuation attachment if there's an active goal
+    // This ensures the model continues working toward the goal after compaction
+    const goalAttachment = createGoalAttachmentIfNeeded(context)
+    if (goalAttachment) {
+      postCompactFileAttachments.push(goalAttachment)
+    }
+
+    // Add todo continuation attachment if there are active todos
+    // This ensures the model continues working on pending tasks after compaction
+    const todoAttachment = createTodoContinuationAttachmentIfNeeded(context)
+    if (todoAttachment) {
+      postCompactFileAttachments.push(todoAttachment)
+    }
+
     // Compaction ate prior delta attachments. Re-announce from the current
     // state so the model has tool/instruction context on the first
     // post-compact turn. Empty message history → diff against nothing →
@@ -950,6 +968,18 @@ export async function partialCompactConversation(
     const skillAttachment = createSkillAttachmentIfNeeded(context.agentId)
     if (skillAttachment) {
       postCompactFileAttachments.push(skillAttachment)
+    }
+
+    // Add goal continuation attachment if there's an active goal
+    const goalAttachment = createGoalAttachmentIfNeeded(context)
+    if (goalAttachment) {
+      postCompactFileAttachments.push(goalAttachment)
+    }
+
+    // Add todo continuation attachment if there are active todos
+    const todoAttachment = createTodoContinuationAttachmentIfNeeded(context)
+    if (todoAttachment) {
+      postCompactFileAttachments.push(todoAttachment)
     }
 
     // Re-announce only what was in the summarized portion — messagesToKeep
@@ -1530,6 +1560,156 @@ export function createSkillAttachmentIfNeeded(
   return createAttachmentMessage({
     type: 'invoked_skills',
     skills,
+  })
+}
+
+/**
+ * Context type for attachment creation functions.
+ * Supports both ToolUseContext (for normal compact) and a minimal context
+ * (for Session Memory Compact which doesn't have ToolUseContext).
+ */
+type AttachmentContext =
+  | ToolUseContext
+  | { getAppState: () => AppState; agentId?: AgentId }
+
+/**
+ * Helper to get AppState from AttachmentContext.
+ */
+function getAttachmentAppState(context: AttachmentContext): AppState {
+  return context.getAppState()
+}
+
+/**
+ * Helper to get agentId from AttachmentContext.
+ */
+function getAttachmentAgentId(context: AttachmentContext): AgentId | undefined {
+  if ('agentId' in context) {
+    return context.agentId
+  }
+  return undefined
+}
+
+/**
+ * Type for setAppState function.
+ * Matches the signature used in ToolUseContext and components.
+ */
+type SetAppStateFn = (f: (prev: AppState) => AppState) => void
+
+/**
+ * Resets goalRuntime.accounting.turn after compact to prevent negative tokenDelta.
+ *
+ * CRITICAL: This must be called after every compact operation that affects goal state.
+ * Without this reset, tokenDeltaSinceLastAccounting would compute negative delta
+ * because lastTokenUsage (pre-compact high value) vs current usage (post-compact low value)
+ * produces current - last = negative.
+ *
+ * @param setAppState - Function to update AppState
+ * @param compactionUsage - Optional token usage from the compact API call (for Full Compact)
+ *                           Session Memory Compact doesn't have this, pass undefined
+ */
+export function resetGoalRuntimeAfterCompact(
+  setAppState: SetAppStateFn,
+  compactionUsage?: { input_tokens: number; output_tokens: number },
+): void {
+  setAppState(prev => {
+    // Only reset if there's an active goal
+    if (!prev.goal?.id || prev.goal?.status !== ThreadGoalStatus.Active) {
+      return prev
+    }
+
+    const compactDelta = compactionUsage
+      ? compactionUsage.input_tokens + compactionUsage.output_tokens
+      : 0
+
+    return {
+      ...prev,
+      goal: {
+        ...prev.goal,
+        tokensUsed: prev.goal.tokensUsed + compactDelta,
+        updatedAt: Date.now(),
+      },
+      // Reset accounting.turn so next turn_started initializes fresh baseline
+      goalRuntime: {
+        ...prev.goalRuntime,
+        accounting: {
+          ...prev.goalRuntime.accounting,
+          turn: null,
+        },
+      },
+    }
+  })
+}
+
+/**
+ * Creates a goal_continuation attachment if there is an active goal.
+ * This ensures the model continues working toward the goal after compaction,
+ * since the original continuation prompt (injected via metaMessages) would be lost.
+ *
+ * The attachment contains the goal objective, progress, and a fresh continuation prompt
+ * so the model knows it's still working toward a goal and should call update_goal to complete.
+ */
+export function createGoalAttachmentIfNeeded(
+  context: AttachmentContext,
+): AttachmentMessage | null {
+  const appState = getAttachmentAppState(context)
+  const goal = appState.goal
+
+  // Check if there's an active goal
+  if (!goal || !goal.id || goal.status !== ThreadGoalStatus.Active) {
+    return null
+  }
+
+  // Build the continuation prompt for the goal
+  const continuationPrompt = buildContinuationPrompt(goal)
+
+  return createAttachmentMessage({
+    type: 'goal_continuation',
+    objective: goal.objective,
+    status: goal.status,
+    tokensUsed: goal.tokensUsed,
+    tokenBudget: goal.tokenBudget,
+    timeUsedSeconds: goal.timeUsedSeconds,
+    continuationPrompt,
+  })
+}
+
+/**
+ * Creates a todo_continuation attachment if there are active todos.
+ * This ensures the model continues working on pending/in-progress tasks after compaction,
+ * since the original task context (injected via metaMessages) would be lost.
+ *
+ * The attachment contains the current todo list state so the model knows
+ * what tasks are pending and should continue working on them.
+ */
+export function createTodoContinuationAttachmentIfNeeded(
+  context: AttachmentContext,
+): AttachmentMessage | null {
+  const appState = getAttachmentAppState(context)
+  const agentId = getAttachmentAgentId(context)
+
+  // Get the todo list for the current agent/session
+  const todoKey = agentId ?? getSessionId()
+  const todos = appState.todos[todoKey]
+
+  // Check if there are active todos (pending or in_progress)
+  if (!todos || todos.length === 0) {
+    return null
+  }
+
+  const activeTodos = todos.filter(
+    t => t.status === 'pending' || t.status === 'in_progress'
+  )
+
+  if (activeTodos.length === 0) {
+    return null
+  }
+
+  // Create todo_continuation attachment with the active todos
+  return createAttachmentMessage({
+    type: 'todo_continuation',
+    todos: activeTodos,
+    totalCount: todos.length,
+    activeCount: activeTodos.length,
   })
 }
 
