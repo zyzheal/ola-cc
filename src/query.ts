@@ -710,19 +710,28 @@ async function* queryLoop(
       messagesForQuery = postCompactMessages
 
       // Account for compact token usage against the active goal's budget
+      // Reset goalRuntime accounting.turn to prevent negative tokenDelta after compact
       if (appState.goal?.id && appState.goal?.status === ThreadGoalStatus.Active) {
         const compactUsage = compactionResult.compactionUsage
-        if (compactUsage) {
-          const compactDelta = compactUsage.input_tokens + compactUsage.output_tokens
-          toolUseContext.setAppState(prev => ({
-            ...prev,
-            goal: {
-              ...prev.goal,
-              tokensUsed: prev.goal.tokensUsed + compactDelta,
-              updatedAt: Date.now(),
+        const compactDelta = compactUsage ? compactUsage.input_tokens + compactUsage.output_tokens : 0
+        toolUseContext.setAppState(prev => ({
+          ...prev,
+          goal: {
+            ...prev.goal,
+            tokensUsed: prev.goal.tokensUsed + compactDelta,
+            updatedAt: Date.now(),
+          },
+          // Reset accounting.turn so next turn_started initializes fresh baseline
+          // Without this, tokenDeltaSinceLastAccounting would compute negative delta
+          // because lastTokenUsage reflects pre-compact high value vs post-compact low value
+          goalRuntime: {
+            ...prev.goalRuntime,
+            accounting: {
+              ...prev.goalRuntime.accounting,
+              turn: null,
             },
-          }))
-        }
+          },
+        }))
       }
     } else if (consecutiveFailures !== undefined) {
       // Autocompact failed — propagate failure count so the circuit breaker
