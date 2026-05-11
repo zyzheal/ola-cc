@@ -97,6 +97,17 @@ Agents are defined in `src/tools/AgentTool/loadAgentsDir.ts` and built-in agents
 Context compression lives in `src/services/compact/`:
 - `compact.ts` — main compaction logic, `buildPostCompactMessages()`
 - `microCompact.ts` — lightweight per-tool-result compaction
+
+### Event System
+
+事件系统使用 NATS 作为可选的事件总线：
+- `src/services/eventBus/` - NATS 事件总线实现
+  - `NatsEventBus.ts` - NATS 连接和发布/订阅
+  - `EventRouter.ts` - 事件路由器（NATS ↔ 内存队列 Fallback）
+  - `natsServer.ts` - 本地 NATS 服务器管理
+  - `config.ts` / `types.ts` - 配置和类型
+- `scripts/setup-nats.sh` - 一键启动脚本
+- Fallback: 当 NATS 不可用时，自动降级到内存队列（`src/utils/sdkEventQueue.ts`）
 - `autoCompact.ts` — automatic compaction when context exceeds thresholds
 - `sessionMemoryCompact.ts` — session-specific memory compaction
 - Compact can be triggered by API limits, token budgets, or auto-compact thresholds
