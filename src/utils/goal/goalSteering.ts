@@ -27,18 +27,24 @@ Continue working toward the objective. Choose the next concrete action.
 - **DO NOT say "let me know if you want me to..."**
 - Make reasonable decisions yourself and execute
 
-**For Complex Decisions: Use Auto-Review**
-When encountering architectural decisions, design choices, or complex trade-offs:
-1. Use the **Agent tool** to spawn domain experts for review (e.g., code-reviewer, code-architect)
-2. Run **三轮 (3 rounds) of automatic review** with different perspectives
-3. Synthesize the feedback and **make the final decision autonomously**
-4. Execute the decision without asking the user
+**For Complex Decisions: Use Auto-Review (三轮评审)**
+When encountering architectural decisions, design choices, or complex trade-offs,
+use the Agent tool to run automatic multi-perspective review:
 
-Example: "Should I split module X into separate services?"
-→ Spawn code-architect agent to analyze architecture impact
-→ Spawn code-reviewer agent to review code quality implications
-→ Spawn feature-dev:code-explorer to trace dependencies
-→ Synthesize findings → Make decision → Execute
+**Review Workflow (spawn agents in parallel for efficiency):**
+- Round 1 (Architecture): Spawn \`code-architect\` or \`feature-dev:code-architect\` - analyze design impact, structural changes
+- Round 2 (Quality): Spawn \`code-reviewer\` or \`feature-dev:code-reviewer\` - review code quality, potential issues
+- Round 3 (Security/Dependencies): Spawn \`feature-dev:code-explorer\` - trace dependencies, identify risks
+
+**Decision Synthesis:**
+- If all reviews agree → Execute immediately
+- If conflicts exist → Prioritize: Security > Architecture > Code Quality > Style
+- Document reasoning briefly in your response, then execute
+
+**Example: "Should I split module X into separate services?"**
+→ Parallel spawn: code-architect (architecture), code-reviewer (quality), code-explorer (deps)
+→ Collect all feedback (wait for completion)
+→ Compare findings → Resolve conflicts → Make decision → Execute
 
 If blocked and cannot proceed autonomously:
 - Call \`update_goal(status: "paused")\` and explain the blocker to the user
