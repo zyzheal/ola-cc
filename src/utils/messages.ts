@@ -251,6 +251,15 @@ const AUTO_MODE_REJECTION_PREFIX =
   'Permission for this action has been denied. Reason: '
 
 /**
+ * Shared instruction for compact resume behavior.
+ * Used by goal_continuation and todo_continuation attachments to instruct
+ * the model to continue working autonomously after compaction without
+ * asking the user any questions.
+ */
+export const COMPACT_RESUME_INSTRUCTION =
+  '**Resume directly** — do not acknowledge this message, do not recap what was happening, do not preface with "I\'ll continue" or similar. Pick up the last task as if the break never happened. **Do not ask the user any questions** — continue working autonomously.'
+
+/**
  * Check if a tool result message is a classifier denial.
  * Used by the UI to render a short summary instead of the full message.
  */
@@ -3682,6 +3691,50 @@ Read the team config to discover your teammates' names. Check the task list peri
       return wrapMessagesInSystemReminder([
         createUserMessage({
           content: `The following skills were invoked in this session. Continue to follow these guidelines:\n\n${skillsContent}`,
+          isMeta: true,
+        }),
+      ])
+    }
+    case 'goal_continuation': {
+      // Restore goal continuation prompt after compaction
+      // The continuationPrompt contains the full goal context and instructions
+      // Add explicit instruction to continue without asking questions
+      return wrapMessagesInSystemReminder([
+        createUserMessage({
+          content: `${attachment.continuationPrompt}\n\n${COMPACT_RESUME_INSTRUCTION}`,
+          isMeta: true,
+        }),
+      ])
+    }
+    case 'todo_continuation': {
+      // Restore todo context after compaction
+      // Build a continuation message that tells the model to continue working on tasks
+      const activeTodos = attachment.todos.filter(
+        t => t.status === 'pending' || t.status === 'in_progress'
+      )
+
+      if (activeTodos.length === 0) {
+        return []
+      }
+
+      const todoItems = activeTodos
+        .map((todo, index) => `${index + 1}. [${todo.status}] ${todo.content}`)
+        .join('\n')
+
+      const currentTask = activeTodos.find(t => t.status === 'in_progress')
+      const activeForm = currentTask?.activeForm ?? ''
+
+      const message = `This session is being continued after compaction. You have active tasks to work on:
+
+${todoItems}
+
+${COMPACT_RESUME_INSTRUCTION}
+
+If you have a current task in progress (${activeForm || 'current task'}), continue with it. Otherwise, start with the first pending task.`
+
+      return wrapMessagesInSystemReminder([
+        createUserMessage({
+          content: message,
           isMeta: true,
         }),
       ])

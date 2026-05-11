@@ -4,6 +4,7 @@
 
 import type { AgentId } from '../../types/ids.js'
 import type { HookResultMessage, Message } from '../../types/message.js'
+import type { AppState } from '../../state/AppStateStore.js'
 import { logForDebugging } from '../../utils/debug.js'
 import { isEnvTruthy } from '../../utils/envUtils.js'
 import { errorMessage } from '../../utils/errors.js'
@@ -36,7 +37,9 @@ import {
   annotateBoundaryWithPreservedSegment,
   buildPostCompactMessages,
   type CompactionResult,
+  createGoalAttachmentIfNeeded,
   createPlanAttachmentIfNeeded,
+  createTodoContinuationAttachmentIfNeeded,
 } from './compact.js'
 import { estimateMessageTokens } from './microCompact.js'
 import { getCompactUserSummaryMessage } from './prompt.js'
@@ -441,6 +444,7 @@ function createCompactionResultFromSessionMemory(
   hookResults: HookResultMessage[],
   transcriptPath: string,
   agentId?: AgentId,
+  getAppState?: () => AppState,
 ): CompactionResult {
   const preCompactTokenCount = tokenCountFromLastAPIResponse(messages)
 
@@ -482,7 +486,21 @@ function createCompactionResultFromSessionMemory(
   ]
 
   const planAttachment = createPlanAttachmentIfNeeded(agentId)
-  const attachments = planAttachment ? [planAttachment] : []
+
+  // Create goal and todo attachments if getAppState is provided
+  let goalAttachment: import('../../types/message.js').AttachmentMessage | null = null
+  let todoAttachment: import('../../types/message.js').AttachmentMessage | null = null
+  if (getAppState) {
+    const attachmentContext = { getAppState, agentId }
+    goalAttachment = createGoalAttachmentIfNeeded(attachmentContext)
+    todoAttachment = createTodoContinuationAttachmentIfNeeded(attachmentContext)
+  }
+
+  const attachments = [
+    planAttachment,
+    goalAttachment,
+    todoAttachment,
+  ].filter((a): a is import('../../types/message.js').AttachmentMessage => a !== null)
 
   return {
     boundaryMarker: annotateBoundaryWithPreservedSegment(
@@ -515,6 +533,7 @@ export async function trySessionMemoryCompaction(
   messages: Message[],
   agentId?: AgentId,
   autoCompactThreshold?: number,
+  getAppState?: () => AppState,
 ): Promise<CompactionResult | null> {
   if (!shouldUseSessionMemoryCompaction()) {
     return null
@@ -595,6 +614,7 @@ export async function trySessionMemoryCompaction(
       hookResults,
       transcriptPath,
       agentId,
+      getAppState,
     )
 
     const postCompactMessages = buildPostCompactMessages(compactionResult)

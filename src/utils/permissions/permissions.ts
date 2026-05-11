@@ -1144,11 +1144,20 @@ export async function checkRuleBasedPermissions(
   // 1g. Safety checks (e.g. .git/, .claude/, .vscode/, shell configs) are
   // bypass-immune — they must prompt even when a PreToolUse hook returned
   // allow. checkPathSafetyForAutoEdit returns {type:'safetyCheck'} for these.
+  // However, classifierApprovable safety checks can be bypassed in bypassPermissions
+  // mode since they are considered less risky (can be approved by classifier in auto mode).
   if (
     toolPermissionResult?.behavior === 'ask' &&
     toolPermissionResult.decisionReason?.type === 'safetyCheck'
   ) {
-    return toolPermissionResult
+    // classifierApprovable safety checks should not block here
+    // They will be evaluated in hasPermissionsToUseToolInner's bypassPermissions check
+    if (toolPermissionResult.decisionReason.classifierApprovable) {
+      // Fall through - no rule-based objection for classifierApprovable safety checks
+    } else {
+      // Non-classifierApprovable safety checks are always blocked
+      return toolPermissionResult
+    }
   }
 
   // No rule-based objection
@@ -1250,13 +1259,25 @@ async function hasPermissionsToUseToolInner(
   }
 
   // 1g. Safety checks (e.g. .git/, .claude/, .vscode/, shell configs) are
-  // bypass-immune — they must prompt even in bypassPermissions mode.
+  // bypass-immune by default — they must prompt even in bypassPermissions mode.
+  // However, classifierApprovable safety checks can be bypassed in bypassPermissions
+  // mode since they are considered less risky (can be approved by classifier in auto mode).
   // checkPathSafetyForAutoEdit returns {type:'safetyCheck'} for these paths.
   if (
     toolPermissionResult?.behavior === 'ask' &&
     toolPermissionResult.decisionReason?.type === 'safetyCheck'
   ) {
-    return toolPermissionResult
+    // classifierApprovable safety checks can be bypassed in bypassPermissions mode
+    // These are typically less risky (e.g., .claude/ files, shell configs) that can
+    // be auto-approved by the classifier in auto mode.
+    if (toolPermissionResult.decisionReason.classifierApprovable) {
+      // Fall through to check bypassPermissions mode below
+      // If in bypassPermissions mode, these will be allowed
+    } else {
+      // Non-classifierApprovable safety checks (e.g., suspicious Windows patterns)
+      // are always blocked and require manual approval
+      return toolPermissionResult
+    }
   }
 
   // 2a. Check if mode allows the tool to run

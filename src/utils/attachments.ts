@@ -715,6 +715,25 @@ export type Attachment =
       warningCount: number
       sample: string
     }
+  | {
+      type: 'goal_continuation'
+      objective: string
+      status: string
+      tokensUsed: number
+      tokenBudget: number | null
+      timeUsedSeconds: number
+      continuationPrompt: string
+    }
+  | {
+      type: 'todo_continuation'
+      todos: Array<{
+        content: string
+        status: string
+        activeForm?: string
+      }>
+      totalCount: number
+      activeCount: number
+    }
 
 export type TeammateMailboxAttachment = {
   type: 'teammate_mailbox'

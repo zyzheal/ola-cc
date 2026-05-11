@@ -160,9 +160,15 @@ export const call: LocalJSXCommandCall = async (onDone, context, args) => {
       continuationTurnId: null,
     }
 
-    // If autoAccept is true, set permission mode to acceptEdits
+    // If autoAccept is true, set permission mode to bypassPermissions for full auto-accept
+    // bypassPermissions mode bypasses all permission prompts including file edits
+    const newMode = autoAccept ? 'bypassPermissions' : s.toolPermissionContext.mode
     const newToolPermissionContext = autoAccept
-      ? { ...s.toolPermissionContext, mode: 'acceptEdits' as const }
+      ? {
+          ...s.toolPermissionContext,
+          mode: newMode as const,
+          isBypassPermissionsModeAvailable: true,
+        }
       : s.toolPermissionContext
 
     return {
@@ -189,10 +195,10 @@ export const call: LocalJSXCommandCall = async (onDone, context, args) => {
 
   // Notify permission mode change if autoAccept
   if (autoAccept) {
-    notifyPermissionModeChanged('acceptEdits')
+    notifyPermissionModeChanged('bypassPermissions')
   }
 
-  const message = `Goal set: ${objective}${tokenBudget ? `\nToken budget: ${tokenBudget}` : ''}${autoAccept ? `\nAuto-accept: enabled (edits will be accepted automatically)` : ''}\nLinked to TodoWrite: /todos\nUse /goal to check status, /goal pause to pause, /goal clear to cancel.`
+  const message = `Goal set: ${objective}${tokenBudget ? `\nToken budget: ${tokenBudget}` : ''}${autoAccept ? `\nAuto-accept: enabled (bypassing all permission prompts)` : ''}\nLinked to TodoWrite: /todos\nUse /goal to check status, /goal pause to pause, /goal clear to cancel.`
   // Trigger auto-execute via metaMessages and shouldQuery
   onDone(message, { display: 'system', metaMessages: [continuationPrompt], shouldQuery: true })
   return null

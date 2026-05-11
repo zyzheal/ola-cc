@@ -253,6 +253,31 @@ export function AttachmentMessage({
         const skillNames = attachment.skills.map(s_0 => s_0.name).join(', ');
         return <Line>Skills restored ({skillNames})</Line>;
       }
+    case 'goal_continuation':
+      {
+        // Render goal restoration after compaction
+        const budgetStr = attachment.tokenBudget
+          ? `${attachment.tokensUsed}/${attachment.tokenBudget} tokens`
+          : `${attachment.tokensUsed} tokens used`;
+        return <Line>
+          Goal restored: <Text bold>{attachment.objective.slice(0, 60)}{attachment.objective.length > 60 ? '...' : ''}</Text> ({budgetStr})
+        </Line>;
+      }
+    case 'todo_continuation':
+      {
+        // Render todo restoration after compaction
+        const activeTodos = attachment.todos.filter(t => t.status === 'in_progress' || t.status === 'pending');
+        if (activeTodos.length === 0) {
+          return null;
+        }
+        const currentTask = activeTodos.find(t => t.status === 'in_progress');
+        const taskSummary = currentTask
+          ? `Currently: ${currentTask.content.slice(0, 40)}${currentTask.content.length > 40 ? '...' : ''}`
+          : `${activeTodos.length} tasks pending`;
+        return <Line>
+          Tasks restored: <Text bold>{taskSummary}</Text> ({attachment.activeCount}/{attachment.totalCount} active)
+        </Line>;
+      }
     case 'diagnostics':
       return <DiagnosticsDisplay attachment={attachment} verbose={verbose} />;
     case 'mcp_resource':
