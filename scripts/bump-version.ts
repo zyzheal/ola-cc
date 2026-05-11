@@ -68,10 +68,10 @@ Current version: ${currentVersion}`)
   // Step 1: Check for uncommitted changes
   console.log('[1/4] Checking for uncommitted changes...')
   const statusResult = await $`git status --porcelain`.quiet()
-  if (statusResult.stdout.trim()) {
+  const statusText = statusResult.text()
+  if (statusText.trim()) {
     console.warn('WARNING: You have uncommitted changes. They will be included in the version bump commit.')
-    console.warn(statusResult.stdout)
-    const { confirm } = await import('bun:prompt').then(m => m.confirm || (() => Promise.resolve(true)))
+    console.warn(statusText)
     // Continue anyway since we can't easily prompt in non-interactive mode
   }
 
@@ -130,8 +130,9 @@ Current version: ${currentVersion}`)
   // Create tag
   const tagName = `v${newVersion}`
   // Delete existing tag if it exists locally
-  const tagExists = await $`git tag -l ${tagName}`.quiet()
-  if (tagExists.stdout.trim()) {
+  const tagExistsResult = await $`git tag -l ${tagName}`.quiet()
+  const tagExists = tagExistsResult.text()
+  if (tagExists.trim()) {
     await $`git tag -d ${tagName}`
   }
   await $`git tag ${tagName}`
