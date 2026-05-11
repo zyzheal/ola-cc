@@ -1,5 +1,17 @@
 import { EventEmitter as NodeEventEmitter } from 'events'
 import { Event } from './event.js'
+import { routeEventToNats } from '../../utils/sdkEventQueue.js'
+
+// Events to forward to NATS
+const EVENTS_TO_ROUTE = [
+  'task-started',
+  'task-progress',
+  'task-notification',
+  'session-state-changed',
+  'goal-created',
+  'goal-completed',
+  'tool-executed',
+]
 
 // Similar to node's builtin EventEmitter, but is also aware of our `Event`
 // class, and so `emit` respects `stopImmediatePropagation()`.
@@ -25,6 +37,16 @@ export class EventEmitter extends NodeEventEmitter {
     }
 
     const ccEvent = args[0] instanceof Event ? args[0] : null
+
+    // Forward to NATS if applicable (fire-and-forget)
+    if (typeof type === 'string' && EVENTS_TO_ROUTE.includes(type)) {
+      routeEventToNats({
+        type: 'system',
+        subtype: type,
+        task_id: (args[0] as any)?.taskId ?? '',
+        description: (args[0] as any)?.description ?? '',
+      } as any).catch(() => {})
+    }
 
     for (const listener of listeners) {
       listener.apply(this, args)
