@@ -28,6 +28,7 @@ import {
   buildPostCompactMessages,
   compactConversation,
   ERROR_MESSAGE_USER_ABORT,
+  resetGoalRuntimeAfterCompact,
 } from '../../services/compact/compact.js'
 import { resetMicrocompactState } from '../../services/compact/microCompact.js'
 import type { AppState } from '../../state/AppState.js'
@@ -1109,6 +1110,12 @@ export async function runInProcessTeammate(
           true, // isAutoCompact
         )
         contextMessages = buildPostCompactMessages(compactedSummary)
+        // Reset goalRuntime accounting.turn to prevent negative tokenDelta after compact
+        // Use toolUseContext.setAppState (not isolatedContext) to affect main thread goal state
+        resetGoalRuntimeAfterCompact(
+          toolUseContext.setAppState,
+          compactedSummary.compactionUsage,
+        )
         // Reset microcompact state since full compact replaces all
         // messages — old tool IDs are no longer relevant
         resetMicrocompactState()

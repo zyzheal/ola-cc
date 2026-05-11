@@ -11,7 +11,7 @@ import { COMMAND_MESSAGE_TAG, COMMAND_NAME_TAG } from '../../constants/xml.js';
 import type { CanUseToolFn } from '../../hooks/useCanUseTool.js';
 import { type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS, type AnalyticsMetadata_I_VERIFIED_THIS_IS_PII_TAGGED, logEvent } from '../../services/analytics/index.js';
 import { getDumpPromptsPath } from '../../services/api/dumpPrompts.js';
-import { buildPostCompactMessages } from '../../services/compact/compact.js';
+import { buildPostCompactMessages, resetGoalRuntimeAfterCompact } from '../../services/compact/compact.js';
 import { resetMicrocompactState } from '../../services/compact/microCompact.js';
 import type { Progress as AgentProgress } from '../../tools/AgentTool/AgentTool.js';
 import { runAgent } from '../../tools/AgentTool/runAgent.js';
@@ -697,6 +697,11 @@ async function getMessagesForSlashCommand(commandName: string, args: string, set
               // (on toolUseContext) needs no reset: stale entries are inert
               // (UUIDs never repeat, so they're never looked up).
               resetMicrocompactState();
+              // Reset goalRuntime accounting.turn to prevent negative tokenDelta after compact
+              resetGoalRuntimeAfterCompact(
+                context.setAppState,
+                result.compactionResult.compactionUsage,
+              );
               return {
                 messages: buildPostCompactMessages(compactionResultWithSlashMessages),
                 shouldQuery: false,
