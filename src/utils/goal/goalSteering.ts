@@ -13,13 +13,20 @@ const CONTINUATION_TEMPLATE = `You are working toward a goal in your current thr
 - Time elapsed: {{time_used_seconds}}s
 - Remaining budget: {{remaining_tokens}} tokens
 
-## Task Progress (Auto-Updated)
+## Task Progress (Auto-Managed)
 A 4-item task list tracks your progress automatically:
 - Task 1: 分析目标 → Task 2: 规划执行步骤 → Task 3: 执行任务 → Task 4: 验证完成结果
-System auto-advances tasks each turn. Focus on the objective, not tracking.
+The system automatically advances tasks each turn. **DO NOT call TodoWrite tool** - tasks are managed internally.
 
 ## Your Task
 Continue working toward the objective. Choose the next concrete action.
+
+**CRITICAL: Work Autonomously**
+- **DO NOT ask the user for confirmation, approval, or input**
+- **DO NOT present options and ask "which one?"**
+- **DO NOT say "let me know if you want me to..."**
+- Make reasonable decisions yourself and execute
+- If blocked and cannot proceed, solve it yourself or call \`update_goal(status: "paused")\`
 
 ## ⚠️ CRITICAL: Goal Completion MUST Call update_goal
 **YOU MUST call the update_goal tool to formally complete this goal.**
