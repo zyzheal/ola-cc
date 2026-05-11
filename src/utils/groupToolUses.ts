@@ -34,7 +34,7 @@ function getToolsWithGrouping(tools: Tools): Set<string> {
 function getToolUseInfo(
   msg: MessageWithoutProgress,
 ): { messageId: string; toolUseId: string; toolName: string } | null {
-  if (msg.type === 'assistant' && msg.message.content[0]?.type === 'tool_use') {
+  if (msg.type === 'assistant' && msg.message && msg.message.content[0]?.type === 'tool_use') {
     const content = msg.message.content[0]
     return {
       messageId: msg.message.id,

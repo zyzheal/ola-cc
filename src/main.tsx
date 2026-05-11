@@ -2612,7 +2612,11 @@ async function run(): Promise<CommanderCommand> {
 
       // Headless mode supports all prompt commands and some local commands
       // If disableSlashCommands is true, return empty array
-      const commandsHeadless = disableSlashCommands ? [] : commands.filter(command => command.type === 'prompt' && !command.disableNonInteractive || command.type === 'local' && command.supportsNonInteractive);
+      const commandsHeadless = disableSlashCommands ? [] : commands.filter(command =>
+        command.type === 'prompt' && !command.disableNonInteractive ||
+        command.type === 'local' && command.supportsNonInteractive ||
+        command.type === 'local-jsx' && command.supportsNonInteractive
+      );
       const defaultState = getDefaultAppState();
       const headlessInitialState: AppState = {
         ...defaultState,

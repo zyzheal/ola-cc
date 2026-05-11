@@ -6,6 +6,7 @@ export default {
   name: 'goal',
   description: 'Set and manage persistent goals for multi-turn work',
   argumentHint: '[<objective>|status|pause|resume|clear] [--budget <tokens>]',
+  supportsNonInteractive: true,
   get immediate() {
     return shouldInferenceConfigCommandBeImmediate()
   },

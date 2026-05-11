@@ -116,6 +116,7 @@ import { createBudgetTracker, checkTokenBudget } from './query/tokenBudget.js'
 import { count } from './utils/array.js'
 import { processGoalRuntimeEvent } from './utils/goal/goalRuntime.js'
 import { ThreadGoalStatus, type Goal, type TokenUsage } from './commands/goal/types.js'
+import type { TodoItem } from './utils/todo/types.js'
 
 /**
  * Quick (non-stringify) estimate of a single message's byte size.
@@ -397,7 +398,7 @@ async function* queryLoop(
       turnCount,
     } = state
 
-    // Goal auto-continue: consume any pending prompt from previous turn
+    // Goal auto-continue: check local variable (from turn_finished continuation)
     if (pendingGoalPrompt) {
       state.messages = [
         ...state.messages,
@@ -709,7 +710,7 @@ async function* queryLoop(
       messagesForQuery = postCompactMessages
 
       // Account for compact token usage against the active goal's budget
-      if (appState.goal.id && appState.goal.status === ThreadGoalStatus.Active) {
+      if (appState.goal?.id && appState.goal?.status === ThreadGoalStatus.Active) {
         const compactUsage = compactionResult.compactionUsage
         if (compactUsage) {
           const compactDelta = compactUsage.input_tokens + compactUsage.output_tokens
@@ -760,7 +761,7 @@ async function* queryLoop(
     const appState = toolUseContext.getAppState()
 
     // Trigger turn_started event at the beginning of each turn for goal tracking
-    if (appState.goal.id && appState.goal.status === ThreadGoalStatus.Active) {
+    if (appState.goal?.id && appState.goal?.status === ThreadGoalStatus.Active) {
       const turnBaselineUsage: TokenUsage = {
         inputTokens: appState.goal.tokensUsed,
         cachedInputTokens: 0,
@@ -771,7 +772,7 @@ async function* queryLoop(
       processGoalRuntimeEvent(
         {
           type: 'turn_started',
-          turnId: tracking.turnId,
+          turnId: tracking?.turnId ?? deps.uuid(),
           tokenUsage: turnBaselineUsage,
         },
         {
@@ -783,6 +784,22 @@ async function* queryLoop(
             toolUseContext.setAppState(prev => ({
               ...prev,
               goal,
+            }))
+          },
+          getTodos: () => {
+            const todoListId = appState.goal?.todoListId
+            if (!todoListId) return undefined
+            return toolUseContext.getAppState().todos?.[todoListId]
+          },
+          updateTodos: (todos) => {
+            const todoListId = appState.goal?.todoListId
+            if (!todoListId) return
+            toolUseContext.setAppState(prev => ({
+              ...prev,
+              todos: {
+                ...prev.todos,
+                [todoListId]: todos,
+              },
             }))
           },
         }
@@ -1950,9 +1967,9 @@ async function* queryLoop(
 
     // Check if goal should auto-continue after turn completion
     const currentAppState = toolUseContext.getAppState()
-    if (currentAppState.goal.id && currentAppState.goal.status === ThreadGoalStatus.Active) {
-      // Create token usage from current goal state
-      const goalTokenUsage: TokenUsage = {
+    if (currentAppState.goal?.id && currentAppState.goal?.status === ThreadGoalStatus.Active) {
+      // Use real API token usage for accurate accounting
+      const effectiveTokenUsage: TokenUsage = currentTokenUsage ?? {
         inputTokens: currentAppState.goal.tokensUsed,
         cachedInputTokens: 0,
         outputTokens: 0,
@@ -1964,7 +1981,7 @@ async function* queryLoop(
         {
           goal: currentAppState.goal,
           runtime: currentAppState.goalRuntime,
-          currentTokenUsage: goalTokenUsage,
+          currentTokenUsage: effectiveTokenUsage,
           injectPrompt: async (prompt: string) => {
             // Store the prompt to be injected at the start of next iteration
             pendingGoalPrompt = prompt
@@ -1974,6 +1991,22 @@ async function* queryLoop(
             toolUseContext.setAppState(prev => ({
               ...prev,
               goal: updatedGoal,
+            }))
+          },
+          getTodos: () => {
+            const todoListId = currentAppState.goal?.todoListId
+            if (!todoListId) return undefined
+            return currentAppState.todos?.[todoListId]
+          },
+          updateTodos: (todos) => {
+            const todoListId = currentAppState.goal?.todoListId
+            if (!todoListId) return
+            toolUseContext.setAppState(prev => ({
+              ...prev,
+              todos: {
+                ...prev.todos,
+                [todoListId]: todos,
+              },
             }))
           },
         }

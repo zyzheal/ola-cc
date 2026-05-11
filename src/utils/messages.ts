@@ -1201,7 +1201,7 @@ export function buildMessageLookups(
   const toolUseIDToMessageID = new Map<string, string>()
   const toolUseByToolUseID = new Map<string, ToolUseBlockParam>()
   for (const msg of messages) {
-    if (msg.type === 'assistant') {
+    if (msg.type === 'assistant' && msg.message) {
       const id = msg.message.id
       let toolUseIDs = toolUseIDsByMessageID.get(id)
       if (!toolUseIDs) {
@@ -1332,11 +1332,12 @@ export function buildMessageLookups(
   // perpetually spinning.
   const lastMsg = messages.at(-1)
   const lastAssistantMsgId =
-    lastMsg?.type === 'assistant' ? lastMsg.message.id : undefined
+    lastMsg?.type === 'assistant' && lastMsg.message ? lastMsg.message.id : undefined
   for (const msg of normalizedMessages) {
     if (msg.type !== 'assistant') continue
     // Skip blocks from the last original message if it's an assistant,
     // since it may still be in progress.
+    if (!msg.message) continue
     if (msg.message.id === lastAssistantMsgId) continue
     for (const content of msg.message.content) {
       if (

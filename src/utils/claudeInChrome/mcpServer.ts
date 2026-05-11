@@ -1,10 +1,14 @@
-import {
-  type ClaudeForChromeContext,
-  createClaudeForChromeMcpServer,
-  type Logger,
-  type PermissionMode,
-} from '@ant/claude-for-chrome-mcp'
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
+
+// @ant/claude-for-chrome-mcp is optional - provide fallback types
+type ClaudeForChromeContext = unknown
+type Logger = unknown
+type PermissionMode = string
+
+// Stub implementation for when package is not available
+async function createClaudeForChromeMcpServer(): Promise<null> {
+  return null
+}
 import { format } from 'util'
 import { shutdownDatadog } from '../../services/analytics/datadog.js'
 import { shutdown1PEventLogging } from '../../services/analytics/firstPartyEventLogger.js'

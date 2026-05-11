@@ -124,7 +124,7 @@ export function renderToolUseMessage(input: Partial<BashToolInput>, {
       if (truncated.length > MAX_COMMAND_DISPLAY_CHARS) {
         truncated = truncated.slice(0, MAX_COMMAND_DISPLAY_CHARS);
       }
-      return <Text>{truncated.trim()}…</Text>;
+      return truncated.trim() + '…';
     }
   }
   return command;

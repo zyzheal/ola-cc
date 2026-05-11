@@ -575,6 +575,7 @@ export function getDefaultAppState(): AppState {
       timeUsedSeconds: 0,
       createdAt: 0,
       updatedAt: 0,
+      todoListId: undefined, // 方案 C: 关联 TodoWrite 列表
     },
     goalRuntime: {
       accounting: {
