@@ -26,7 +26,6 @@ export class NatsEventBus implements IEventBus {
   private subscriptions: Map<string, Subscription> = new Map()
   private _status: EventBusStatus = 'disconnected'
   private eventQueue: EventBusEvent[] = []
-  private reconnectCount = 0
 
   constructor(config: NatsConfig) {
     this.config = config
@@ -50,7 +49,6 @@ export class NatsEventBus implements IEventBus {
       })
 
       this._status = 'connected'
-      this.reconnectCount = 0
 
       // Flush queued events
       await this.flushQueue()
@@ -136,14 +134,18 @@ export class NatsEventBus implements IEventBus {
     const events = [...this.eventQueue]
     this.eventQueue = []
 
+    const failedEvents: EventBusEvent[] = []
     for (const event of events) {
       try {
         const subject = this.buildSubject(event.subtype)
         const data = JSON.stringify(event)
         this.connection.publish(subject, new TextEncoder().encode(data))
       } catch {
-        this.eventQueue.push(event)
+        failedEvents.push(event)
       }
     }
+
+    // Only re-queue events that failed during flush (avoid duplicates)
+    this.eventQueue = [...failedEvents, ...this.eventQueue]
   }
 }

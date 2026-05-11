@@ -25,6 +25,9 @@ export type RouterStatus = {
   natsEnabled: boolean
 }
 
+// Maximum events to hold in memory queue before dropping oldest
+const MAX_MEMORY_QUEUE_SIZE = 5000
+
 export class EventRouter {
   private natsBus: NatsEventBus | null = null
   private memoryQueue: (SdkEvent & { uuid: string; session_id: string })[] = []
@@ -73,7 +76,10 @@ export class EventRouter {
       }
     }
 
-    // Fallback to memory queue
+    // Fallback to memory queue (with size limit to prevent OOM)
+    if (this.memoryQueue.length >= MAX_MEMORY_QUEUE_SIZE) {
+      this.memoryQueue.shift() // Drop oldest event
+    }
     this.memoryQueue.push({
       ...enrichedEvent,
       uuid: enrichedEvent.uuid,
