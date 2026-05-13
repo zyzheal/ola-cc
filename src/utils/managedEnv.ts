@@ -1,6 +1,6 @@
 import { isRemoteManagedSettingsEligible } from '../services/remoteManagedSettings/syncCache.js'
 import { clearCACertsCache } from './caCerts.js'
-import { getGlobalConfig } from './config.js'
+import { getGlobalConfig, saveGlobalConfig } from './config.js'
 import { isEnvTruthy } from './envUtils.js'
 import {
   isProviderManagedEnvVar,
@@ -177,6 +177,116 @@ export function applySafeConfigEnvironmentVariables(): void {
   }
 }
 
+interface OlaProviderProfile {
+  name: string
+  provider: 'openai' | 'anthropic'
+  apiUrl: string
+  apiKey: string
+  models: string[]
+  defaultModel: string
+}
+
+/**
+ * Migrate a raw profile object from settings. Handles both new format (models array)
+ * and old format (single model/defaultModel field). Mirrors migrateProfile() in auth.tsx.
+ */
+function normalizeProviderProfile(raw: unknown): OlaProviderProfile | null {
+  if (!raw || typeof raw !== 'object') return null
+  const obj = raw as Record<string, unknown>
+
+  // New format: has models array
+  if (obj.models && Array.isArray(obj.models)) {
+    if (typeof obj.name !== 'string' || typeof obj.provider !== 'string') return null
+    return obj as unknown as OlaProviderProfile
+  }
+
+  // Old format: single model or defaultModel field
+  const model = typeof obj.model === 'string'
+    ? obj.model
+    : typeof obj.defaultModel === 'string'
+      ? obj.defaultModel
+      : ''
+  return {
+    name: typeof obj.name === 'string' ? obj.name : '',
+    provider: (typeof obj.provider === 'string' ? obj.provider : 'openai') as 'openai' | 'anthropic',
+    apiUrl: typeof obj.apiUrl === 'string' ? obj.apiUrl : '',
+    apiKey: typeof obj.apiKey === 'string' ? obj.apiKey : '',
+    models: model ? [model] : [],
+    defaultModel: model,
+  }
+}
+
+/**
+ * Apply the active provider profile from __olaProviders__ settings.
+ * When a user previously switched to a provider via /auth use, the activeProfile
+ * and activeModel are saved. This function restores the corresponding env vars
+ * on startup so the provider configuration persists across sessions.
+ *
+ * Checks flagSettings (--settings CLI flag) first, then falls back to
+ * userSettings (~/.claude/settings.json).
+ */
+export function applyActiveProviderProfile(): void {
+  // Check flagSettings first (explicitly provided via --settings), then userSettings
+  const sourcesToCheck = ['flagSettings', 'userSettings'] as const
+  let olaProviders: { profiles?: unknown[]; activeProfile?: string; activeModel?: string } | undefined
+
+  for (const source of sourcesToCheck) {
+    const settings = getSettingsForSource(source) as Record<string, unknown> | null
+    const raw = settings?.__olaProviders__
+    if (raw && typeof raw === 'object') {
+      olaProviders = raw as { profiles?: unknown[]; activeProfile?: string; activeModel?: string }
+      break
+    }
+  }
+
+  if (!olaProviders?.activeProfile || !olaProviders.profiles) return
+
+  // Find and normalize the active profile
+  const rawProfile = olaProviders.profiles.find(p => p && typeof p === 'object' && (p as Record<string, unknown>).name === olaProviders.activeProfile)
+  if (!rawProfile) return
+
+  const profile = normalizeProviderProfile(rawProfile)
+  if (!profile) return
+
+  // Determine which model to use (activeModel overrides defaultModel)
+  const modelToUse = olaProviders.activeModel || profile.defaultModel
+  if (!modelToUse) return
+
+  // Remove any existing provider env vars first
+  delete process.env.CLAUDE_CODE_USE_OPENAI
+  delete process.env.OPENAI_API_KEY
+  delete process.env.OPENAI_API_BASE
+  delete process.env.OPENAI_BASE_URL
+  delete process.env.OPENAI_MODEL
+  delete process.env.ANTHROPIC_API_KEY
+  delete process.env.ANTHROPIC_BASE_URL
+  delete process.env.ANTHROPIC_MODEL
+
+  // Apply the active profile's env vars
+  if (profile.provider === 'openai') {
+    process.env.CLAUDE_CODE_USE_OPENAI = 'true'
+    process.env.OPENAI_API_KEY = profile.apiKey
+    process.env.OPENAI_API_BASE = profile.apiUrl
+    process.env.OPENAI_BASE_URL = profile.apiUrl
+    process.env.OPENAI_MODEL = modelToUse
+  } else {
+    process.env.ANTHROPIC_API_KEY = profile.apiKey
+    if (profile.apiUrl) process.env.ANTHROPIC_BASE_URL = profile.apiUrl
+    process.env.ANTHROPIC_MODEL = modelToUse
+  }
+
+  // Clear global config's model field so it doesn't override the provider
+  // profile's model via resolveProviderConfig() in getUserSpecifiedModelSetting()
+  try {
+    saveGlobalConfig(cfg => {
+      const { model: _m, ...rest } = cfg
+      return rest
+    })
+  } catch {
+    // Ignore save errors — env vars still take effect
+  }
+}
+
 /**
  * Apply environment variables from settings to process.env.
  * This applies ALL environment variables (except provider-routing vars when
@@ -188,6 +298,10 @@ export function applyConfigEnvironmentVariables(): void {
   Object.assign(process.env, filterSettingsEnv(getGlobalConfig().env))
 
   Object.assign(process.env, filterSettingsEnv(getSettings_DEPRECATED()?.env))
+
+  // Re-apply the active provider profile after all settings env has been applied,
+  // since settings.json env may have overwritten the provider selection env vars.
+  applyActiveProviderProfile()
 
   // Clear caches so agents are rebuilt with the new env vars
   clearCACertsCache()

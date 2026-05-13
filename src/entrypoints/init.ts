@@ -33,6 +33,7 @@ import {
   setupGracefulShutdown,
 } from '../utils/gracefulShutdown.js'
 import {
+  applyActiveProviderProfile,
   applyConfigEnvironmentVariables,
   applySafeConfigEnvironmentVariables,
 } from '../utils/managedEnv.js'
@@ -72,6 +73,11 @@ export const init = memoize(async (): Promise<void> => {
     // Full environment variables are applied after trust is established
     const envVarsStart = Date.now()
     applySafeConfigEnvironmentVariables()
+
+    // Restore the active provider profile from __olaProviders__ settings.
+    // This must come after applySafeConfigEnvironmentVariables so the
+    // provider's env vars (API key, base URL, model) take effect.
+    applyActiveProviderProfile()
 
     // Apply NODE_EXTRA_CA_CERTS from settings.json to process.env early,
     // before any TLS connections. Bun caches the TLS cert store at boot
