@@ -1,6 +1,6 @@
 import { isRemoteManagedSettingsEligible } from '../services/remoteManagedSettings/syncCache.js'
 import { clearCACertsCache } from './caCerts.js'
-import { getGlobalConfig, saveGlobalConfig } from './config.js'
+import { getGlobalConfig } from './config.js'
 import { isEnvTruthy } from './envUtils.js'
 import {
   isProviderManagedEnvVar,
@@ -279,21 +279,6 @@ export function applyActiveProviderProfile(): void {
     process.env.ANTHROPIC_API_KEY = profile.apiKey
     if (profile.apiUrl) process.env.ANTHROPIC_BASE_URL = profile.apiUrl
     process.env.ANTHROPIC_MODEL = modelToUse
-  }
-
-  // Prevent global config's model field from overriding the provider
-  // profile's model via resolveProviderConfig() in getUserSpecifiedModelSetting().
-  // Only clear when it conflicts (not equal to the profile's model).
-  const config = getGlobalConfig()
-  if (config.model && config.model !== modelToUse) {
-    try {
-      saveGlobalConfig(cfg => {
-        const { model: _m, ...rest } = cfg
-        return rest
-      })
-    } catch {
-      // Ignore save errors — env vars still take effect
-    }
   }
 }
 

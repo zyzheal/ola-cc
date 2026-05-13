@@ -55,8 +55,8 @@ export function isNonCustomOpusModel(model: ModelName): boolean {
  *
  * Priority order within this function:
  * 1. Runtime override (from /model command during session) - highest priority
- * 2. config.model (project-level via resolveProviderConfig)
- * 3. Environment variables (ANTHROPIC_MODEL, OPENAI_MODEL)
+ * 2. Environment variables (ANTHROPIC_MODEL, OPENAI_MODEL) - process-scoped, enables multi-process isolation
+ * 3. config.model (project-level via resolveProviderConfig)
  * 4. Settings (from user's saved settings)
  *
  * Note: Provider models (from config.models) bypass the isModelAllowed() allowlist check,
@@ -67,28 +67,33 @@ export function getUserSpecifiedModelSetting(): ModelSetting | undefined {
   const modelOverride = getMainLoopModelOverride()
   if (modelOverride !== undefined) return modelOverride
 
-  // 2. Config model field (project-level takes precedence over global)
+  // Get provider models for allowlist exemption check (used below)
   const { model: configModel, models: providerModels } = resolveProviderConfig()
-  if (configModel) return configModel
 
-  // 3. Environment variables and settings
-  const settings = getSettings_DEPRECATED() || {}
-  const settingsModel = typeof settings.model === 'string' ? settings.model.trim() || undefined : undefined
-  const specifiedModel = process.env.ANTHROPIC_MODEL
-    || process.env.OPENAI_MODEL
-    || settingsModel
-    || undefined
-
-  // 4. Allowlist check: provider models are exempt from allowlist
-  // Provider models are expected to be outside the built-in allowlist
-  if (specifiedModel && !isModelAllowed(specifiedModel)) {
-    if (providerModels?.includes(specifiedModel)) {
-      return specifiedModel
+  // 2. Environment variables - higher priority than config.model so that
+  // provider profile env vars (set per-process) override shared config
+  const envModel = process.env.ANTHROPIC_MODEL || process.env.OPENAI_MODEL || undefined
+  if (envModel) {
+    if (isModelAllowed(envModel) || providerModels?.includes(envModel)) {
+      return envModel
     }
     return undefined
   }
 
-  return specifiedModel
+  // 3. Config model field (project-level takes precedence over global)
+  if (configModel) return configModel
+
+  // 4. Settings model
+  const settings = getSettings_DEPRECATED() || {}
+  const settingsModel = typeof settings.model === 'string' ? settings.model.trim() || undefined : undefined
+  if (settingsModel) {
+    if (isModelAllowed(settingsModel) || providerModels?.includes(settingsModel)) {
+      return settingsModel
+    }
+    return undefined
+  }
+
+  return undefined
 }
 
 /**
