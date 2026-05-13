@@ -252,6 +252,12 @@ export function applyActiveProviderProfile(): void {
   const modelToUse = olaProviders.activeModel || profile.defaultModel
   if (!modelToUse) return
 
+  // Skip if provider is not one we support
+  if (profile.provider !== 'openai' && profile.provider !== 'anthropic') return
+
+  // Only set env vars if we have credentials
+  if (!profile.apiKey) return
+
   // Remove any existing provider env vars first
   delete process.env.CLAUDE_CODE_USE_OPENAI
   delete process.env.OPENAI_API_KEY
@@ -275,15 +281,19 @@ export function applyActiveProviderProfile(): void {
     process.env.ANTHROPIC_MODEL = modelToUse
   }
 
-  // Clear global config's model field so it doesn't override the provider
-  // profile's model via resolveProviderConfig() in getUserSpecifiedModelSetting()
-  try {
-    saveGlobalConfig(cfg => {
-      const { model: _m, ...rest } = cfg
-      return rest
-    })
-  } catch {
-    // Ignore save errors — env vars still take effect
+  // Prevent global config's model field from overriding the provider
+  // profile's model via resolveProviderConfig() in getUserSpecifiedModelSetting().
+  // Only clear when it conflicts (not equal to the profile's model).
+  const config = getGlobalConfig()
+  if (config.model && config.model !== modelToUse) {
+    try {
+      saveGlobalConfig(cfg => {
+        const { model: _m, ...rest } = cfg
+        return rest
+      })
+    } catch {
+      // Ignore save errors — env vars still take effect
+    }
   }
 }
 
