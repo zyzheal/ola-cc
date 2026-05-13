@@ -7,7 +7,7 @@ import {
 import { getGlobalConfig, saveGlobalConfig } from '../utils/config.js'
 import { toError } from '../utils/errors.js'
 import { logError } from '../utils/log.js'
-import { applyConfigEnvironmentVariables } from '../utils/managedEnv.js'
+import { applyActiveProviderProfile, applyConfigEnvironmentVariables } from '../utils/managedEnv.js'
 import {
   permissionModeFromString,
   toExternalPermissionMode,
@@ -164,6 +164,11 @@ export function onChangeAppState({
       if (newState.settings.env !== oldState.settings.env) {
         applyConfigEnvironmentVariables()
       }
+
+      // Re-apply the active provider profile when the overall settings object
+      // changes, in case __olaProviders__ was updated but settings.env wasn't.
+      // This is a no-op if no active profile exists.
+      applyActiveProviderProfile()
     } catch (error) {
       logError(toError(error))
     }
