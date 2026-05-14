@@ -408,6 +408,7 @@ dist/publish/
 | `OPENAI_API_BASE` / `OPENAI_BASE_URL` | 自定义 OpenAI API 地址 |
 | `OPENAI_MODEL` | 默认 OpenAI 模型名（覆盖 Anthropic 模型映射） |
 | `OPENAI_EXTRA_BODY` | 额外请求参数（JSON，用于后端特定配置如 vLLM 前缀缓存） |
+| `OPENAI_CONTEXT_LIMIT` | 上下文窗口限制（默认 128000），用于小 context window 的 provider |
 | `CLAUDE_CODE_USE_OPENAI` | 启用 OpenAI 兼容模式（设为 1 开启） |
 | `API_BASE_URL` | API 代理地址 |
 | `CLAUDE_CODE_ENABLE_CFC` | 启用 Chrome 集成（1=启用，0=禁用） |

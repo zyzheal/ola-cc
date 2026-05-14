@@ -974,6 +974,8 @@ function makeEventId(): string {
 function estimateInputTokens(messages: OpenAIMessage[]): number {
   let totalBytes = 0
   for (const msg of messages) {
+    // Role overhead: each message role (~4 tokens = 16 bytes) adds formatting cost
+    totalBytes += 16
     if (typeof msg.content === 'string') {
       totalBytes += new TextEncoder().encode(msg.content).length
     } else if (Array.isArray(msg.content)) {
@@ -984,11 +986,6 @@ function estimateInputTokens(messages: OpenAIMessage[]): number {
       }
     }
   }
-  // Use 4 bytes/token as default (standard tokenizer heuristic).
-  // This is conservative for English (actual ~4-5) and slightly
-  // aggressive for CJK (actual ~1.5-2), but over-estimation is
-  // safer than under-estimation — it means we clamp max_tokens
-  // earlier, avoiding 400 errors entirely.
   return Math.ceil(totalBytes / 4)
 }
 
@@ -1107,27 +1104,9 @@ export function createOpenAICompatibleShimClient(options: OpenAICompatibleClient
         thinking?: { type: string; budget_tokens: number }
       }): Promise<{ input_tokens: number } | null> => {
         // OpenAI-compatible providers have no countTokens endpoint.
-        // Return a rough estimation so upper-layer token tracking works.
-        // Uses 4 bytes/token heuristic (same as estimateInputTokens).
-        let totalBytes = 0
-        for (const msg of params.messages) {
-          if (typeof msg.content === 'string') {
-            totalBytes += new TextEncoder().encode(msg.content).length
-          } else if (Array.isArray(msg.content)) {
-            for (const block of msg.content) {
-              if (block.type === 'text' && block.text) {
-                totalBytes += new TextEncoder().encode(block.text).length
-              }
-            }
-          }
-        }
-        // Add rough estimate for tools (schema text contributes tokens)
-        if (params.tools && params.tools.length > 0) {
-          const toolsText = JSON.stringify(params.tools)
-          totalBytes += new TextEncoder().encode(toolsText).length
-        }
-        const estimatedTokens = Math.ceil(totalBytes / 4)
-        return { input_tokens: estimatedTokens }
+        // Return null so callers fall back to rough estimation instead
+        // of treating an estimate as a precise count.
+        return null
       },
 
       create: (
@@ -1216,10 +1195,15 @@ export function createOpenAICompatibleShimClient(options: OpenAICompatibleClient
         async function doCreate() {
           // Estimate input tokens and clamp max_tokens to avoid context window overflow
           const estimatedInput = estimateInputTokens(openaiParams.messages)
-          // Use a conservative default context limit; will be corrected by API error if wrong
-          const DEFAULT_CONTEXT_LIMIT = 128_000
+          // Allow override via env var for providers with smaller context windows.
+          // Falls back to 128K; will be corrected by API error if wrong.
+          const rawLimit = process.env.OPENAI_CONTEXT_LIMIT
+          const parsedLimit = rawLimit ? parseInt(rawLimit, 10) : NaN
+          const contextLimit = !rawLimit || isNaN(parsedLimit) || parsedLimit < 1000
+            ? 128_000
+            : parsedLimit
           let effectiveMaxTokens = openaiParams.max_tokens
-          const available = DEFAULT_CONTEXT_LIMIT - estimatedInput
+          const available = contextLimit - estimatedInput
           if (effectiveMaxTokens > available && available > 0) {
             effectiveMaxTokens = Math.floor(available * 0.95) // 5% headroom
             logForDebugging?.(`[OpenAI Shim] Clamped max_tokens from ${openaiParams.max_tokens} to ${effectiveMaxTokens} (estimated input: ${estimatedInput})`)
