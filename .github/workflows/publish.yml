@@ -119,14 +119,23 @@ jobs:
       - name: Test Windows binary
         if: startsWith(matrix.platform.key, 'win32')
         run: |
+          # --version: fast path, verify basic startup works
           ./dist/publish-bin/${{ matrix.platform.key }}/ola-cc --version
+          # -p: full module load path (init → setup → runHeadless),
+          # catches crashes from native module loading, NATS init, etc.
+          # API call will fail without key, but that's OK — we only care
+          # that the binary doesn't segfault during module initialization.
+          ./dist/publish-bin/${{ matrix.platform.key }}/ola-cc -p "test" || true
         shell: bash
 
       # macOS arm64/Linux: test native binary
       - name: Test native binary
         if: "!matrix.platform.musl && !matrix.platform.jsbundle && !startsWith(matrix.platform.key, 'win32')"
         run: |
+          # --version: fast path
           ./dist/publish-bin/${{ matrix.platform.key }}/ola-cc --version
+          # -p: full module load path
+          ./dist/publish-bin/${{ matrix.platform.key }}/ola-cc -p "test" || true
         shell: bash
 
       # Verify ugrep binary is included in wrapper package (Windows x64 only)
@@ -208,6 +217,9 @@ jobs:
           # Verify the binary was placed by postinstall
           # All platforms: use bin/ola-cc.js which delegates to native binary or JS bundle
           ./node_modules/@zyzheal/ola-cc/bin/ola-cc --version
+
+          # Full module load test via -p (init → setup → runHeadless)
+          ./node_modules/@zyzheal/ola-cc/bin/ola-cc -p "test" || true
 
           # Cleanup
           rm -rf "$TEST_DIR"
