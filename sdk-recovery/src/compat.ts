@@ -324,6 +324,10 @@ export type { StreamEvent, ApiResponse, ApiRequestOptions };
 export const API_HOST = 'api.anthropic.com';
 export const API_VERSION = '2024-10-22';
 
+// --- Default export (@anthropic-ai/sdk compatibility) ---
+export { Anthropic as default };
+export type { ClientOptions };
+
 // --- Legacy prompt constants (@anthropic-ai/sdk compatibility) ---
 export const HUMAN_PROMPT = '\n\nHuman:';
 export const AI_PROMPT = '\n\nAssistant:';

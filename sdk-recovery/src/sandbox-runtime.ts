@@ -111,17 +111,108 @@ export const SandboxRuntimeConfigSchema = z.object({
 }).passthrough();
 
 /**
- * SandboxManager — interface for managing sandboxed processes.
- * This is a type-only stub. The actual implementation uses OS-level sandboxing.
+ * SandboxManager — stub class with all static methods expected by sandbox-adapter.ts.
+ * The actual sandbox implementation uses OS-level sandboxing (seatbelt on macOS,
+ * seccomp on Linux). This stub provides the API surface for type-checking and
+ * graceful degradation when sandboxing is not available.
  */
-export interface SandboxManager {
-  run<T>(fn: () => Promise<T>, config?: Partial<SandboxRuntimeConfig>): Promise<T>;
-  getConfig(): SandboxRuntimeConfig;
-  updateConfig(config: Partial<SandboxRuntimeConfig>): void;
-  getFsReadConfig(): FsReadRestrictionConfig;
-  getFsWriteConfig(): FsWriteRestrictionConfig;
-  getNetworkRestrictionConfig(): NetworkRestrictionConfig;
-  getIgnoreViolations(): IgnoreViolationsConfig | undefined;
+export class SandboxManager {
+  private static _config: Partial<SandboxRuntimeConfig> = {};
+  private static _store: SandboxViolationStore = {
+    recordViolation: async () => {},
+    getViolations: async () => [],
+    clear: async () => {},
+  };
+
+  static checkDependencies(_opts: { command: string; args: string[] }): SandboxDependencyCheck {
+    return { name: _opts.command, available: false, message: 'Sandbox not available' };
+  }
+
+  static isSupportedPlatform(): boolean {
+    return false;
+  }
+
+  static async wrapWithSandbox(
+    _command: string,
+    _binShell: string,
+    _args: string[],
+    _env: Record<string, string>,
+    _cwd: string,
+    _config: Partial<SandboxRuntimeConfig>,
+  ): Promise<{ process: unknown; stdout: unknown; stderr: unknown }> {
+    throw new Error('Sandbox not available');
+  }
+
+  static async initialize(
+    _config: Partial<SandboxRuntimeConfig>,
+    _callback?: (event: SandboxViolationEvent) => Promise<void>,
+  ): Promise<void> {}
+
+  static updateConfig(config: Partial<SandboxRuntimeConfig>): void {
+    this._config = config;
+  }
+
+  static reset(): void {
+    this._config = {};
+  }
+
+  static getFsReadConfig(): FsReadRestrictionConfig {
+    return { action: 'warn' };
+  }
+
+  static getFsWriteConfig(): FsWriteRestrictionConfig {
+    return { action: 'warn' };
+  }
+
+  static getNetworkRestrictionConfig(): NetworkRestrictionConfig {
+    return {};
+  }
+
+  static getIgnoreViolations(): IgnoreViolationsConfig | undefined {
+    return undefined;
+  }
+
+  static getAllowUnixSockets(): boolean {
+    return false;
+  }
+
+  static getAllowLocalBinding(): boolean {
+    return false;
+  }
+
+  static getEnableWeakerNestedSandbox(): boolean {
+    return false;
+  }
+
+  static getProxyPort(): number {
+    return 0;
+  }
+
+  static getSocksProxyPort(): number {
+    return 0;
+  }
+
+  static getLinuxHttpSocketPath(): string {
+    return '';
+  }
+
+  static getLinuxSocksSocketPath(): string {
+    return '';
+  }
+
+  static async waitForNetworkInitialization(): Promise<void> {}
+
+  static getSandboxViolationStore(): SandboxViolationStore {
+    return this._store;
+  }
+
+  static async annotateStderrWithSandboxFailures(
+    _stderr: string,
+  ): Promise<string> {
+    return _stderr;
+  }
+
+  static cleanupAfterCommand(): void {}
 }
 
 /**
