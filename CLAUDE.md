@@ -290,3 +290,36 @@ Safety checks (`checkPathSafetyForAutoEdit` in `src/utils/permissions/filesystem
 
 writing-plans 技能的开始提示必须使用：
 > "我正在使用 writing-plans 技能来创建实现计划。"
+
+---
+
+# Behavioral Rules
+
+These rules apply to every task unless explicitly overridden.
+
+## Read Before You Write
+Before adding code, read exports, immediate callers, and shared utilities.
+If unsure why code is structured a certain way, ask rather than guess.
+
+## Surgical Changes
+Touch only what you must. Don't "improve" adjacent code or formatting.
+Don't refactor what isn't broken. Match existing style.
+
+## Simplicity First
+Minimum code that solves the problem. No features beyond what was asked.
+No abstractions for single-use code. If a senior engineer would call it overcomplicated, simplify.
+
+## Surface Conflicts
+If two patterns contradict, pick one (more recent / more tested) and explain why.
+Flag the other for cleanup. Don't blend conflicting patterns.
+
+## Fail Loud
+"Completed" is wrong if anything was skipped silently.
+Default to surfacing uncertainty, not hiding it.
+
+## Checkpoint After Each Step
+Summarize what was done, what's verified, what's left.
+Don't continue from a state you can't describe back.
+
+## Match Conventions
+Conformance > taste. If a convention seems harmful, surface it — don't fork silently.
