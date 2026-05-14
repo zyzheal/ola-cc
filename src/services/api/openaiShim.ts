@@ -984,8 +984,12 @@ function estimateInputTokens(messages: OpenAIMessage[]): number {
       }
     }
   }
-  // Conservative: assume 3 bytes/token average (mixed CJK + English)
-  return Math.ceil(totalBytes / 3)
+  // Use 4 bytes/token as default (standard tokenizer heuristic).
+  // This is conservative for English (actual ~4-5) and slightly
+  // aggressive for CJK (actual ~1.5-2), but over-estimation is
+  // safer than under-estimation — it means we clamp max_tokens
+  // earlier, avoiding 400 errors entirely.
+  return Math.ceil(totalBytes / 4)
 }
 
 /**
@@ -1082,15 +1086,35 @@ export function createOpenAICompatibleShimClient(options: OpenAICompatibleClient
        * Return null so callers fall back to rough estimation instead of hitting
        * a 404 endpoint.
        */
-      countTokens: async (_params: {
+      countTokens: async (params: {
         model: string
         messages: Array<{ role: string; content: unknown[] | string }>
         tools?: unknown[]
         betas?: string[]
         thinking?: { type: string; budget_tokens: number }
-      }): Promise<{ input_tokens: null } | null> => {
-        // OpenAI-compatible providers have no token counting endpoint
-        return null
+      }): Promise<{ input_tokens: number } | null> => {
+        // OpenAI-compatible providers have no countTokens endpoint.
+        // Return a rough estimation so upper-layer token tracking works.
+        // Uses the same heuristic as estimateInputTokens (3 bytes/token).
+        let totalBytes = 0
+        for (const msg of params.messages) {
+          if (typeof msg.content === 'string') {
+            totalBytes += new TextEncoder().encode(msg.content).length
+          } else if (Array.isArray(msg.content)) {
+            for (const block of msg.content) {
+              if (block.type === 'text' && block.text) {
+                totalBytes += new TextEncoder().encode(block.text).length
+              }
+            }
+          }
+        }
+        // Add rough estimate for tools (schema text contributes tokens)
+        if (params.tools && params.tools.length > 0) {
+          const toolsText = JSON.stringify(params.tools)
+          totalBytes += new TextEncoder().encode(toolsText).length
+        }
+        const estimatedTokens = Math.ceil(totalBytes / 4)
+        return { input_tokens: estimatedTokens }
       },
 
       create: (
@@ -1220,10 +1244,14 @@ export function createOpenAICompatibleShimClient(options: OpenAICompatibleClient
                     logCacheUsage(data)
                     return buildNonStreamingResponse(anthropicResponse)
                   }
-                  // fetchWithRetry throws on final failure, but in case it returns non-ok:
                   const retryErrorText = await retryResponse.text().catch(() => '')
                   throw new Error(`OpenAI API error ${retryResponse.status}: ${retryErrorText.slice(0, 500)}`)
                 }
+                // Input tokens exceed context limit — no room for any output.
+                // Return a prompt-too-long error so the upper-layer compact
+                // system recognizes this and triggers summarization.
+                const overflow = parsed.inputTokens - parsed.contextLimit
+                throw new Error(`Prompt is too long: ${parsed.inputTokens} tokens > ${parsed.contextLimit} maximum (${overflow} tokens over limit)`)
               }
               throw new Error(`OpenAI API error ${response.status}: ${errorText.slice(0, 500)}`)
             }
@@ -1267,6 +1295,9 @@ export function createOpenAICompatibleShimClient(options: OpenAICompatibleClient
                 const retryErrorText = await retryResponse.text().catch(() => '')
                 throw new Error(`OpenAI API error ${retryResponse.status}: ${retryErrorText.slice(0, 500)}`)
               }
+              // Input tokens exceed context limit
+              const overflow = parsed.inputTokens - parsed.contextLimit
+              throw new Error(`Prompt is too long: ${parsed.inputTokens} tokens > ${parsed.contextLimit} maximum (${overflow} tokens over limit)`)
             }
             throw new Error(`OpenAI API error ${fetchResponse.status}: ${errorText.slice(0, 500)}`)
           }
