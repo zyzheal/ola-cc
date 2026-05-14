@@ -239,7 +239,6 @@ function sanitizeNestedSchema(schema: unknown): Record<string, unknown> {
   delete (result as Record<string, unknown>).$schema
   delete (result as Record<string, unknown>).definitions
   delete (result as Record<string, unknown>).const
-  delete (result as Record<string, unknown>).enum
   delete (result as Record<string, unknown>).if
   delete (result as Record<string, unknown>).then
   delete (result as Record<string, unknown>).else
@@ -319,7 +318,6 @@ function sanitizeSchemaForOpenAI(schema: unknown): Record<string, unknown> {
   delete result.$schema
   delete result.definitions
   delete result.const
-  delete result.enum
   delete result.if
   delete result.then
   delete result.else
@@ -826,61 +824,25 @@ function logCacheUsage(response: OpenAIChatCompletionResponse): void {
   }
 }
 
-function makeEventId(): string {
-  return `evt_${randomUUID().slice(0, 12)}`
-}
-
-// -- Helper: Estimate input tokens and clamp max_tokens
-
 /**
- * Roughly estimate the number of input tokens from the message list.
- * Uses bytes-per-token heuristic. This is not exact but enough to
- * detect when we're close to the context window limit.
+ * Handle streaming response from a fetch response.
+ * Extracted into a helper so both the initial stream and the retry path can use it.
  */
-function estimateInputTokens(messages: OpenAIMessage[]): number {
-  let totalBytes = 0
-  for (const msg of messages) {
-    if (typeof msg.content === 'string') {
-      totalBytes += new TextEncoder().encode(msg.content).length
-    } else if (Array.isArray(msg.content)) {
-      for (const part of msg.content) {
-        if (part.type === 'text' && part.text) {
-          totalBytes += new TextEncoder().encode(part.text).length
-        }
-      }
-    }
-  }
-  // Conservative: assume 3 bytes/token average (mixed CJK + English)
-  return Math.ceil(totalBytes / 3)
-}
-
-/**
- * Check if an error is a max_tokens too large error and extract
- * the model's context limit and actual input token count.
- */
-function parseMaxTokensError(errorText: string): {
-  contextLimit: number
-  inputTokens: number
-} | null {
-  const contextMatch = errorText.match(/maximum\s+context\s+length\s+is\s+(\d+)/i)
-  const inputMatch = errorText.match(/has\s+(\d+)\s+input\s+tokens/i)
-  if (contextMatch && inputMatch) {
-    return {
-      contextLimit: parseInt(contextMatch[1], 10),
-      inputTokens: parseInt(inputMatch[1], 10),
-    }
-  }
-  return null
-}
-
-/**
- * Build a streaming response object from a fetch response.
- */
-async function buildStreamingResponse(
+function doStreaming(
   fetchResponse: Response,
   resolvedModel: string,
-): Promise<ReturnType<typeof doCreate>> {
-  const messageId = `msg_${randomUUID().slice(0, 24)}`
+  messageId: string,
+): {
+  id: string
+  type: string
+  role: string
+  model: string
+  content: unknown[]
+  stop_reason: string | null
+  stop_sequence: string | null
+  usage: { input_tokens: number; output_tokens: number }
+  [Symbol.asyncIterator]: () => AsyncGenerator<AnthropicStreamEvent>
+} {
   let contentBlockIndex = 0
   const toolCallState: Map<number, { id: string; name: string; arguments: string; blockIdx: number }> = new Map()
   const openedContentBlockIndices: Set<number> = new Set()
@@ -935,7 +897,7 @@ async function buildStreamingResponse(
 
             if (delta?.content && delta.content !== 'null' && delta.content !== '') {
               let textBlockIndex = -1
-              for (let i = 0; i < contentBlockIndex; i++) { if (i === 0) textBlockIndex = 0 }
+              if (contentBlockIndex > 0) textBlockIndex = 0
               if (textBlockIndex === -1 && contentBlockIndex === 0) {
                 const blockIdx = contentBlockIndex
                 yield { type: 'content_block_start', index: blockIdx, content_block: { type: 'text', text: '' } } as AnthropicStreamEvent
@@ -996,6 +958,53 @@ async function buildStreamingResponse(
       }
     },
   }
+}
+
+function makeEventId(): string {
+  return `evt_${randomUUID().slice(0, 12)}`
+}
+
+// -- Helper: Estimate input tokens and clamp max_tokens
+
+/**
+ * Roughly estimate the number of input tokens from the message list.
+ * Uses bytes-per-token heuristic. This is not exact but enough to
+ * detect when we're close to the context window limit.
+ */
+function estimateInputTokens(messages: OpenAIMessage[]): number {
+  let totalBytes = 0
+  for (const msg of messages) {
+    if (typeof msg.content === 'string') {
+      totalBytes += new TextEncoder().encode(msg.content).length
+    } else if (Array.isArray(msg.content)) {
+      for (const part of msg.content) {
+        if (part.type === 'text' && part.text) {
+          totalBytes += new TextEncoder().encode(part.text).length
+        }
+      }
+    }
+  }
+  // Conservative: assume 3 bytes/token average (mixed CJK + English)
+  return Math.ceil(totalBytes / 3)
+}
+
+/**
+ * Check if an error is a max_tokens too large error and extract
+ * the model's context limit and actual input token count.
+ */
+function parseMaxTokensError(errorText: string): {
+  contextLimit: number
+  inputTokens: number
+} | null {
+  const contextMatch = errorText.match(/maximum\s+context\s+length\s+is\s+(\d+)/i)
+  const inputMatch = errorText.match(/has\s+(\d+)\s+input\s+tokens/i)
+  if (contextMatch && inputMatch) {
+    return {
+      contextLimit: parseInt(contextMatch[1], 10),
+      inputTokens: parseInt(inputMatch[1], 10),
+    }
+  }
+  return null
 }
 
 /**
@@ -1198,18 +1207,20 @@ export function createOpenAICompatibleShimClient(options: OpenAICompatibleClient
                 const retryMaxTokens = Math.floor((parsed.contextLimit - parsed.inputTokens) * 0.95)
                 if (retryMaxTokens > 0) {
                   logForDebugging?.(`[OpenAI Shim] Retrying with corrected max_tokens: ${retryMaxTokens} (context: ${parsed.contextLimit}, input: ${parsed.inputTokens})`)
-                  const retryResponse = await fetchFn(url, {
-                    method: 'POST',
-                    headers,
-                    body: JSON.stringify({ ...paramsToSend, max_tokens: retryMaxTokens }),
-                    signal: effectiveSignal,
-                  })
+                  const retryResponse = await fetchWithRetry(
+                    fetchFn,
+                    url,
+                    { method: 'POST', headers, body: JSON.stringify({ ...paramsToSend, max_tokens: retryMaxTokens }) },
+                    1,
+                    effectiveSignal,
+                  )
                   if (retryResponse.ok) {
                     const data = (await retryResponse.json()) as OpenAIChatCompletionResponse
                     const anthropicResponse = convertResponseToAnthropic(data)
                     logCacheUsage(data)
                     return buildNonStreamingResponse(anthropicResponse)
                   }
+                  // fetchWithRetry throws on final failure, but in case it returns non-ok:
                   const retryErrorText = await retryResponse.text().catch(() => '')
                   throw new Error(`OpenAI API error ${retryResponse.status}: ${retryErrorText.slice(0, 500)}`)
                 }
@@ -1242,14 +1253,16 @@ export function createOpenAICompatibleShimClient(options: OpenAICompatibleClient
               const retryMaxTokens = Math.floor((parsed.contextLimit - parsed.inputTokens) * 0.95)
               if (retryMaxTokens > 0) {
                 logForDebugging?.(`[OpenAI Shim] Streaming retry with max_tokens: ${retryMaxTokens}`)
-                const retryResponse = await fetchFn(url, {
-                  method: 'POST',
-                  headers: { ...headers, Accept: 'text/event-stream' },
-                  body: JSON.stringify({ ...paramsToSend, max_tokens: retryMaxTokens, stream: true }),
-                  signal: streamingSignal,
-                })
+                const retryResponse = await fetchWithRetry(
+                  fetchFn,
+                  url,
+                  { method: 'POST', headers: { ...headers, Accept: 'text/event-stream' }, body: JSON.stringify({ ...paramsToSend, max_tokens: retryMaxTokens, stream: true }) },
+                  1,
+                  streamingSignal,
+                )
                 if (retryResponse.ok) {
-                  return buildStreamingResponse(retryResponse, resolvedModel)
+                  // Re-enter the streaming path with the corrected response
+                  return doStreaming(fetchResponse, resolvedModel, messageId)
                 }
                 const retryErrorText = await retryResponse.text().catch(() => '')
                 throw new Error(`OpenAI API error ${retryResponse.status}: ${retryErrorText.slice(0, 500)}`)
@@ -1259,138 +1272,7 @@ export function createOpenAICompatibleShimClient(options: OpenAICompatibleClient
           }
 
           const messageId = `msg_${randomUUID().slice(0, 24)}`
-          let contentBlockIndex = 0
-          const toolCallState: Map<number, { id: string; name: string; arguments: string; blockIdx: number }> = new Map()
-          const openedContentBlockIndices: Set<number> = new Set()
-
-          return {
-            id: messageId,
-            type: 'message',
-            role: 'assistant',
-            model: resolvedModel,
-            content: [],
-            stop_reason: null,
-            stop_sequence: null,
-            usage: { input_tokens: 0, output_tokens: 0 },
-            [Symbol.asyncIterator]: async function* () {
-              if (!fetchResponse.body) throw new Error('Response body is null for streaming request')
-
-              const reader = fetchResponse.body.getReader()
-              const decoder = new TextDecoder()
-              let buffer = ''
-              let hasEmittedMessageStart = false
-              let hasEmittedUsage = false
-
-              try {
-                while (true) {
-                  const { done, value } = await reader.read()
-                  if (done) break
-
-                  buffer += decoder.decode(value, { stream: true })
-                  const lines = buffer.split('\n')
-                  buffer = lines.pop() ?? ''
-
-                  for (const line of lines) {
-                    const trimmed = line.trim()
-                    if (!trimmed || trimmed.startsWith(':') || !trimmed.startsWith('data: ')) continue
-
-                    const data = trimmed.slice(6)
-                    if (data === '[DONE]') continue
-
-                    let chunk: OpenAIChatCompletionResponse
-                    try { chunk = JSON.parse(data) } catch { continue }
-
-                    const choice = chunk.choices?.[0]
-                    if (!choice) continue
-
-                    if (!hasEmittedMessageStart) {
-                      hasEmittedMessageStart = true
-                      // Extract cache info from chunk.usage if available (some providers send it in first chunk)
-                      const { cacheReadInputTokens: chunkCacheRead } = extractCacheTokens(chunk.usage)
-                      yield { type: 'message_start', message: { id: messageId, type: 'message', role: 'assistant', content: [], model: chunk.model ?? resolvedModel, stop_reason: null, stop_sequence: null, usage: { input_tokens: 0, output_tokens: 0, cache_read_input_tokens: chunkCacheRead, cache_creation_input_tokens: 0 } } } as AnthropicStreamEvent
-                    }
-
-                    const delta = choice.delta
-
-                    if (delta?.content && delta.content !== 'null' && delta.content !== '') {
-                      let textBlockIndex = -1
-                      for (let i = 0; i < contentBlockIndex; i++) { if (i === 0) textBlockIndex = 0 }
-                      if (textBlockIndex === -1 && contentBlockIndex === 0) {
-                        const blockIdx = contentBlockIndex
-                        yield { type: 'content_block_start', index: blockIdx, content_block: { type: 'text', text: '' } } as AnthropicStreamEvent
-                        openedContentBlockIndices.add(blockIdx)
-                        contentBlockIndex = 1
-                        textBlockIndex = 0
-                      }
-                      yield { type: 'content_block_delta', index: textBlockIndex >= 0 ? textBlockIndex : 0, delta: { type: 'text_delta', text: delta.content } } as AnthropicStreamEvent
-                    }
-
-                    if (delta?.tool_calls) {
-                        // DIAGNOSTIC: Log tool_calls received in delta
-                        if (process.env.DEBUG_OPENAI_STREAM) {
-                          console.error(`[OpenAI Shim Stream] Received tool_calls delta:`, JSON.stringify(delta.tool_calls))
-                        }
-                        for (const tc of delta.tool_calls) {
-                        const idx = tc.index ?? 0
-                        let state = toolCallState.get(idx)
-                        if (!state) {
-                          const toolBlockIdx = contentBlockIndex++
-                          state = { id: tc.id ?? `tool_call_${idx}_${randomUUID().slice(0, 8)}`, name: tc.function?.name ?? '', arguments: tc.function?.arguments ?? '', blockIdx: toolBlockIdx }
-                          toolCallState.set(idx, state)
-                          openedContentBlockIndices.add(toolBlockIdx)
-                          yield { type: 'content_block_start', index: toolBlockIdx, content_block: { type: 'tool_use', id: state.id, name: state.name, input: {} } } as AnthropicStreamEvent
-                        } else {
-                          if (tc.function?.arguments) state.arguments += tc.function.arguments
-                        }
-                        if (tc.function?.arguments) {
-                          yield { type: 'content_block_delta', index: state.blockIdx, delta: { type: 'input_json_delta', partial_json: tc.function.arguments } } as AnthropicStreamEvent
-                        }
-                      }
-                    }
-
-                    if (choice.finish_reason) {
-                      // DIAGNOSTIC: Log finish_reason and toolCallState
-                      if (process.env.DEBUG_OPENAI_STREAM) {
-                        console.error(`[OpenAI Shim Stream] finish_reason: ${choice.finish_reason}, toolCallState size: ${toolCallState.size}`)
-                      }
-                      for (const blockIdx of openedContentBlockIndices) {
-                        yield { type: 'content_block_stop', index: blockIdx } as AnthropicStreamEvent
-                      }
-                      let stopReason = choice.finish_reason
-                      if (stopReason === 'stop') stopReason = 'end_turn'
-                      else if (stopReason === 'tool_calls') stopReason = 'tool_use'
-                      else if (stopReason === 'length') stopReason = 'max_tokens'
-                      else if (stopReason === 'content_filter') stopReason = 'end_turn'
-
-                      // CRITICAL FIX: If we received tool_calls in the stream,
-                      // the stop_reason should be 'tool_use' regardless of finish_reason.
-                      // Some OpenAI-compatible APIs may return finish_reason='stop' even
-                      // when tool_calls were emitted in the deltas.
-                      if (toolCallState.size > 0) {
-                        stopReason = 'tool_use'
-                        if (process.env.DEBUG_OPENAI_STREAM) {
-                          console.error(`[OpenAI Shim Stream] Override stop_reason to 'tool_use' due to ${toolCallState.size} tool_calls`)
-                        }
-                      }
-
-                      if (chunk.usage && !hasEmittedUsage) {
-                        hasEmittedUsage = true
-                        logCacheUsage(chunk)
-
-                        const { cacheReadInputTokens, cacheCreationInputTokens } = extractCacheTokens(chunk.usage)
-                        yield { type: 'message_delta', delta: { stop_reason: stopReason as string | null, stop_sequence: null }, usage: { input_tokens: chunk.usage.prompt_tokens ?? 0, output_tokens: chunk.usage.completion_tokens ?? 0, cache_read_input_tokens: cacheReadInputTokens, cache_creation_input_tokens: cacheCreationInputTokens } } as AnthropicStreamEvent
-                      } else {
-                        yield { type: 'message_delta', delta: { stop_reason: stopReason as string | null, stop_sequence: null }, usage: { output_tokens: chunk.usage?.completion_tokens ?? 0 } } as AnthropicStreamEvent
-                      }
-                      yield { type: 'message_stop' } as AnthropicStreamEvent
-                    }
-                  }
-                }
-              } finally {
-                reader.releaseLock()
-              }
-            },
-          }
+          return doStreaming(fetchResponse, resolvedModel, messageId)
         }
 
         const promise = doCreate()
