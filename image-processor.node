@@ -1,0 +1,9 @@
+// Stub for image-processor native module
+// This is a placeholder that allows the CLI to start in development mode
+// In production, this would be replaced with the actual native module
+
+module.exports = {
+  processImage: async (input) => {
+    throw new Error('Native image processor not available in restored dev mode')
+  }
+}

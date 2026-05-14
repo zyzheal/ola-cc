@@ -131,12 +131,14 @@ export class AnthropicApiClient {
         switch (event.type) {
           case 'message_start': {
             const msg = event.message;
-            id = msg.id;
-            model = msg.model;
-            usage = {
-              input_tokens: msg.usage?.input_tokens ?? 0,
-              output_tokens: msg.usage?.output_tokens ?? 0,
-            };
+            if (msg) {
+              id = msg.id;
+              model = msg.model;
+              usage = {
+                input_tokens: msg.usage?.input_tokens ?? 0,
+                output_tokens: msg.usage?.output_tokens ?? 0,
+              };
+            }
             break;
           }
           case 'content_block_start': {

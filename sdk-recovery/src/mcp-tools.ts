@@ -42,7 +42,8 @@ export async function createSdkMcpServer(
       toolDef.description,
       toolDef.inputSchema,
       async (args: Record<string, unknown>) => {
-        return toolDef.handler(args, {});
+        const handler = toolDef.handler as (args: Record<string, unknown>, extra: unknown) => Promise<import('@modelcontextprotocol/sdk/types.js').CallToolResult>;
+        return handler(args, {});
       },
     );
   }

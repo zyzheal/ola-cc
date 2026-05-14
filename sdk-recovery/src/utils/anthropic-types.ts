@@ -67,32 +67,65 @@ export interface BetaUsage extends Usage {
   cache_read_input_tokens?: number;
 }
 
-export interface BetaRawMessageStreamEvent {
-  type:
-    | "message_start"
-    | "content_block_start"
-    | "content_block_delta"
-    | "content_block_stop"
-    | "message_delta"
-    | "message_stop";
+export interface MessageStartEvent {
+  type: "message_start";
   index?: number;
-  message?: {
+  message: {
     id: string;
     model: string;
     usage?: { input_tokens: number; output_tokens: number };
   };
-  content_block?: {
+}
+
+export interface ContentBlockStartEvent {
+  type: "content_block_start";
+  index?: number;
+  content_block: {
     type: "text" | "tool_use";
     id?: string;
     name?: string;
     text?: string;
   };
-  delta?: {
-    type: "text_delta" | "input_json_delta";
-    text?: string;
-    partial_json?: string;
+}
+
+export interface ContentBlockDeltaEvent {
+  type: "content_block_delta";
+  index?: number;
+  delta: {
+    type: "text_delta";
+    text: string;
+  } | {
+    type: "input_json_delta";
+    partial_json: string;
+  };
+}
+
+export interface ContentBlockStopEvent {
+  type: "content_block_stop";
+  index?: number;
+}
+
+export interface MessageDeltaEvent {
+  type: "message_delta";
+  index?: number;
+  delta: {
+    stop_reason: string | null;
+    stop_sequence: string | null;
   };
   usage?: { output_tokens: number };
 }
+
+export interface MessageStopEvent {
+  type: "message_stop";
+  index?: number;
+}
+
+export type BetaRawMessageStreamEvent =
+  | MessageStartEvent
+  | ContentBlockStartEvent
+  | ContentBlockDeltaEvent
+  | ContentBlockStopEvent
+  | MessageDeltaEvent
+  | MessageStopEvent;
 
 export type BetaContentBlock = TextBlock | ToolUseBlock;

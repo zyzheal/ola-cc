@@ -26,7 +26,6 @@ import type {
   SyncHookJSONOutput,
 } from '../types';
 import { NdjsonParser } from './ndjson';
-import type { SpawnedProcess as SpawnedProcessType } from './processTransportTypes';
 import type { Logger } from '../utils/logger';
 import { MessageNormalizer } from '../utils/message-normalizer';
 import { randomUUID } from 'node:crypto';
@@ -43,7 +42,7 @@ export type ProcessTransportOptions = Pick<Options, 'cwd' | 'env' | 'executableA
   /** Full options object for serialization to environment variables */
   options?: Options;
   /** Custom spawn function for running CLI in VMs/containers */
-  spawnFn?: (options: { command: string; args: string[]; cwd: string; env: NodeJS.ProcessEnv }) => SpawnedProcessType;
+  spawnFn?: (options: { command: string; args: string[]; cwd: string; env: NodeJS.ProcessEnv }) => SpawnedProcess;
   /** Permission handler called before each tool execution */
   canUseTool?: CanUseTool;
   /** Elicitation handler for user confirmation dialogs */
@@ -57,7 +56,7 @@ export type ProcessTransportOptions = Pick<Options, 'cwd' | 'env' | 'executableA
 export type StartOptions = ProcessTransportOptions;
 
 export class ProcessTransport {
-  private process: SpawnedProcessType | null = null;
+  private process: SpawnedProcess | null = null;
   private parser = new NdjsonParser();
   private messageQueue: SDKMessage[] = [];
   private closed = false;
@@ -113,7 +112,7 @@ export class ProcessTransport {
         cwd: opts.cwd,
         env,
         stdio: ['pipe', 'pipe', 'pipe'],
-      }) as unknown as SpawnedProcessType;
+      }) as unknown as SpawnedProcess;
     }
 
     this.lastStdoutAt = Date.now();
