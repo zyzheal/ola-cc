@@ -1008,7 +1008,7 @@ export function createOpenAICompatibleShimClient(options: OpenAICompatibleClient
                   }
                   yield { type: 'content_block_stop', index: i } as AnthropicStreamEvent
                 }
-                yield { type: 'message_delta', delta: { stop_reason: anthropicResponse.stop_reason, stop_sequence: null }, usage: { output_tokens: anthropicResponse.usage.output_tokens } } as AnthropicStreamEvent
+                yield { type: 'message_delta', delta: { stop_reason: anthropicResponse.stop_reason, stop_sequence: null }, usage: { input_tokens: anthropicResponse.usage.input_tokens, output_tokens: anthropicResponse.usage.output_tokens, cache_read_input_tokens: anthropicResponse.usage.cache_read_input_tokens ?? 0, cache_creation_input_tokens: anthropicResponse.usage.cache_creation_input_tokens ?? 0 } } as AnthropicStreamEvent
                 yield { type: 'message_stop' } as AnthropicStreamEvent
               },
             }
