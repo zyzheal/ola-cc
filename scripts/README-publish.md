@@ -320,3 +320,23 @@ node install.cjs
 ## 许可证
 
 详见 LICENSE.md。
+
+## 更新日志
+
+### v0.4.5
+
+**Windows 兼容性修复**
+
+- 修复 Windows 平台 Bun 编译二进制文件的段错误崩溃问题
+  - 添加 `nats` 和 `node-pty` 到构建 externals，减少打包体积
+  - 在 Windows 上跳过 `image-processor-napi`（macOS ARM64 原生模块），自动使用 `sharp` 回退
+  - 修复 NATS 服务器的 Windows 路径兼容性（`USERPROFILE` 回退）
+- CI 新增 Windows 全模块加载测试，确保启动期稳定性
+
+### v0.4.4
+
+**多 Provider 支持**
+
+- 支持配置多个 AI Provider 并在会话中动态切换
+- 新增 `/auth` 子命令：`add`、`list`、`use`、`test`
+- 多进程隔离：同一配置文件下多个 ola-cc 进程可独立使用不同 Provider
