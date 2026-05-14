@@ -6,6 +6,7 @@ on:
       - 'v*'
     branches:
       - 'feature-openai-bin'
+      - 'fix-windows-bun-crash'
   workflow_dispatch:
     inputs:
       publish:
