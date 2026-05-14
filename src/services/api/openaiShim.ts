@@ -14,6 +14,7 @@
  * - OPENAI_EXTRA_BODY: JSON string of extra params
  */
 import { randomUUID } from 'crypto'
+import { APIError, APIConnectionError, APIUserAbortError } from '@anthropic-ai/sdk'
 import { logForDebugging } from '../../utils/debug.js'
 
 export interface OpenAICompatibleClientOptions {
@@ -608,12 +609,10 @@ function calculateBackoff(attempt: number, baseMs: number, maxMs: number): numbe
   return base + jitter
 }
 
-class OpenAIHttpError extends Error {
-  status: number
+class OpenAIHttpError extends APIError {
   constructor(status: number, message: string) {
-    super(message)
+    super(status, undefined, message, undefined)
     this.name = 'OpenAIHttpError'
-    this.status = status
   }
 }
 
@@ -662,9 +661,27 @@ async function fetchWithRetry(
       if (signal?.aborted) throw signal.reason
 
       if (err instanceof OpenAIHttpError && !isRetriableError(err.status)) throw err
-      if (err instanceof Error && (err.name === 'AbortError' || err.name === 'TimeoutError')) throw err
 
-      lastError = err instanceof Error ? err : new Error(String(err))
+      // Timeout → retriable connection error; user abort → propagate as abort
+      if (err instanceof Error && err.name === 'TimeoutError') {
+        lastError = new APIConnectionError({ message: err.message, cause: err })
+        if (attempt < maxRetries) {
+          const delay = calculateBackoff(attempt, baseDelay, maxDelay)
+          await new Promise<void>((resolve, reject) => {
+            const timeoutId = setTimeout(resolve, delay)
+            signal?.addEventListener('abort', () => {
+              clearTimeout(timeoutId)
+              reject(signal.reason)
+            }, { once: true })
+          })
+        }
+        continue
+      }
+      if (err instanceof Error && err.name === 'AbortError') {
+        throw new APIUserAbortError({ message: err.message })
+      }
+
+      lastError = err instanceof OpenAIHttpError ? err : new OpenAIHttpError(0, err instanceof Error ? err.message : String(err))
 
       if (attempt < maxRetries) {
         const delay = calculateBackoff(attempt, baseDelay, maxDelay)
@@ -679,7 +696,7 @@ async function fetchWithRetry(
     }
   }
 
-  throw lastError || new Error('Request failed after retries')
+  throw lastError || new OpenAIHttpError(0, 'Request failed after retries')
 }
 
 // -- Response conversion
@@ -857,7 +874,7 @@ function doStreaming(
     stop_sequence: null,
     usage: { input_tokens: 0, output_tokens: 0 },
     [Symbol.asyncIterator]: async function* () {
-      if (!fetchResponse.body) throw new Error('Response body is null for streaming request')
+      if (!fetchResponse.body) throw new OpenAIHttpError(500, 'Response body is null for streaming request')
 
       const reader = fetchResponse.body.getReader()
       const decoder = new TextDecoder()
@@ -1246,17 +1263,17 @@ export function createOpenAICompatibleShimClient(options: OpenAICompatibleClient
                   const retryParsed = parseMaxTokensError(retryErrorText)
                   if (retryParsed && retryResponse.status === 400) {
                     const overflow = retryParsed.inputTokens - retryParsed.contextLimit
-                    throw new Error(`Prompt is too long: ${retryParsed.inputTokens} tokens > ${retryParsed.contextLimit} maximum (${overflow > 0 ? overflow : 'unknown'} tokens over limit)`)
+                    throw new OpenAIHttpError(retryResponse.status, `Prompt is too long: ${retryParsed.inputTokens} tokens > ${retryParsed.contextLimit} maximum (${overflow > 0 ? overflow : 'unknown'} tokens over limit)`)
                   }
-                  throw new Error(`OpenAI API error ${retryResponse.status}: ${retryErrorText.slice(0, 500)}`)
+                  throw new OpenAIHttpError(retryResponse.status, `OpenAI API error ${retryResponse.status}: ${retryErrorText.slice(0, 500)}`)
                 }
                 // Input tokens exceed context limit — no room for any output.
                 // Return a prompt-too-long error so the upper-layer compact
                 // system recognizes this and triggers summarization.
                 const overflow = parsed.inputTokens - parsed.contextLimit
-                throw new Error(`Prompt is too long: ${parsed.inputTokens} tokens > ${parsed.contextLimit} maximum (${overflow} tokens over limit)`)
+                throw new OpenAIHttpError(response.status, `Prompt is too long: ${parsed.inputTokens} tokens > ${parsed.contextLimit} maximum (${overflow} tokens over limit)`)
               }
-              throw new Error(`OpenAI API error ${response.status}: ${errorText.slice(0, 500)}`)
+              throw new OpenAIHttpError(response.status, `OpenAI API error ${response.status}: ${errorText.slice(0, 500)}`)
             }
 
             const data = (await response.json()) as OpenAIChatCompletionResponse
@@ -1300,15 +1317,15 @@ export function createOpenAICompatibleShimClient(options: OpenAICompatibleClient
                 const retryParsed = parseMaxTokensError(retryErrorText)
                 if (retryParsed && retryResponse.status === 400) {
                   const overflow = retryParsed.inputTokens - retryParsed.contextLimit
-                  throw new Error(`Prompt is too long: ${retryParsed.inputTokens} tokens > ${retryParsed.contextLimit} maximum (${overflow > 0 ? overflow : 'unknown'} tokens over limit)`)
+                  throw new OpenAIHttpError(retryResponse.status, `Prompt is too long: ${retryParsed.inputTokens} tokens > ${retryParsed.contextLimit} maximum (${overflow > 0 ? overflow : 'unknown'} tokens over limit)`)
                 }
-                throw new Error(`OpenAI API error ${retryResponse.status}: ${retryErrorText.slice(0, 500)}`)
+                throw new OpenAIHttpError(retryResponse.status, `OpenAI API error ${retryResponse.status}: ${retryErrorText.slice(0, 500)}`)
               }
               // Input tokens exceed context limit
               const overflow = parsed.inputTokens - parsed.contextLimit
-              throw new Error(`Prompt is too long: ${parsed.inputTokens} tokens > ${parsed.contextLimit} maximum (${overflow} tokens over limit)`)
+              throw new OpenAIHttpError(fetchResponse.status, `Prompt is too long: ${parsed.inputTokens} tokens > ${parsed.contextLimit} maximum (${overflow} tokens over limit)`)
             }
-            throw new Error(`OpenAI API error ${fetchResponse.status}: ${errorText.slice(0, 500)}`)
+            throw new OpenAIHttpError(fetchResponse.status, `OpenAI API error ${fetchResponse.status}: ${errorText.slice(0, 500)}`)
           }
 
           const messageId = `msg_${randomUUID().slice(0, 24)}`
