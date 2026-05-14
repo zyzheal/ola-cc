@@ -82,16 +82,21 @@ function migrateProfile(p: unknown): ProviderProfile | null {
 
 function loadProfiles(): ProfilesData {
   try {
-    const settings = getSettingsForSource('userSettings')
-    const raw = (settings as any).__olaProviders__
-    if (raw && typeof raw === 'object') {
-      const profiles = (Array.isArray(raw.profiles) ? raw.profiles : [])
-        .map(migrateProfile)
-        .filter((p): p is ProviderProfile => p && typeof p.name === 'string' && p.name.length > 0)
-      return {
-        profiles,
-        activeProfile: raw.activeProfile,
-        activeModel: raw.activeModel,
+    // Check flagSettings (--settings) first, then userSettings
+    const sources = ['flagSettings', 'userSettings'] as const
+    for (const source of sources) {
+      const settings = getSettingsForSource(source)
+      if (!settings) continue
+      const raw = (settings as any).__olaProviders__
+      if (raw && typeof raw === 'object') {
+        const profiles = (Array.isArray(raw.profiles) ? raw.profiles : [])
+          .map(migrateProfile)
+          .filter((p): p is ProviderProfile => p && typeof p.name === 'string' && p.name.length > 0)
+        return {
+          profiles,
+          activeProfile: raw.activeProfile,
+          activeModel: raw.activeModel,
+        }
       }
     }
   } catch {
