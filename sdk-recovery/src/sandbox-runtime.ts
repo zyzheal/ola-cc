@@ -84,13 +84,14 @@ export type SandboxDependencyCheck = {
 
 /**
  * Zod schema for SandboxRuntimeConfig validation.
+ * Note: Using z.string() or z.custom() instead of z.instanceof(RegExp) for compatibility.
  */
 export const SandboxRuntimeConfigSchema = z.object({
   enabled: z.boolean().optional(),
   network: z.object({
     enabled: z.boolean().optional(),
-    allowedHosts: z.array(z.union([z.string(), z.instanceof(RegExp)])).optional(),
-    blockedHosts: z.array(z.union([z.string(), z.instanceof(RegExp)])).optional(),
+    allowedHosts: z.array(z.union([z.string(), z.custom((val) => val instanceof RegExp)])).optional(),
+    blockedHosts: z.array(z.union([z.string(), z.custom((val) => val instanceof RegExp)])).optional(),
   }).optional(),
   filesystem: z.object({
     readRestrictions: z.array(z.object({
@@ -115,12 +116,16 @@ export const SandboxRuntimeConfigSchema = z.object({
  * The actual sandbox implementation uses OS-level sandboxing (seatbelt on macOS,
  * seccomp on Linux). This stub provides the API surface for type-checking and
  * graceful degradation when sandboxing is not available.
+ *
+ * ⚠️ WARNING: This is a STUB for development/build compatibility only.
+ * In production, this should be replaced with a real sandbox implementation.
  */
 export class SandboxManager {
   private static _config: Partial<SandboxRuntimeConfig> = {};
   private static _store: SandboxViolationStore = {
     recordViolation: async () => {},
     getViolations: async () => [],
+    getViolationsByType: async () => [],
     clear: async () => {},
   };
 
@@ -134,19 +139,20 @@ export class SandboxManager {
 
   static async wrapWithSandbox(
     _command: string,
-    _binShell: string,
-    _args: string[],
-    _env: Record<string, string>,
-    _cwd: string,
-    _config: Partial<SandboxRuntimeConfig>,
-  ): Promise<{ process: unknown; stdout: unknown; stderr: unknown }> {
+    _binShell?: string,
+    _customConfig?: Partial<SandboxRuntimeConfig>,
+    _abortSignal?: AbortSignal,
+  ): Promise<string> {
+    // Stub: return command as-is since sandboxing is not available
     throw new Error('Sandbox not available');
   }
 
   static async initialize(
     _config: Partial<SandboxRuntimeConfig>,
-    _callback?: (event: SandboxViolationEvent) => Promise<void>,
-  ): Promise<void> {}
+    _sandboxAskCallback?: SandboxAskCallback,
+  ): Promise<void> {
+    // Stub: no-op since sandbox is not available
+  }
 
   static updateConfig(config: Partial<SandboxRuntimeConfig>): void {
     this._config = config;
@@ -156,12 +162,13 @@ export class SandboxManager {
     this._config = {};
   }
 
-  static getFsReadConfig(): FsReadRestrictionConfig {
-    return { action: 'warn' };
+  // Return config in the format expected by sandbox-adapter.ts
+  static getFsReadConfig(): { action: string; paths: string[]; patterns: string[] } {
+    return { action: 'warn', paths: [], patterns: [] };
   }
 
-  static getFsWriteConfig(): FsWriteRestrictionConfig {
-    return { action: 'warn' };
+  static getFsWriteConfig(): { action: string; paths: string[]; patterns: string[] } {
+    return { action: 'warn', paths: [], patterns: [] };
   }
 
   static getNetworkRestrictionConfig(): NetworkRestrictionConfig {
@@ -200,19 +207,25 @@ export class SandboxManager {
     return '';
   }
 
-  static async waitForNetworkInitialization(): Promise<void> {}
+  static async waitForNetworkInitialization(): Promise<boolean> {
+    return false;
+  }
 
   static getSandboxViolationStore(): SandboxViolationStore {
     return this._store;
   }
 
-  static async annotateStderrWithSandboxFailures(
+  static annotateStderrWithSandboxFailures(
+    _command: string,
     _stderr: string,
-  ): Promise<string> {
+  ): string {
+    // Stub: return stderr as-is
     return _stderr;
   }
 
-  static cleanupAfterCommand(): void {}
+  static cleanupAfterCommand(): void {
+    // Stub: no-op
+  }
 }
 
 /**
@@ -221,5 +234,6 @@ export class SandboxManager {
 export interface SandboxViolationStore {
   recordViolation(event: SandboxViolationEvent): Promise<void>;
   getViolations(filter?: { type?: string }): Promise<SandboxViolationEvent[]>;
+  getViolationsByType(type: 'filesystem' | 'network'): Promise<SandboxViolationEvent[]>;
   clear(): Promise<void>;
 }
