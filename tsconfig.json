@@ -13,6 +13,69 @@
     "strict": false,
     "baseUrl": ".",
     "paths": {
+      "@anthropic-ai/sdk": [
+        "./sdk-recovery/src/compat.ts"
+      ],
+      "@anthropic-ai/sdk/error": [
+        "./sdk-recovery/src/error.ts"
+      ],
+      "@anthropic-ai/sdk/streaming": [
+        "./sdk-recovery/src/compat.ts"
+      ],
+      "@anthropic-ai/sdk/streaming.mjs": [
+        "./sdk-recovery/src/compat.ts"
+      ],
+      "@anthropic-ai/sdk/client": [
+        "./sdk-recovery/src/compat.ts"
+      ],
+      "@anthropic-ai/sdk/client.js": [
+        "./sdk-recovery/src/compat.ts"
+      ],
+      "@anthropic-ai/sdk/client.mjs": [
+        "./sdk-recovery/src/compat.ts"
+      ],
+      "@anthropic-ai/sdk/error.js": [
+        "./sdk-recovery/src/error.ts"
+      ],
+      "@anthropic-ai/sdk/resources": [
+        "./sdk-recovery/src/resources/index.ts"
+      ],
+      "@anthropic-ai/sdk/resources/index.mjs": [
+        "./sdk-recovery/src/resources/index.ts"
+      ],
+      "@anthropic-ai/sdk/resources/index.js": [
+        "./sdk-recovery/src/resources/index.ts"
+      ],
+      "@anthropic-ai/sdk/resources/messages.mjs": [
+        "./sdk-recovery/src/resources/index.ts"
+      ],
+      "@anthropic-ai/sdk/resources/messages.js": [
+        "./sdk-recovery/src/resources/index.ts"
+      ],
+      "@anthropic-ai/sdk/resources/beta/messages/messages.mjs": [
+        "./sdk-recovery/src/resources/index.ts"
+      ],
+      "@anthropic-ai/sdk/resources/beta/messages/messages.js": [
+        "./sdk-recovery/src/resources/index.ts"
+      ],
+      "@anthropic-ai/sdk/resources/beta/messages.js": [
+        "./sdk-recovery/src/resources/index.ts"
+      ],
+      "@anthropic-ai/sdk/*": [
+        "./sdk-recovery/src/resources/*"
+      ],
+      "@anthropic-ai/claude-agent-sdk": [
+        "./sdk-recovery/src/index.ts"
+      ],
+      "@anthropic-ai/mcpb": [
+        "./sdk-recovery/src/mcpb.ts"
+      ],
+      "@anthropic-ai/sandbox-runtime": [
+        "./sdk-recovery/src/sandbox-runtime.ts"
+      ],
+      "sdk-recovery": [
+        "./sdk-recovery/src/index.ts"
+      ],
       "src/*": [
         "./src/*"
       ]
@@ -23,6 +86,7 @@
   },
   "include": [
     "src/**/*",
+    "sdk-recovery/**/*",
     "vendor/**/*",
     "shims/**/*"
   ]
