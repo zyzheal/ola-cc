@@ -39,8 +39,9 @@ export async function getImageProcessor(): Promise<SharpFunction> {
     return imageProcessorModule.default
   }
 
-  if (isInBundledMode()) {
+  if (isInBundledMode() && process.platform !== 'win32') {
     // Try to load the native image processor first
+    // Skip on Windows — the native .node binary is macOS ARM64 only
     try {
       // Use the native image processor module
       const imageProcessor = await import('image-processor-napi')
