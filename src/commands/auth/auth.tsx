@@ -9,6 +9,8 @@ import type { LocalJSXCommandCall } from '../../types/command.js'
 import { useSetAppState } from '../../state/AppState.js'
 import { getAnthropicClient } from '../../services/api/client.js'
 import { setProcessScopedActiveProfile, getProcessScopedOlaProviders, syncProcessScopedOlaProviders, clearProcessScopedActiveProfile } from '../../utils/managedEnv.js'
+import { saveGlobalConfig } from '../../utils/config.js'
+import { normalizeApiKeyForConfig } from '../../utils/authPortable.js'
 
 // -- Types
 
@@ -114,6 +116,31 @@ function saveProfiles(data: ProfilesData): { error: Error | null } {
     },
   })
   return result
+}
+
+// -- API Key Approval
+
+/**
+ * Add an anthropic provider's API key to the approved list in ~/.claude.json
+ * so getAnthropicApiKeyWithSource() (src/utils/auth.ts:299-309) will recognize it.
+ * Without this, keys added via /auth add are not in the approved list
+ * (which /login normally populates), causing "Not logged in" errors.
+ * This mirrors saveApiKey() behavior for /login-flow consistency.
+ */
+function approveProviderApiKey(profile: ProviderProfile): void {
+  if (profile.provider !== 'anthropic' || !profile.apiKey) return
+  const normalizedKey = normalizeApiKeyForConfig(profile.apiKey)
+  saveGlobalConfig(current => {
+    const approved = current.customApiKeyResponses?.approved ?? []
+    if (approved.includes(normalizedKey)) return current
+    return {
+      ...current,
+      customApiKeyResponses: {
+        ...current.customApiKeyResponses,
+        approved: [...approved, normalizedKey],
+      },
+    }
+  })
 }
 
 // -- API Verification
@@ -325,6 +352,8 @@ function AuthActionView({
             else data.profiles.push(profile)
             setMessage(`已保存 "${profile.name}" 但验证失败:\n${chalk.red(verifyResult.error || 'Unknown error')}`)
           }
+
+          approveProviderApiKey(profile)
           saveProfiles(data)
 
           // Sync new profile to process-scoped memory so it can be used immediately
@@ -339,6 +368,8 @@ function AuthActionView({
           const profile = data.profiles.find(p => p.name === parsed.name)
           if (!profile) { setMessage(`未找到 "${parsed.name}"`); setDone(true); break }
           if (profile.models.length === 0) { setMessage(`"${parsed.name}" 没有可用模型`); setDone(true); break }
+
+          approveProviderApiKey(profile)
 
           // Use process-scoped memory switching — env vars are process-scoped,
           // so multiple processes can independently switch providers.
