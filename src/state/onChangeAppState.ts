@@ -159,16 +159,15 @@ export function onChangeAppState({
       clearAwsCredentialsCache()
       clearGcpCredentialsCache()
 
-      // Re-apply environment variables when settings.env changes
-      // This is additive-only: new vars are added, existing may be overwritten, nothing is deleted
+      // Re-apply environment variables when settings.env changes.
+      // applyConfigEnvironmentVariables() internally calls applyActiveProviderProfile(),
+      // so we only call it separately when env didn't change.
       if (newState.settings.env !== oldState.settings.env) {
         applyConfigEnvironmentVariables()
+      } else {
+        // __olaProviders__ may have changed without env changing
+        applyActiveProviderProfile()
       }
-
-      // Re-apply the active provider profile when the overall settings object
-      // changes, in case __olaProviders__ was updated but settings.env wasn't.
-      // This is a no-op if no active profile exists.
-      applyActiveProviderProfile()
     } catch (error) {
       logError(toError(error))
     }
