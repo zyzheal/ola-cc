@@ -23,25 +23,10 @@ export type * from "./types";
 export { Anthropic } from "./compat.js";
 export { Anthropic as default } from "./compat.js";
 
-// Error module (for @anthropic-ai/sdk/error)
+// Error module (for @anthropic-ai/sdk/error compatibility)
 export * from './error.js';
-
-// Error types (re-exported from compat)
-export {
-  APIError,
-  APIUserAbortError,
-  APIRateLimitError,
-  createAPIError,
-  isRetryableError,
-  APIConnectionError,
-  APIConnectionTimeoutError,
-  AuthenticationError,
-  NotFoundError,
-  RateLimitError,
-} from "./compat.js";
-
-export type { ClientOptions } from "./compat.js";
-export type { APIErrorType } from "./utils/error.js";
+export type { APIErrorType } from './utils/error.js';
+export type { ClientOptions } from './compat.js';
 
 // Resource types
 export type {
