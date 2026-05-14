@@ -1,6 +1,6 @@
 {
   "name": "@zyzheal/ola-cc",
-  "version": "0.4.9",
+  "version": "0.4.10",
   "description": "Claude Code - AI coding assistant in your terminal",
   "license": "SEE LICENSE IN LICENSE.md",
   "type": "module",
