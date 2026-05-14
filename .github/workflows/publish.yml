@@ -123,9 +123,9 @@ jobs:
           ./dist/publish-bin/${{ matrix.platform.key }}/ola-cc --version
           # -p: full module load path (init → setup → runHeadless),
           # catches crashes from native module loading, NATS init, etc.
-          # API call will fail without key, but that's OK — we only care
-          # that the binary doesn't segfault during module initialization.
-          ./dist/publish-bin/${{ matrix.platform.key }}/ola-cc -p "test" || true
+          # API call will fail without key; timeout after 30s since we only
+          # care about module initialization, not API response.
+          timeout 30 ./dist/publish-bin/${{ matrix.platform.key }}/ola-cc -p "test" || [ $? -eq 124 ] || [ $? -eq 1 ]
         shell: bash
 
       # macOS arm64/Linux: test native binary
@@ -134,8 +134,8 @@ jobs:
         run: |
           # --version: fast path
           ./dist/publish-bin/${{ matrix.platform.key }}/ola-cc --version
-          # -p: full module load path
-          ./dist/publish-bin/${{ matrix.platform.key }}/ola-cc -p "test" || true
+          # -p: full module load path (same timeout rationale as above)
+          timeout 30 ./dist/publish-bin/${{ matrix.platform.key }}/ola-cc -p "test" || [ $? -eq 124 ] || [ $? -eq 1 ]
         shell: bash
 
       # Verify ugrep binary is included in wrapper package (Windows x64 only)
@@ -218,8 +218,8 @@ jobs:
           # All platforms: use bin/ola-cc.js which delegates to native binary or JS bundle
           ./node_modules/@zyzheal/ola-cc/bin/ola-cc --version
 
-          # Full module load test via -p (init → setup → runHeadless)
-          ./node_modules/@zyzheal/ola-cc/bin/ola-cc -p "test" || true
+          # Full module load test via -p (init → setup → runHeadless, timeout 30s)
+          timeout 30 ./node_modules/@zyzheal/ola-cc/bin/ola-cc -p "test" || [ $? -eq 124 ] || [ $? -eq 1 ]
 
           # Cleanup
           rm -rf "$TEST_DIR"
