@@ -46,7 +46,7 @@ import { BackgroundHint } from '../BashTool/UI.js';
 import { FILE_READ_TOOL_NAME } from '../FileReadTool/prompt.js';
 import { spawnTeammate } from '../shared/spawnMultiAgent.js';
 import { setAgentColor } from './agentColorManager.js';
-import { agentToolResultSchema, classifyHandoffIfNeeded, emitTaskProgress, extractPartialResult, finalizeAgentTool, getLastToolUseName, runAsyncAgentLifecycle } from './agentToolUtils.js';
+import { agentToolResultSchema, classifyHandoffIfNeeded, emitTaskProgress, extractPartialResult, finalizeAgentTool, findAgentByType, getLastToolUseName, runAsyncAgentLifecycle } from './agentToolUtils.js';
 import { GENERAL_PURPOSE_AGENT } from './built-in/generalPurposeAgent.js';
 import { AGENT_TOOL_NAME, LEGACY_AGENT_TOOL_NAME, ONE_SHOT_BUILTIN_AGENT_TYPES } from './constants.js';
 import { buildForkedMessages, buildWorktreeNotice, FORK_AGENT, isForkSubagentEnabled, isInForkChild } from './forkSubagent.js';
@@ -284,7 +284,7 @@ export const AgentTool = buildTool({
     // Spawn is triggered when team_name is set (from param or context) and name is provided
     if (teamName && name) {
       // Set agent definition color for grouped UI display before spawning
-      const agentDef = subagent_type ? toolUseContext.options.agentDefinitions.activeAgents.find(a => a.agentType === subagent_type) : undefined;
+      const agentDef = subagent_type ? findAgentByType(toolUseContext.options.agentDefinitions.activeAgents, subagent_type) : undefined;
       if (agentDef?.color) {
         setAgentColor(subagent_type!, agentDef.color);
       }
@@ -343,10 +343,10 @@ export const AgentTool = buildTool({
       const agents = filterDeniedAgents(
       // When allowedAgentTypes is set (from Agent(x,y) tool spec), restrict to those types
       allowedAgentTypes ? allAgents.filter(a => allowedAgentTypes.includes(a.agentType)) : allAgents, appState.toolPermissionContext, AGENT_TOOL_NAME);
-      const found = agents.find(agent => agent.agentType === effectiveType);
+      const found = findAgentByType(agents, effectiveType);
       if (!found) {
         // Check if the agent exists but is denied by permission rules
-        const agentExistsButDenied = allAgents.find(agent => agent.agentType === effectiveType);
+        const agentExistsButDenied = findAgentByType(allAgents, effectiveType);
         if (agentExistsButDenied) {
           const denyRule = getDenyRuleForAgent(appState.toolPermissionContext, AGENT_TOOL_NAME, effectiveType);
           throw new Error(`Agent type '${effectiveType}' has been denied by permission rule '${AGENT_TOOL_NAME}(${effectiveType})' from ${denyRule?.source ?? 'settings'}.`);
@@ -499,7 +499,7 @@ export const AgentTool = buildTool({
       } else {
         // Fallback: recompute. May diverge from parent's cached bytes if
         // GrowthBook state changed between parent turn-start and fork spawn.
-        const mainThreadAgentDefinition = appState.agent ? appState.agentDefinitions.activeAgents.find(a => a.agentType === appState.agent) : undefined;
+        const mainThreadAgentDefinition = appState.agent ? findAgentByType(appState.agentDefinitions.activeAgents, appState.agent) : undefined;
         const additionalWorkingDirectories = Array.from(appState.toolPermissionContext.additionalWorkingDirectories.keys());
         const defaultSystemPrompt = await getSystemPrompt(toolUseContext.options.tools, toolUseContext.options.mainLoopModel, additionalWorkingDirectories, toolUseContext.options.mcpClients);
         forkParentSystemPrompt = buildEffectiveSystemPrompt({
