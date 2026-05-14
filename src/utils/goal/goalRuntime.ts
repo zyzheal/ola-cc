@@ -4,6 +4,67 @@ import { tokenDeltaSinceLastAccounting, timeDeltaSinceLastAccounted, isBudgetExh
 import { buildContinuationPrompt, buildBudgetLimitPrompt } from './goalSteering.js'
 import type { TodoItem } from '../todo/types.js'
 
+/**
+ * Options for building the GoalRuntimeContext callbacks.
+ * The caller provides these to avoid coupling to ToolUseContext.
+ */
+export interface GoalContextOptions {
+  /** Called when a continuation prompt should be injected for the next turn */
+  onInjectPrompt: (prompt: string) => void
+  /** Updates the goal in app state */
+  onUpdateGoal: (goal: Goal) => void
+  /** Returns the todo list ID for the current goal */
+  getTodoListId: () => string | undefined
+  /** Returns todos for a given list ID */
+  getTodos: (listId: string) => TodoItem[] | undefined
+  /** Updates todos for a given list ID */
+  updateTodos: (listId: string, todos: TodoItem[]) => void
+}
+
+/**
+ * Builds a GoalRuntimeContext for a 'turn_finished' event and processes it.
+ * Eliminates ~60 lines of duplicated callback construction at each call site.
+ */
+export function finishTurnForGoal(
+  goal: Goal,
+  runtime: GoalRuntimeState,
+  currentTokenUsage: TokenUsage | undefined,
+  opts: GoalContextOptions,
+): GoalRuntimeResult {
+  const effectiveTokenUsage: TokenUsage = currentTokenUsage ?? {
+    inputTokens: goal.tokensUsed,
+    cachedInputTokens: 0,
+    outputTokens: 0,
+    reasoningOutputTokens: 0,
+    totalTokens: goal.tokensUsed,
+  }
+
+  const todoListId = goal?.todoListId
+
+  return processGoalRuntimeEvent(
+    { type: 'turn_finished', turnCompleted: true },
+    {
+      goal,
+      runtime,
+      currentTokenUsage: effectiveTokenUsage,
+      injectPrompt: async (prompt: string) => {
+        opts.onInjectPrompt(prompt)
+      },
+      updateGoal: (updatedGoal: Goal) => {
+        opts.onUpdateGoal(updatedGoal)
+      },
+      getTodos: () => {
+        if (!todoListId) return undefined
+        return opts.getTodos(todoListId)
+      },
+      updateTodos: (todos) => {
+        if (!todoListId) return
+        opts.updateTodos(todoListId, todos)
+      },
+    }
+  )
+}
+
 // Goal runtime events (matching Codex pattern)
 export type GoalRuntimeEvent =
   | { type: 'turn_started'; turnId: string; tokenUsage: TokenUsage }
