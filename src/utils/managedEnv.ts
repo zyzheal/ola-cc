@@ -186,6 +186,106 @@ interface OlaProviderProfile {
   defaultModel: string
 }
 
+interface OlaProvidersData {
+  profiles: OlaProviderProfile[]
+  activeProfile?: string
+  activeModel?: string
+}
+
+/**
+ * Process-scoped memory store for provider profiles.
+ * Loaded once at startup from disk, then managed per-process.
+ * Each process can switch its activeProfile independently without
+ * affecting other processes (writes to disk but doesn't re-read).
+ */
+let processScopedOlaProviders: OlaProvidersData | null = null
+
+/**
+ * Load __olaProviders__ from disk into the process-scoped memory store.
+ * Called once at startup — after this, the process manages its own copy.
+ * Checks flagSettings (--settings) first, then userSettings.
+ */
+export function loadOlaProvidersFromDisk(): void {
+  const sourcesToCheck = ['flagSettings', 'userSettings'] as const
+
+  for (const source of sourcesToCheck) {
+    const settings = getSettingsForSource(source) as Record<string, unknown> | null
+    const raw = settings?.__olaProviders__
+    if (raw && typeof raw === 'object') {
+      const data = raw as { profiles?: unknown[]; activeProfile?: string; activeModel?: string }
+      const profiles = (Array.isArray(data.profiles) ? data.profiles : [])
+        .map(p => normalizeProviderProfile(p))
+        .filter((p): p is OlaProviderProfile => p !== null)
+      processScopedOlaProviders = {
+        profiles,
+        activeProfile: typeof data.activeProfile === 'string' ? data.activeProfile : undefined,
+        activeModel: typeof data.activeModel === 'string' ? data.activeModel : undefined,
+      }
+      return
+    }
+  }
+
+  processScopedOlaProviders = { profiles: [] }
+}
+
+/**
+ * Get the process-scoped provider profiles.
+ */
+export function getProcessScopedOlaProviders(): OlaProvidersData {
+  return processScopedOlaProviders ?? { profiles: [] }
+}
+
+/**
+ * Set the active profile in the process-scoped memory store.
+ * Also applies the corresponding env vars immediately.
+ */
+export function setProcessScopedActiveProfile(profileName: string, modelName?: string): void {
+  if (!processScopedOlaProviders) return
+
+  const profile = processScopedOlaProviders.profiles.find(p => p.name === profileName)
+  if (!profile) return
+
+  processScopedOlaProviders.activeProfile = profileName
+  processScopedOlaProviders.activeModel = modelName || profile.defaultModel
+  applyProfileToEnv(profile, processScopedOlaProviders.activeModel)
+}
+
+/**
+ * Sync the entire profiles list from disk into the process-scoped memory store.
+ * Used after add/delete/edit operations to keep memory in sync with disk
+ * for the current process.
+ */
+export function syncProcessScopedOlaProviders(data: OlaProvidersData): void {
+  processScopedOlaProviders = { ...data }
+  // Re-apply env vars if there's an active profile
+  if (data.activeProfile) {
+    const profile = data.profiles.find(p => p.name === data.activeProfile)
+    if (profile && data.activeModel) {
+      applyProfileToEnv(profile, data.activeModel)
+    }
+  }
+}
+
+/**
+ * Clear the active profile from process-scoped memory and remove
+ * all provider-related env vars. Called when the active profile
+ * is deleted or when switching away from provider-based routing.
+ */
+export function clearProcessScopedActiveProfile(): void {
+  if (!processScopedOlaProviders) return
+  processScopedOlaProviders.activeProfile = undefined
+  processScopedOlaProviders.activeModel = undefined
+  // Remove all provider env vars
+  delete process.env.CLAUDE_CODE_USE_OPENAI
+  delete process.env.OPENAI_API_KEY
+  delete process.env.OPENAI_API_BASE
+  delete process.env.OPENAI_BASE_URL
+  delete process.env.OPENAI_MODEL
+  delete process.env.ANTHROPIC_API_KEY
+  delete process.env.ANTHROPIC_BASE_URL
+  delete process.env.ANTHROPIC_MODEL
+}
+
 /**
  * Migrate a raw profile object from settings. Handles both new format (models array)
  * and old format (single model/defaultModel field). Mirrors migrateProfile() in auth.tsx.
@@ -196,7 +296,7 @@ function normalizeProviderProfile(raw: unknown): OlaProviderProfile | null {
 
   // New format: has models array
   if (obj.models && Array.isArray(obj.models)) {
-    if (typeof obj.name !== 'string' || typeof obj.provider !== 'string') return null
+    if (typeof obj.name !== 'string' || !obj.name || typeof obj.provider !== 'string') return null
     return obj as unknown as OlaProviderProfile
   }
 
@@ -217,41 +317,9 @@ function normalizeProviderProfile(raw: unknown): OlaProviderProfile | null {
 }
 
 /**
- * Apply the active provider profile from __olaProviders__ settings.
- * When a user previously switched to a provider via /auth use, the activeProfile
- * and activeModel are saved. This function restores the corresponding env vars
- * on startup so the provider configuration persists across sessions.
- *
- * Checks flagSettings (--settings CLI flag) first, then falls back to
- * userSettings (~/.claude/settings.json).
+ * Apply a single provider profile's env vars.
  */
-export function applyActiveProviderProfile(): void {
-  // Check flagSettings first (explicitly provided via --settings), then userSettings
-  const sourcesToCheck = ['flagSettings', 'userSettings'] as const
-  let olaProviders: { profiles?: unknown[]; activeProfile?: string; activeModel?: string } | undefined
-
-  for (const source of sourcesToCheck) {
-    const settings = getSettingsForSource(source) as Record<string, unknown> | null
-    const raw = settings?.__olaProviders__
-    if (raw && typeof raw === 'object') {
-      olaProviders = raw as { profiles?: unknown[]; activeProfile?: string; activeModel?: string }
-      break
-    }
-  }
-
-  if (!olaProviders?.activeProfile || !olaProviders.profiles) return
-
-  // Find and normalize the active profile
-  const rawProfile = olaProviders.profiles.find(p => p && typeof p === 'object' && (p as Record<string, unknown>).name === olaProviders.activeProfile)
-  if (!rawProfile) return
-
-  const profile = normalizeProviderProfile(rawProfile)
-  if (!profile) return
-
-  // Determine which model to use (activeModel overrides defaultModel)
-  const modelToUse = olaProviders.activeModel || profile.defaultModel
-  if (!modelToUse) return
-
+function applyProfileToEnv(profile: OlaProviderProfile, modelToUse: string): void {
   // Skip if provider is not one we support
   if (profile.provider !== 'openai' && profile.provider !== 'anthropic') return
 
@@ -280,6 +348,27 @@ export function applyActiveProviderProfile(): void {
     if (profile.apiUrl) process.env.ANTHROPIC_BASE_URL = profile.apiUrl
     process.env.ANTHROPIC_MODEL = modelToUse
   }
+}
+
+/**
+ * Apply the active provider profile from the process-scoped memory store.
+ * This is called at startup (after loadOlaProvidersFromDisk) and during
+ * hot reload to re-apply the current process's provider selection.
+ *
+ * The process-scoped store ensures each process maintains its own active
+ * profile independently, without being affected by other processes' changes.
+ */
+export function applyActiveProviderProfile(): void {
+  const data = processScopedOlaProviders
+  if (!data?.activeProfile || !data.profiles.length) return
+
+  const profile = data.profiles.find(p => p.name === data.activeProfile)
+  if (!profile) return
+
+  const modelToUse = data.activeModel || profile.defaultModel
+  if (!modelToUse) return
+
+  applyProfileToEnv(profile, modelToUse)
 }
 
 /**

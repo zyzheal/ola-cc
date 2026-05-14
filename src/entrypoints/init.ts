@@ -36,6 +36,7 @@ import {
   applyActiveProviderProfile,
   applyConfigEnvironmentVariables,
   applySafeConfigEnvironmentVariables,
+  loadOlaProvidersFromDisk,
 } from '../utils/managedEnv.js'
 import { configureGlobalMTLS } from '../utils/mtls.js'
 import {
@@ -74,7 +75,11 @@ export const init = memoize(async (): Promise<void> => {
     const envVarsStart = Date.now()
     applySafeConfigEnvironmentVariables()
 
-    // Restore the active provider profile from __olaProviders__ settings.
+    // Load provider profiles into process-scoped memory store.
+    // Each process gets its own copy that can be switched independently.
+    loadOlaProvidersFromDisk()
+
+    // Restore the active provider profile from process-scoped memory.
     // This must come after applySafeConfigEnvironmentVariables so the
     // provider's env vars (API key, base URL, model) take effect.
     applyActiveProviderProfile()
