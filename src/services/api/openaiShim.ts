@@ -1000,14 +1000,27 @@ function parseMaxTokensError(errorText: string): {
   contextLimit: number
   inputTokens: number
 } | null {
+  // Primary pattern: OpenAI/DashScope format
+  // "maximum context length is 135000 tokens... you requested 137500 tokens"
+  // "maximum context length is X tokens and your request has Y input tokens"
   const contextMatch = errorText.match(/maximum\s+context\s+length\s+is\s+(\d+)/i)
-  const inputMatch = errorText.match(/has\s+(\d+)\s+input\s+tokens/i)
+  const inputMatch = errorText.match(/(?:has\s+|requested\s+)(\d+)\s+(?:input\s+)?tokens/i)
   if (contextMatch && inputMatch) {
     return {
       contextLimit: parseInt(contextMatch[1], 10),
       inputTokens: parseInt(inputMatch[1], 10),
     }
   }
+
+  // Fallback: generic "X tokens > Y maximum" pattern (used by our own errors)
+  const genericMatch = errorText.match(/(\d+)\s*tokens\s*>\s*(\d+)\s*maximum/i)
+  if (genericMatch) {
+    return {
+      contextLimit: parseInt(genericMatch[2], 10),
+      inputTokens: parseInt(genericMatch[1], 10),
+    }
+  }
+
   return null
 }
 
@@ -1095,7 +1108,7 @@ export function createOpenAICompatibleShimClient(options: OpenAICompatibleClient
       }): Promise<{ input_tokens: number } | null> => {
         // OpenAI-compatible providers have no countTokens endpoint.
         // Return a rough estimation so upper-layer token tracking works.
-        // Uses the same heuristic as estimateInputTokens (3 bytes/token).
+        // Uses 4 bytes/token heuristic (same as estimateInputTokens).
         let totalBytes = 0
         for (const msg of params.messages) {
           if (typeof msg.content === 'string') {
@@ -1245,6 +1258,12 @@ export function createOpenAICompatibleShimClient(options: OpenAICompatibleClient
                     return buildNonStreamingResponse(anthropicResponse)
                   }
                   const retryErrorText = await retryResponse.text().catch(() => '')
+                  // If the retry also fails with a max_tokens error, return prompt-too-long
+                  const retryParsed = parseMaxTokensError(retryErrorText)
+                  if (retryParsed && retryResponse.status === 400) {
+                    const overflow = retryParsed.inputTokens - retryParsed.contextLimit
+                    throw new Error(`Prompt is too long: ${retryParsed.inputTokens} tokens > ${retryParsed.contextLimit} maximum (${overflow > 0 ? overflow : 'unknown'} tokens over limit)`)
+                  }
                   throw new Error(`OpenAI API error ${retryResponse.status}: ${retryErrorText.slice(0, 500)}`)
                 }
                 // Input tokens exceed context limit — no room for any output.
@@ -1290,9 +1309,15 @@ export function createOpenAICompatibleShimClient(options: OpenAICompatibleClient
                 )
                 if (retryResponse.ok) {
                   // Re-enter the streaming path with the corrected response
-                  return doStreaming(fetchResponse, resolvedModel, messageId)
+                  return doStreaming(retryResponse, resolvedModel, messageId)
                 }
                 const retryErrorText = await retryResponse.text().catch(() => '')
+                // If the retry also fails with a max_tokens error, return prompt-too-long
+                const retryParsed = parseMaxTokensError(retryErrorText)
+                if (retryParsed && retryResponse.status === 400) {
+                  const overflow = retryParsed.inputTokens - retryParsed.contextLimit
+                  throw new Error(`Prompt is too long: ${retryParsed.inputTokens} tokens > ${retryParsed.contextLimit} maximum (${overflow > 0 ? overflow : 'unknown'} tokens over limit)`)
+                }
                 throw new Error(`OpenAI API error ${retryResponse.status}: ${retryErrorText.slice(0, 500)}`)
               }
               // Input tokens exceed context limit
