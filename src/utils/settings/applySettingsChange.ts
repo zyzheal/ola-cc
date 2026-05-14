@@ -1,7 +1,6 @@
 import type { AppState } from '../../state/AppState.js'
 import { logForDebugging } from '../debug.js'
 import { updateHooksConfigSnapshot } from '../hooks/hooksConfigSnapshot.js'
-import { applyActiveProviderProfile } from '../managedEnv.js'
 import {
   createDisabledBypassPermissionsContext,
   findOverlyBroadBashPermissions,
@@ -38,10 +37,6 @@ export function applySettingsChange(
   const newSettings = getInitialSettings()
 
   logForDebugging(`Settings changed from ${source}, updating app state`)
-
-  // Re-apply the active provider profile so __olaProviders__ changes
-  // (switching provider, model, etc.) take effect on hot reload.
-  applyActiveProviderProfile()
 
   const updatedRules = loadAllPermissionRulesFromDisk()
   updateHooksConfigSnapshot()
