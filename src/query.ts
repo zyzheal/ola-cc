@@ -1625,7 +1625,6 @@ async function* queryLoop(
             onUpdateGoal: (updatedGoal: Goal) => {
               toolUseContext.setAppState(prev => ({ ...prev, goal: updatedGoal }))
             },
-            getTodoListId: () => goalCheckState.goal?.todoListId,
             getTodos: (listId: string) => goalCheckState.todos?.[listId],
             updateTodos: (listId: string, todos) => {
               toolUseContext.setAppState(prev => ({
@@ -1649,7 +1648,7 @@ async function* queryLoop(
             })
             return { reason: 'max_turns', turnCount: nextTurnCount }
           }
-          logForDebugging?.(`[QUERY LOOP] goal auto-continue (no tools): messages=${messagesForQuery.length + assistantMessages.length}, turnCount=${nextTurnCount}`)
+          logForDebugging(`[QUERY LOOP] goal auto-continue (no tools): messages=${messagesForQuery.length + assistantMessages.length}, turnCount=${nextTurnCount}`)
           state = {
             messages: [...messagesForQuery, ...assistantMessages],
             toolUseContext,
@@ -1663,12 +1662,9 @@ async function* queryLoop(
             transition: { reason: 'goal_auto_continue' },
           }
           continue
-        } else {
-          return { reason: 'completed' }
         }
-      } else {
-        return { reason: 'completed' }
       }
+      return { reason: 'completed' }
     }
 
     let shouldPreventContinuation = false
@@ -2028,7 +2024,6 @@ async function* queryLoop(
           onUpdateGoal: (updatedGoal: Goal) => {
             toolUseContext.setAppState(prev => ({ ...prev, goal: updatedGoal }))
           },
-          getTodoListId: () => currentAppState.goal?.todoListId,
           getTodos: (listId: string) => currentAppState.todos?.[listId],
           updateTodos: (listId: string, todos) => {
             toolUseContext.setAppState(prev => ({

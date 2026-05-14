@@ -13,8 +13,6 @@ export interface GoalContextOptions {
   onInjectPrompt: (prompt: string) => void
   /** Updates the goal in app state */
   onUpdateGoal: (goal: Goal) => void
-  /** Returns the todo list ID for the current goal */
-  getTodoListId: () => string | undefined
   /** Returns todos for a given list ID */
   getTodos: (listId: string) => TodoItem[] | undefined
   /** Updates todos for a given list ID */
