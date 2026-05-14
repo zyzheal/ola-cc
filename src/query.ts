@@ -114,7 +114,7 @@ import {
 } from './bootstrap/state.js'
 import { createBudgetTracker, checkTokenBudget } from './query/tokenBudget.js'
 import { count } from './utils/array.js'
-import { processGoalRuntimeEvent } from './utils/goal/goalRuntime.js'
+import { processGoalRuntimeEvent, finishTurnForGoal } from './utils/goal/goalRuntime.js'
 import { ThreadGoalStatus, type Goal, type TokenUsage } from './commands/goal/types.js'
 import type { TodoItem } from './utils/todo/types.js'
 
@@ -1613,7 +1613,62 @@ async function* queryLoop(
         }
       }
 
-      return { reason: 'completed' }
+      // Goal auto-continue: even without tool calls, if goal is active, continue with continuation prompt
+      const goalCheckState = toolUseContext.getAppState()
+      if (goalCheckState.goal?.id && goalCheckState.goal?.status === ThreadGoalStatus.Active) {
+        const noToolGoalResult = finishTurnForGoal(
+          goalCheckState.goal,
+          goalCheckState.goalRuntime,
+          currentTokenUsage,
+          {
+            onInjectPrompt: (prompt: string) => { pendingGoalPrompt = prompt },
+            onUpdateGoal: (updatedGoal: Goal) => {
+              toolUseContext.setAppState(prev => ({ ...prev, goal: updatedGoal }))
+            },
+            getTodoListId: () => goalCheckState.goal?.todoListId,
+            getTodos: (listId: string) => goalCheckState.todos?.[listId],
+            updateTodos: (listId: string, todos) => {
+              toolUseContext.setAppState(prev => ({
+                ...prev,
+                todos: { ...prev.todos, [listId]: todos },
+              }))
+            },
+          }
+        )
+
+        if (noToolGoalResult.injectedPrompt) {
+          pendingGoalPrompt = noToolGoalResult.injectedPrompt
+          // Goal wants to continue - skip tool execution and go straight to next turn
+          // No tool results to add since needsFollowUp was false
+          const nextTurnCount = turnCount + 1
+          if (maxTurns && nextTurnCount > maxTurns) {
+            yield createAttachmentMessage({
+              type: 'max_turns_reached',
+              maxTurns,
+              turnCount: nextTurnCount,
+            })
+            return { reason: 'max_turns', turnCount: nextTurnCount }
+          }
+          logForDebugging?.(`[QUERY LOOP] goal auto-continue (no tools): messages=${messagesForQuery.length + assistantMessages.length}, turnCount=${nextTurnCount}`)
+          state = {
+            messages: [...messagesForQuery, ...assistantMessages],
+            toolUseContext,
+            autoCompactTracking: tracking,
+            turnCount: nextTurnCount,
+            maxOutputTokensRecoveryCount: 0,
+            hasAttemptedReactiveCompact,
+            pendingToolUseSummary: undefined,
+            maxOutputTokensOverride: undefined,
+            stopHookActive: undefined,
+            transition: { reason: 'goal_auto_continue' },
+          }
+          continue
+        } else {
+          return { reason: 'completed' }
+        }
+      } else {
+        return { reason: 'completed' }
+      }
     }
 
     let shouldPreventContinuation = false
@@ -1964,45 +2019,21 @@ async function* queryLoop(
     // Check if goal should auto-continue after turn completion
     const currentAppState = toolUseContext.getAppState()
     if (currentAppState.goal?.id && currentAppState.goal?.status === ThreadGoalStatus.Active) {
-      // Use real API token usage for accurate accounting
-      const effectiveTokenUsage: TokenUsage = currentTokenUsage ?? {
-        inputTokens: currentAppState.goal.tokensUsed,
-        cachedInputTokens: 0,
-        outputTokens: 0,
-        reasoningOutputTokens: 0,
-        totalTokens: currentAppState.goal.tokensUsed,
-      }
-      const goalResult = processGoalRuntimeEvent(
-        { type: 'turn_finished', turnCompleted: true },
+      const goalResult = finishTurnForGoal(
+        currentAppState.goal,
+        currentAppState.goalRuntime,
+        currentTokenUsage,
         {
-          goal: currentAppState.goal,
-          runtime: currentAppState.goalRuntime,
-          currentTokenUsage: effectiveTokenUsage,
-          injectPrompt: async (prompt: string) => {
-            // Store the prompt to be injected at the start of next iteration
-            pendingGoalPrompt = prompt
+          onInjectPrompt: (prompt: string) => { pendingGoalPrompt = prompt },
+          onUpdateGoal: (updatedGoal: Goal) => {
+            toolUseContext.setAppState(prev => ({ ...prev, goal: updatedGoal }))
           },
-          updateGoal: (updatedGoal: Goal) => {
-            // Update the goal in app state via setAppState
+          getTodoListId: () => currentAppState.goal?.todoListId,
+          getTodos: (listId: string) => currentAppState.todos?.[listId],
+          updateTodos: (listId: string, todos) => {
             toolUseContext.setAppState(prev => ({
               ...prev,
-              goal: updatedGoal,
-            }))
-          },
-          getTodos: () => {
-            const todoListId = currentAppState.goal?.todoListId
-            if (!todoListId) return undefined
-            return currentAppState.todos?.[todoListId]
-          },
-          updateTodos: (todos) => {
-            const todoListId = currentAppState.goal?.todoListId
-            if (!todoListId) return
-            toolUseContext.setAppState(prev => ({
-              ...prev,
-              todos: {
-                ...prev.todos,
-                [todoListId]: todos,
-              },
+              todos: { ...prev.todos, [listId]: todos },
             }))
           },
         }

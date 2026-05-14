@@ -14,6 +14,7 @@
  * - OPENAI_EXTRA_BODY: JSON string of extra params
  */
 import { randomUUID } from 'crypto'
+import { logForDebugging } from '../../utils/debug.js'
 
 export interface OpenAICompatibleClientOptions {
   apiKey?: string
@@ -716,6 +717,9 @@ function convertResponseToAnthropic(
   else if (stopReason === 'length') stopReason = 'max_tokens'
   else if (stopReason === 'content_filter') stopReason = 'end_turn'
 
+  // Extract cache-related fields from OpenAI response
+  const { cacheReadInputTokens, cacheCreationInputTokens } = extractCacheTokens(response.usage)
+
   return {
     id: response.id,
     type: 'message',
@@ -727,8 +731,66 @@ function convertResponseToAnthropic(
     usage: {
       input_tokens: response.usage?.prompt_tokens ?? 0,
       output_tokens: response.usage?.completion_tokens ?? 0,
+      cache_read_input_tokens: cacheReadInputTokens,
+      cache_creation_input_tokens: cacheCreationInputTokens,
     },
   }
+}
+
+// -- Cache token extraction
+
+interface CacheTokenResult {
+  cacheReadInputTokens: number
+  cacheCreationInputTokens: number
+}
+
+/**
+ * Extracts cache token counts from an OpenAI-compatible API usage object.
+ *
+ * Checks formats in priority order:
+ * 1. Anthropic-style: cache_read_input_tokens / cache_creation_input_tokens (some proxies pass through)
+ * 2. OpenAI: prompt_tokens_details.cached_tokens
+ * 3. Top-level: cached_tokens
+ * 4. Fallback: cache_tokens (some providers use this)
+ *
+ * Note: cacheCreationInputTokens is only extracted from Priority 1 because OpenAI's
+ * native format does not expose cache creation tokens — creation is server-managed
+ * and invisible to the client. If a provider returns Anthropic-style fields, those
+ * take precedence.
+ */
+function extractCacheTokens(usage: unknown): CacheTokenResult {
+  if (!usage || typeof usage !== 'object') {
+    return { cacheReadInputTokens: 0, cacheCreationInputTokens: 0 }
+  }
+
+  let cacheReadInputTokens = 0
+  let cacheCreationInputTokens = 0
+
+  // Priority 1: Anthropic-style fields (some proxies pass through)
+  if ('cache_read_input_tokens' in usage) {
+    cacheReadInputTokens = (usage as Record<string, unknown>).cache_read_input_tokens as number ?? 0
+  }
+  if ('cache_creation_input_tokens' in usage) {
+    cacheCreationInputTokens = (usage as Record<string, unknown>).cache_creation_input_tokens as number ?? 0
+  }
+
+  // Priority 2: OpenAI prompt_tokens_details.cached_tokens
+  if (cacheReadInputTokens === 0 && 'prompt_tokens_details' in usage && usage.prompt_tokens_details) {
+    const details = usage.prompt_tokens_details as { cached_tokens?: number }
+    cacheReadInputTokens = details.cached_tokens ?? 0
+  }
+
+  // Priority 3: Top-level cached_tokens
+  if (cacheReadInputTokens === 0 && 'cached_tokens' in usage) {
+    cacheReadInputTokens = (usage as Record<string, unknown>).cached_tokens as number ?? 0
+  }
+
+  // Priority 4: cache_tokens (fallback for some providers)
+  if (cacheReadInputTokens === 0 && 'cache_tokens' in usage) {
+    cacheReadInputTokens = (usage as Record<string, unknown>).cache_tokens as number ?? 0
+  }
+
+  return { cacheReadInputTokens, cacheCreationInputTokens }
 }
 
 // -- Extra body parsing
@@ -758,7 +820,7 @@ function logCacheUsage(response: OpenAIChatCompletionResponse): void {
   if ('cached_tokens' in usage) cacheDetails.push(`cached_tokens=${(usage as any).cached_tokens}`)
 
   if (cacheDetails.length > 0) {
-    console.error(
+    logForDebugging(
       `[OpenAI Shim Cache] prompt=${usage.prompt_tokens}, completion=${usage.completion_tokens}, ${cacheDetails.join(', ')}`,
     )
   }
@@ -1013,7 +1075,9 @@ export function createOpenAICompatibleShimClient(options: OpenAICompatibleClient
 
                     if (!hasEmittedMessageStart) {
                       hasEmittedMessageStart = true
-                      yield { type: 'message_start', message: { id: messageId, type: 'message', role: 'assistant', content: [], model: chunk.model ?? resolvedModel, stop_reason: null, stop_sequence: null, usage: { input_tokens: 0, output_tokens: 0 } } } as AnthropicStreamEvent
+                      // Extract cache info from chunk.usage if available (some providers send it in first chunk)
+                      const { cacheReadInputTokens: chunkCacheRead } = extractCacheTokens(chunk.usage)
+                      yield { type: 'message_start', message: { id: messageId, type: 'message', role: 'assistant', content: [], model: chunk.model ?? resolvedModel, stop_reason: null, stop_sequence: null, usage: { input_tokens: 0, output_tokens: 0, cache_read_input_tokens: chunkCacheRead, cache_creation_input_tokens: 0 } } } as AnthropicStreamEvent
                     }
 
                     const delta = choice.delta
@@ -1082,8 +1146,12 @@ export function createOpenAICompatibleShimClient(options: OpenAICompatibleClient
                       if (chunk.usage && !hasEmittedUsage) {
                         hasEmittedUsage = true
                         logCacheUsage(chunk)
+
+                        const { cacheReadInputTokens, cacheCreationInputTokens } = extractCacheTokens(chunk.usage)
+                        yield { type: 'message_delta', delta: { stop_reason: stopReason as string | null, stop_sequence: null }, usage: { input_tokens: chunk.usage.prompt_tokens ?? 0, output_tokens: chunk.usage.completion_tokens ?? 0, cache_read_input_tokens: cacheReadInputTokens, cache_creation_input_tokens: cacheCreationInputTokens } } as AnthropicStreamEvent
+                      } else {
+                        yield { type: 'message_delta', delta: { stop_reason: stopReason as string | null, stop_sequence: null }, usage: { output_tokens: chunk.usage?.completion_tokens ?? 0 } } as AnthropicStreamEvent
                       }
-                      yield { type: 'message_delta', delta: { stop_reason: stopReason as string | null, stop_sequence: null }, usage: { output_tokens: chunk.usage?.completion_tokens ?? 0 } } as AnthropicStreamEvent
                       yield { type: 'message_stop' } as AnthropicStreamEvent
                     }
                   }
