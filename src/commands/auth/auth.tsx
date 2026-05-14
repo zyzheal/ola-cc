@@ -8,6 +8,7 @@ import { getSettingsForSource, updateSettingsForSource } from '../../utils/setti
 import type { LocalJSXCommandCall } from '../../types/command.js'
 import { useSetAppState } from '../../state/AppState.js'
 import { getAnthropicClient } from '../../services/api/client.js'
+import { setProcessScopedActiveProfile, getProcessScopedOlaProviders, syncProcessScopedOlaProviders, clearProcessScopedActiveProfile } from '../../utils/managedEnv.js'
 
 // -- Types
 
@@ -320,6 +321,10 @@ function AuthActionView({
             setMessage(`已保存 "${profile.name}" 但验证失败:\n${chalk.red(verifyResult.error || 'Unknown error')}`)
           }
           saveProfiles(data)
+
+          // Sync new profile to process-scoped memory so it can be used immediately
+          syncProcessScopedOlaProviders(data)
+
           setDone(true)
           break
         }
@@ -330,29 +335,20 @@ function AuthActionView({
           if (!profile) { setMessage(`未找到 "${parsed.name}"`); setDone(true); break }
           if (profile.models.length === 0) { setMessage(`"${parsed.name}" 没有可用模型`); setDone(true); break }
 
-          if (profile.provider === 'openai') {
-            process.env.CLAUDE_CODE_USE_OPENAI = 'true'
-            process.env.OPENAI_API_KEY = profile.apiKey
-            process.env.OPENAI_API_BASE = profile.apiUrl
-            process.env.OPENAI_BASE_URL = profile.apiUrl
-            delete process.env.ANTHROPIC_API_KEY
-          } else {
-            process.env.ANTHROPIC_API_KEY = profile.apiKey
-            if (profile.apiUrl) process.env.ANTHROPIC_BASE_URL = profile.apiUrl
+          // Use process-scoped memory switching — env vars are process-scoped,
+          // so multiple processes can independently switch providers.
+          setProcessScopedActiveProfile(profile.name, profile.defaultModel)
 
-            delete process.env.CLAUDE_CODE_USE_OPENAI
-            delete process.env.OPENAI_API_KEY
-            delete process.env.OPENAI_API_BASE
-            delete process.env.OPENAI_BASE_URL
-          }
+          // Update mainLoopModel via AppState for immediate effect in current session
+          setAppState(prev => ({ ...prev, mainLoopModel: profile.defaultModel, mainLoopModelForSession: null }))
 
-          const modelToUse = profile.defaultModel || profile.models[0]
-          setAppState(prev => ({ ...prev, mainLoopModel: modelToUse, mainLoopModelForSession: null }))
+          // Persist the active profile to disk so new processes pick it up.
           data.activeProfile = profile.name
-          data.activeModel = modelToUse
+          data.activeModel = profile.defaultModel
           saveProfiles(data)
-          logEvent('tengu_auth_switch_provider', { provider: profile.provider, model: modelToUse })
-          setMessage(`已切换到 "${chalk.bold(profile.name)}" (${profile.provider})\n模型: ${chalk.bold(modelToUse)}\nURL: ${profile.apiUrl}`)
+
+          logEvent('tengu_auth_switch_provider', { provider: profile.provider, model: profile.defaultModel })
+          setMessage(`已切换到 "${chalk.bold(profile.name)}" (${profile.provider})\n模型: ${chalk.bold(profile.defaultModel)}\nURL: ${profile.apiUrl}`)
           setDone(true)
           break
         }
@@ -365,8 +361,14 @@ function AuthActionView({
           if (data.activeProfile === parsed.name) {
             data.activeProfile = undefined
             data.activeModel = undefined
+            // Clear process-scoped memory and env vars for deleted active profile
+            clearProcessScopedActiveProfile()
           }
           saveProfiles(data)
+
+          // Sync profile removal to process-scoped memory
+          syncProcessScopedOlaProviders(data)
+
           setMessage(`已删除 "${parsed.name}"`)
           setDone(true)
           break
@@ -398,6 +400,14 @@ function AuthActionView({
           if (result.success) { profile.verified = true; setMessage(`已添加 "${parsed.model}" 到 "${parsed.name}" — 连接验证成功 ${chalk.green('✓')}`) }
           else { profile.verified = false; setMessage(`已添加 "${parsed.model}" 但验证失败:\n${chalk.red(result.error || 'Unknown error')}`) }
           saveProfiles(data)
+
+          // Always sync process-scoped memory when active profile's models change
+          syncProcessScopedOlaProviders(data)
+          if (data.activeProfile !== parsed.name && data.activeProfile) {
+            // Re-apply the current active profile's env vars to ensure consistency
+            setProcessScopedActiveProfile(data.activeProfile, data.activeModel)
+          }
+
           logEvent('tengu_auth_add_model', { provider: profile.name, model: parsed.model })
           setDone(true)
           break
@@ -417,8 +427,15 @@ function AuthActionView({
           if (data.activeProfile === parsed.name && data.activeModel === parsed.model) {
             data.activeModel = profile.defaultModel
             setAppState(prev => ({ ...prev, mainLoopModel: profile.defaultModel }))
+
+            // Sync process memory for the active profile
+            setProcessScopedActiveProfile(parsed.name, profile.defaultModel)
           }
           saveProfiles(data)
+
+          // Always sync process-scoped memory when models change
+          syncProcessScopedOlaProviders(data)
+
           logEvent('tengu_auth_remove_model', { provider: profile.name, model: parsed.model })
           setMessage(`已从 "${parsed.name}" 移除 "${parsed.model}"`)
           setDone(true)
