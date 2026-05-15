@@ -84,4 +84,6 @@ export const IDLE_GOAL: Goal = {
   totalApiWallMs: 0,
   mode: 'standard' as GoalMode,
   autoEdit: false,
+  consecutiveErrors: 0,
+  turnsWithNoChanges: 0,
 }
