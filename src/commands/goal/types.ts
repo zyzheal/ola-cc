@@ -77,6 +77,9 @@ export interface GoalRuntimeState {
 
   // NEW: Accumulate tool calls during current turn
   _toolCallsThisTurn?: string[]
+
+  // NEW: Consecutive critical analysis counter (auto-pause threshold)
+  consecutiveCritical?: number
 }
 
 export interface TokenUsage {
