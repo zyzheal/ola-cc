@@ -16,6 +16,10 @@ export interface TurnRecord {
   cacheReadTokens: number
   wallStartMs: number
   wallEndMs: number
+  // NEW: Execution summary for analysis
+  toolCallsSummary?: string[]   // Tool names called this turn
+  outputSummary?: string        // Output summary (first 200 chars)
+  hadObservableChanges?: boolean
 }
 
 // GoalTask: dedicated task (decoupled from TodoWrite)
@@ -60,6 +64,16 @@ export interface GoalRuntimeState {
   consecutiveErrors: number        // Consecutive error counter
   turnsWithNoChanges: number       // Turns with no observable changes
   _currentTurnWallStartMs: number  // Internal: track current turn API start
+
+  // NEW: Pending analysis request
+  pendingAnalysis?: {
+    reason: string
+    severity: 'warning' | 'critical'
+    triggerTurnId: string
+  }
+
+  // NEW: Last analysis result (persists across turns)
+  lastAnalysisResult?: string
 }
 
 export interface TokenUsage {
