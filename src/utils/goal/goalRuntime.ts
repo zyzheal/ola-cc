@@ -369,8 +369,10 @@ export function processGoalRuntimeEvent(
     }
     
     case 'maybe_continue_if_idle': {
-      // This is triggered when there's no user input pending
-      // If goal is active, automatically continue
+      // Don't re-inject for paused goals
+      if (goal.status === Status.Paused) {
+        return { shouldContinue: false }
+      }
       if (goal.status === Status.Active) {
         const continuationPrompt = buildContinuationPrompt(goal)
         return { shouldContinue: true, injectedPrompt: continuationPrompt }
