@@ -4780,10 +4780,9 @@ export function REPL({
                 {!showSpinner && !toolJSX?.isLocalJSXCommand && showExpandedTodos && tasksV2 && tasksV2.length > 0 && <Box width="100%" flexDirection="column">
                       <TaskListV2 tasks={tasksV2} isStandalone={true} />
                     </Box>}
-                {/* Goal progress temporarily disabled for debugging */}
-                {/* {goal?.id && goal?.status && <Box width="100%" flexDirection="column">
+                {goal?.id && goal?.status && <Box width="100%" flexDirection="column">
                       <GoalProgressWithBoundary />
-                    </Box>} */}
+                    </Box>}
                 {focusedInputDialog === 'sandbox-permission' && <SandboxPermissionRequest key={sandboxPermissionRequestQueue[0]!.hostPattern.host} hostPattern={sandboxPermissionRequestQueue[0]!.hostPattern} onUserResponse={(response: {
             allow: boolean;
             persistToSettings: boolean;

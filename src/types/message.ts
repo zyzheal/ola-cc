@@ -9,6 +9,7 @@ export type MessageBase = {
   timestamp?: string
   createdAt?: string
   isMeta?: boolean
+  compactSafe?: boolean
   isVirtual?: boolean
   isCompactSummary?: boolean
   toolUseResult?: unknown
