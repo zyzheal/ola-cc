@@ -115,6 +115,7 @@ import {
 import { createBudgetTracker, checkTokenBudget } from './query/tokenBudget.js'
 import { count } from './utils/array.js'
 import { processGoalRuntimeEvent, finishTurnForGoal } from './utils/goal/goalRuntime.js'
+import { buildAnalysisPrompt } from './utils/goal/goalSteering.js'
 import { ThreadGoalStatus, type Goal, type TokenUsage } from './commands/goal/types.js'
 import type { TodoItem } from './utils/todo/types.js'
 
@@ -408,6 +409,23 @@ async function* queryLoop(
         }),
       ]
       pendingGoalPrompt = undefined
+    }
+
+    // Goal Analysis: check for pending analysis and inject context
+    const currentAppState = toolUseContext.getAppState()
+    if (currentAppState.goalRuntime?.pendingAnalysis && currentAppState.goal?.status === ThreadGoalStatus.Active) {
+      const pendingAnalysis = currentAppState.goalRuntime.pendingAnalysis
+      const analysisPrompt = buildAnalysisPrompt(pendingAnalysis)
+      state.messages = [
+        ...state.messages,
+        createUserMessage({
+          content: analysisPrompt,
+          isMeta: true,
+        }),
+      ]
+      // Clear pending analysis after injection
+      currentAppState.goalRuntime.pendingAnalysis = undefined
+      currentAppState.goalRuntime.lastAnalysisResult = pendingAnalysis.reason
     }
 
     // Reset autoContinue for this iteration - will be set to true if goal wants to continue
