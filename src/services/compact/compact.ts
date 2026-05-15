@@ -95,7 +95,6 @@ import {
 import { getFeatureValue_CACHED_MAY_BE_STALE } from '../analytics/growthbook.js'
 import { isThirdPartyProvider } from '../../utils/model/providers.js'
 import type { TurnRecord } from '../../commands/goal/types.js'
-import { totalTokensFromBuffer, totalWallTimeFromBuffer } from '../../utils/goal/goalAccounting.js'
 import {
   type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
   logEvent,
@@ -1731,22 +1730,22 @@ export function resetGoalRuntimeAfterCompact(
       buffer.push(compactTurn)
       if (buffer.length > 3) buffer.shift()
 
-      const totalApiTokens = totalTokensFromBuffer(buffer)
-      const totalApiWallMs = totalWallTimeFromBuffer(buffer)
+      // Accumulate compact tokens into cumulative totals (matching turn_finished semantics)
+      const compactTokenTotal = compactionUsage.input_tokens + compactionUsage.output_tokens
+      const prevTotalApiTokens = prev.goalRuntime?.totalApiTokens ?? 0
+      const prevTotalApiWallMs = prev.goalRuntime?.totalApiWallMs ?? 0
 
       return {
         ...baseUpdate,
         goal: {
           ...baseUpdate.goal,
-          totalApiTokens,
-          totalApiWallMs,
-          tokensUsed: prev.goal.tokensUsed + (compactionUsage.input_tokens + compactionUsage.output_tokens),
+          tokensUsed: prev.goal.tokensUsed + compactTokenTotal,
         },
         goalRuntime: {
           ...baseUpdate.goalRuntime,
           turnBuffer: buffer,
-          totalApiTokens,
-          totalApiWallMs,
+          totalApiTokens: prevTotalApiTokens + compactTokenTotal,
+          totalApiWallMs: prevTotalApiWallMs, // compact has zero wall time
         },
       }
     }

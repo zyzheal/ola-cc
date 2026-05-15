@@ -98,7 +98,7 @@ Do not call update_goal unless the goal is actually complete.`
 
 const SIMPLE_CONTINUATION_TEMPLATE = `Continue working toward: {{objective}}. Next action?`
 
-const COMPLEX_CONTUATION_TEMPLATE = CONTINUATION_TEMPLATE + `
+const COMPLEX_CONTINUATION_TEMPLATE = CONTINUATION_TEMPLATE + `
 
 ## Self-Review
 Before proceeding, briefly assess:
@@ -113,7 +113,7 @@ function getContinuationTemplate(mode: GoalMode): string {
     case 'standard':
       return CONTINUATION_TEMPLATE
     case 'complex':
-      return COMPLEX_CONTUATION_TEMPLATE
+      return COMPLEX_CONTINUATION_TEMPLATE
   }
 }
 
