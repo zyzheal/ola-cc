@@ -1,6 +1,7 @@
 import type { Goal, GoalRuntimeState, TokenUsage } from '../../commands/goal/types.js'
 import { ThreadGoalStatus as Status, migrateGoal } from '../../commands/goal/types.js'
 import { tokenDeltaSinceLastAccounting, timeDeltaSinceLastAccounted, isBudgetExhausted, recordTurnApiUsage } from './goalAccounting.js'
+import { analyzeTurnLightweight } from './goalAnalysis.js'
 import { buildContinuationPrompt, buildBudgetLimitPrompt } from './goalSteering.js'
 import type { TodoItem } from '../todo/types.js'
 
@@ -315,6 +316,20 @@ export function processGoalRuntimeEvent(
         wallStartMs,
         wallEndMs,
       )
+
+      // Lightweight analysis after turn completion
+      const analysisResult = analyzeTurnLightweight(
+        runtime.turnBuffer?.[runtime.turnBuffer.length - 1],
+        turnsWithNoChanges
+      )
+
+      if (analysisResult.status !== 'ok') {
+        runtime.pendingAnalysis = {
+          reason: analysisResult.reason ?? 'Analysis needed',
+          severity: analysisResult.status === 'critical' ? 'critical' : 'warning',
+          triggerTurnId: lastTurn?.turnId ?? 'unknown'
+        }
+      }
 
       // Accumulate authoritative totals (cumulative, not just last-3-turns)
       // Exclude cached input tokens (they're part of inputTokens, not additional cost)
