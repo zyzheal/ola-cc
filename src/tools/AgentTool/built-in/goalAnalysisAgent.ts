@@ -19,5 +19,6 @@ export const GOAL_ANALYSIS_AGENT: BuiltInAgentDefinition = {
   source: 'built-in',
   baseDir: 'built-in',
   model: 'haiku',
+  disallowedTools: ['FileEdit', 'FileWrite', 'Bash', 'Edit', 'Write'],
   getSystemPrompt: () => GOAL_ANALYSIS_SYSTEM_PROMPT,
 }
