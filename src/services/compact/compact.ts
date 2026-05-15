@@ -1719,12 +1719,15 @@ export function resetGoalRuntimeAfterCompact(
     // Record compact tokens in ring buffer (only when compactionUsage is available)
     if (compactionUsage) {
       const compactTurn: TurnRecord = {
-        turnId: prev.goalRuntime?.accounting.turn?.turnId ?? `compact-${Date.now()}`,
+        turnId: `compact-${prev.goalRuntime?.accounting.turn?.turnId ?? Date.now()}`,
         inputTokens: compactionUsage.input_tokens,
         outputTokens: compactionUsage.output_tokens,
         cacheReadTokens: compactionUsage.cache_read_input_tokens ?? 0,
         wallStartMs: Date.now(),
         wallEndMs: Date.now(),
+        // compact is a system operation, not a business turn
+        toolCallsSummary: [],
+        hadObservableChanges: false,
       }
       const buffer = [...(prev.goalRuntime?.turnBuffer ?? [])]
       buffer.push(compactTurn)
@@ -1749,6 +1752,9 @@ export function resetGoalRuntimeAfterCompact(
           turnBuffer: buffer,
           totalApiTokens: prevTotalApiTokens + compactTokenTotal,
           totalApiWallMs: prevTotalApiWallMs, // compact has zero wall time
+          // Reset counters after compact since context has been refreshed
+          turnsWithNoChanges: 0,
+          consecutiveErrors: 0,
         },
       }
     }
