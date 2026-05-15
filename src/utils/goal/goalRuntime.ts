@@ -1,6 +1,6 @@
 import type { Goal, GoalRuntimeState, TokenUsage } from '../../commands/goal/types.js'
 import { ThreadGoalStatus as Status } from '../../commands/goal/types.js'
-import { tokenDeltaSinceLastAccounting, timeDeltaSinceLastAccounted, isBudgetExhausted } from './goalAccounting.js'
+import { tokenDeltaSinceLastAccounting, timeDeltaSinceLastAccounted, isBudgetExhausted, recordTurnApiUsage, totalTokensFromBuffer, totalWallTimeFromBuffer } from './goalAccounting.js'
 import { buildContinuationPrompt, buildBudgetLimitPrompt } from './goalSteering.js'
 import type { TodoItem } from '../todo/types.js'
 
@@ -91,6 +91,19 @@ export interface GoalRuntimeResult {
   injectedPrompt?: string
 }
 
+/**
+ * Work tools that should auto-progress tasks.
+ * Replaces hardcoded exclusion list with explicit inclusion.
+ */
+const WORK_TOOLS = new Set([
+  'Bash', 'FileEdit', 'FileWrite', 'FileRead', 'Glob', 'Grep',
+  'Agent', 'SkillTool', 'TodoWrite', 'Edit', 'Write', 'Read',
+])
+
+function isWorkTool(toolName: string): boolean {
+  return WORK_TOOLS.has(toolName)
+}
+
 // Helper: Auto-progress task status
 function autoProgressTasks(todos: TodoItem[] | undefined, updateTodos: ((todos: TodoItem[]) => void) | undefined): void {
   if (!todos || !updateTodos || todos.length === 0) return
@@ -136,6 +149,9 @@ export function processGoalRuntimeEvent(
   try {
     const { goal, runtime } = context
 
+    // Reset error counter on any successful event processing
+    runtime.consecutiveErrors = 0
+
     // Safety checks
     if (!goal || !goal.id) {
       return { shouldContinue: false }
@@ -152,6 +168,8 @@ export function processGoalRuntimeEvent(
           lastTokenUsage: event.tokenUsage,
           activeGoalId: goal.id,
         }
+        // Record wall time start
+        runtime._currentTurnWallStartMs = Date.now()
         // Auto-start first task if none is in progress
         const todos = context.getTodos?.()
         if (todos && todos.length > 0 && !todos.some(t => t.status === 'in_progress')) {
@@ -175,7 +193,7 @@ export function processGoalRuntimeEvent(
       const todos = context.getTodos?.()
       const inProgressTask = todos?.find(t => t.status === 'in_progress')
       // Only progress if there's an in-progress task and this is a work-related tool
-      if (inProgressTask && !['TodoWrite', 'Sleep', 'AskUserQuestion'].includes(event.toolName)) {
+      if (inProgressTask && isWorkTool(event.toolName)) {
         autoProgressTasks(todos, context.updateTodos)
       }
 
@@ -268,6 +286,19 @@ export function processGoalRuntimeEvent(
       let goalWasUpdated = false
       let updatedGoalRef: Goal = goal
 
+      // Dead-turn detection: 2+ turns with no observable changes
+      let turnsWithNoChanges = runtime.turnsWithNoChanges ?? 0
+      const hadObservableChanges = lastTurn && context.currentTokenUsage &&
+        (context.currentTokenUsage.outputTokens > 0 ||
+         context.currentTokenUsage.totalTokens > (lastTurn.lastTokenUsage?.totalTokens ?? 0))
+
+      if (!hadObservableChanges) {
+        turnsWithNoChanges++
+      } else {
+        turnsWithNoChanges = 0
+      }
+      runtime.turnsWithNoChanges = turnsWithNoChanges
+
       // Accumulate token usage for this turn
       if (lastTurn && goal.status === Status.Active) {
         const usage = context.currentTokenUsage
@@ -305,10 +336,32 @@ export function processGoalRuntimeEvent(
         goalWasUpdated = true
       }
 
+      // Record turn in ring buffer
+      const wallEndMs = Date.now()
+      const wallStartMs = runtime._currentTurnWallStartMs ?? wallEndMs
+      runtime.turnBuffer = recordTurnApiUsage(
+        runtime.turnBuffer ?? [],
+        lastTurn?.turnId ?? 'unknown',
+        context.currentTokenUsage,
+        wallStartMs,
+        wallEndMs,
+      )
+
+      // Update authoritative totals
+      runtime.totalApiTokens = totalTokensFromBuffer(runtime.turnBuffer)
+      runtime.totalApiWallMs = totalWallTimeFromBuffer(runtime.turnBuffer)
+
       // Use updated goal status for continuation check
       const effectiveGoal = goalWasUpdated ? updatedGoalRef : goal
+
+      // If 2+ dead turns, inject strategy check into continuation prompt
+      let strategyCheck = ''
+      if (turnsWithNoChanges >= 2) {
+        strategyCheck = `\n\n## Strategy Check\nThe last ${turnsWithNoChanges} turns produced no observable changes. Consider:\n- Trying a different approach\n- Breaking the problem into smaller steps\n- Using /goal pause to stop and reconsider`
+      }
+
       if (effectiveGoal.status === Status.Active) {
-        const continuationPrompt = buildContinuationPrompt(effectiveGoal)
+        const continuationPrompt = buildContinuationPrompt(effectiveGoal) + strategyCheck
         return { shouldContinue: true, injectedPrompt: continuationPrompt }
       }
 
@@ -369,6 +422,19 @@ export function processGoalRuntimeEvent(
   } catch (error) {
     // Graceful error handling - don't crash the REPL
     console.error('[goalRuntime] Error processing event:', error)
+    const { goal, runtime } = context
+    if (goal && runtime) {
+      runtime.consecutiveErrors = (runtime.consecutiveErrors ?? 0) + 1
+
+      if (runtime.consecutiveErrors >= 3) {
+        const pausedGoal = { ...goal, status: Status.Paused, updatedAt: Date.now() }
+        context.updateGoal(pausedGoal)
+        return {
+          shouldContinue: false,
+          injectedPrompt: `[Goal paused due to errors] 3 consecutive errors encountered. Use /goal resume to continue or /goal stop to cancel.`,
+        }
+      }
+    }
     return { shouldContinue: true }
   }
 }

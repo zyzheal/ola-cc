@@ -94,6 +94,8 @@ import {
 } from '../../utils/toolSearch.js'
 import { getFeatureValue_CACHED_MAY_BE_STALE } from '../analytics/growthbook.js'
 import { isThirdPartyProvider } from '../../utils/model/providers.js'
+import type { TurnRecord } from '../../commands/goal/types.js'
+import { totalTokensFromBuffer, totalWallTimeFromBuffer } from '../../utils/goal/goalAccounting.js'
 import {
   type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
   logEvent,
@@ -1692,41 +1694,49 @@ export function resetGoalRuntimeAfterCompact(
   compactionUsage?: { input_tokens: number; output_tokens: number },
 ): void {
   setAppState(prev => {
-    // Reset accounting.turn for any goal that's still tracked (Active or BudgetLimited)
-    // BudgetLimited goals still have accounting state that needs reset to prevent negative delta
-    // on subsequent events (tool_completed, turn_finished)
-    if (!prev.goal?.id) {
-      return prev
-    }
-    const goalStatus = prev.goal.status
-    if (goalStatus !== ThreadGoalStatus.Active && goalStatus !== ThreadGoalStatus.BudgetLimited) {
-      return prev
-    }
+    if (!prev.goal?.id) return prev
+    const status = prev.goal.status
+    if (status !== ThreadGoalStatus.Active && status !== ThreadGoalStatus.BudgetLimited) return prev
 
-    // Session Memory Compact doesn't call API, so compactionUsage is undefined → delta = 0
-    // This is intentional: SM-compact doesn't consume API tokens, just reorganizes context
-    const compactDelta = compactionUsage
-      ? compactionUsage.input_tokens + compactionUsage.output_tokens
-      : 0
+    // Record compact tokens in ring buffer
+    if (compactionUsage) {
+      const compactTurn: TurnRecord = {
+        turnId: prev.goalRuntime?.accounting.turn?.turnId ?? 'compact',
+        inputTokens: compactionUsage.input_tokens,
+        outputTokens: compactionUsage.output_tokens,
+        cacheReadTokens: 0,
+        wallStartMs: Date.now(),
+        wallEndMs: Date.now(),
+      }
+      const buffer = [...(prev.goalRuntime?.turnBuffer ?? [])]
+      buffer.push(compactTurn)
+      if (buffer.length > 3) buffer.shift()
 
-    return {
-      ...prev,
-      goal: {
-        ...prev.goal,
-        tokensUsed: prev.goal.tokensUsed + compactDelta,
-        updatedAt: Date.now(),
-      },
-      // Reset accounting.turn so next turn_started initializes fresh baseline
-      // CRITICAL: Without this, tokenDeltaSinceLastAccounting would compute negative delta
-      // because lastTokenUsage (pre-compact high) vs current (post-compact low) = negative
-      goalRuntime: {
-        ...prev.goalRuntime,
-        accounting: {
-          ...prev.goalRuntime.accounting,
-          turn: null,
+      const totalApiTokens = totalTokensFromBuffer(buffer)
+      const totalApiWallMs = totalWallTimeFromBuffer(buffer)
+
+      return {
+        ...prev,
+        goal: {
+          ...prev.goal,
+          totalApiTokens,
+          totalApiWallMs,
+          tokensUsed: prev.goal.tokensUsed + (compactionUsage.input_tokens + compactionUsage.output_tokens),
+          updatedAt: Date.now(),
         },
-      },
+        goalRuntime: {
+          ...prev.goalRuntime,
+          turnBuffer: buffer,
+          totalApiTokens,
+          totalApiWallMs,
+          accounting: {
+            ...prev.goalRuntime?.accounting,
+            turn: null,
+          },
+        },
+      }
     }
+    return prev
   })
 }
 
