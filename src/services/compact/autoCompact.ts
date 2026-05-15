@@ -60,8 +60,8 @@ export type AutoCompactTrackingState = {
   consecutiveFailures?: number
 }
 
-export const AUTOCOMPACT_BUFFER_TOKENS = 13_000
-export const WARNING_THRESHOLD_BUFFER_TOKENS = 20_000
+export const AUTOCOMPACT_BUFFER_TOKENS = 18_000
+export const WARNING_THRESHOLD_BUFFER_TOKENS = 25_000
 export const ERROR_THRESHOLD_BUFFER_TOKENS = 20_000
 export const MANUAL_COMPACT_BUFFER_TOKENS = 3_000
 
