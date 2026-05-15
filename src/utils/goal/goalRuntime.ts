@@ -1,5 +1,5 @@
 import type { Goal, GoalRuntimeState, TokenUsage } from '../../commands/goal/types.js'
-import { ThreadGoalStatus as Status } from '../../commands/goal/types.js'
+import { ThreadGoalStatus as Status, migrateGoal } from '../../commands/goal/types.js'
 import { tokenDeltaSinceLastAccounting, timeDeltaSinceLastAccounted, isBudgetExhausted, recordTurnApiUsage, totalTokensFromBuffer, totalWallTimeFromBuffer } from './goalAccounting.js'
 import { buildContinuationPrompt, buildBudgetLimitPrompt } from './goalSteering.js'
 import type { TodoItem } from '../todo/types.js'
@@ -147,7 +147,16 @@ export function processGoalRuntimeEvent(
   context: GoalRuntimeContext
 ): GoalRuntimeResult {
   try {
-    const { goal, runtime } = context
+    let { goal, runtime } = context
+
+    // Migrate goal if needed (handles goals loaded from old schema)
+    if (goal && goal.id) {
+      const migratedGoal = migrateGoal(goal)
+      if (migratedGoal !== goal) {
+        context.updateGoal(migratedGoal)
+        goal = migratedGoal
+      }
+    }
 
     // Reset error counter on any successful event processing
     runtime.consecutiveErrors = 0

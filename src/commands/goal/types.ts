@@ -87,3 +87,19 @@ export const IDLE_GOAL: Goal = {
   consecutiveErrors: 0,
   turnsWithNoChanges: 0,
 }
+
+/**
+ * Migrate an existing Goal to the new schema with all fields populated.
+ * Called on first access to a goal that may lack new fields.
+ */
+export function migrateGoal(goal: Goal): Goal {
+  return {
+    ...goal,
+    totalApiTokens: goal.totalApiTokens ?? goal.tokensUsed ?? 0,
+    totalApiWallMs: goal.totalApiWallMs ?? (goal.timeUsedSeconds ?? 0) * 1000,
+    mode: goal.mode ?? 'standard',
+    autoEdit: goal.autoEdit ?? false,
+    consecutiveErrors: goal.consecutiveErrors ?? 0,
+    turnsWithNoChanges: goal.turnsWithNoChanges ?? 0,
+  }
+}
