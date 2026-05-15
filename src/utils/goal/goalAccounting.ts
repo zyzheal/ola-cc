@@ -1,4 +1,4 @@
-import type { TokenUsage, Goal } from '../../commands/goal/types.js'
+import type { TokenUsage, Goal, TurnRecord } from '../../commands/goal/types.js'
 
 // Calculate token delta since last accounting (excludes cached input, doesn't double-count reasoning)
 export function goalTokenDeltaForUsage(usage: TokenUsage): number {
@@ -35,4 +35,48 @@ export function isBudgetExhausted(goal: Goal): boolean {
 export function getRemainingBudget(goal: Goal): number | 'unbounded' {
   if (goal.tokenBudget === null) return 'unbounded'
   return Math.max(0, goal.tokenBudget - goal.tokensUsed)
+}
+
+/**
+ * Record a turn's API usage into the ring buffer and accumulate totals.
+ * Returns the updated ring buffer (max 3 entries).
+ */
+export function recordTurnApiUsage(
+  turnBuffer: TurnRecord[],
+  turnId: string,
+  usage: TokenUsage,
+  wallStartMs: number,
+  wallEndMs: number,
+): TurnRecord[] {
+  const record: TurnRecord = {
+    turnId,
+    inputTokens: usage.inputTokens,
+    outputTokens: usage.outputTokens,
+    cacheReadTokens: usage.cachedInputTokens,
+    wallStartMs,
+    wallEndMs,
+  }
+  const buffer = [...turnBuffer]
+  buffer.push(record)
+  if (buffer.length > 3) buffer.shift()
+  return buffer
+}
+
+/**
+ * Calculate total tokens from the ring buffer.
+ * Used after compact to reconcile totals.
+ */
+export function totalTokensFromBuffer(turnBuffer: TurnRecord[]): number {
+  return turnBuffer.reduce((sum, r) => {
+    const nonCachedInput = r.inputTokens - r.cacheReadTokens
+    const output = Math.max(r.outputTokens, 0)
+    return sum + nonCachedInput + output
+  }, 0)
+}
+
+/**
+ * Calculate total wall time from the ring buffer.
+ */
+export function totalWallTimeFromBuffer(turnBuffer: TurnRecord[]): number {
+  return turnBuffer.reduce((sum, r) => sum + (r.wallEndMs - r.wallStartMs), 0)
 }
