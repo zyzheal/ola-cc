@@ -1,6 +1,6 @@
 import { getSessionId } from '../../bootstrap/state.js'
 import type { LocalJSXCommandCall } from '../../types/command.js'
-import { type Goal, ThreadGoalStatus, IDLE_GOAL, type GoalMode, type GoalTask } from './types.js'
+import { type Goal, ThreadGoalStatus, IDLE_GOAL, type GoalMode, type GoalTask, migrateGoal } from './types.js'
 import type { TodoItem } from '../../utils/todo/types.js'
 import { buildContinuationPrompt } from '../../utils/goal/goalSteering.js'
 import { notifyPermissionModeChanged } from '../../utils/sessionState.js'
@@ -104,9 +104,14 @@ function formatGoalStatus(goal: Goal | undefined, todos: TodoItem[] | undefined)
 
 export const call: LocalJSXCommandCall = async (onDone, context, args) => {
   const argsArray = args ? args.trim().split(/\s+/).filter(Boolean) : []
-  const { objective, action, tokenBudget, autoAccept } = parseGoalArgs(argsArray)
+  const { objective, action, tokenBudget, autoAccept, autoEdit, mode, editObjective, newBudget } = parseGoalArgs(argsArray)
   const appState = context.getAppState()
-  const goal = appState.goal
+  let goal = appState.goal
+  // Migrate existing goal if it has old schema
+  if (goal && goal.id) {
+    goal = migrateGoal(goal)
+    context.setAppState(s => ({ ...s, goal }))
+  }
   const todos = goal?.todoListId ? appState.todos[goal.todoListId] : undefined
 
   // status
