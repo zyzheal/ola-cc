@@ -3,18 +3,18 @@ import type { TurnRecord } from '../../commands/goal/types.js'
 // Error patterns that indicate actual failures (not normal descriptions)
 // Each pattern is a multi-word phrase to reduce false positives
 const WARNING_PATTERNS = [
-  // Clear failures
+  // Clear capability/capability failures
   'i cannot', 'i can\'t', 'i am unable',
+  // Permission/capability denials (tightened to reduce false positives)
   'permission denied', 'access denied',
-  // Error context with specific framing (not "error handling" or "as expected")
-  'error occurred', 'an error', 'the error', 'error:',
-  'failed to', 'has failed', 'will fail',
-  // Permission/capability
   'not allowed', 'not permitted',
+  'i do not have access to',  // only with 'to' = actual access refusal
+  // Error context with specific framing (not "error handling" or "as expected")
+  'error occurred', 'error:', 'got an error', 'encountered an error',
+  // Action failures
+  'failed to', 'has failed', 'will fail',
   // Timeout/network
   'connection refused', 'connection timed out', 'network error',
-  // Agent limitations
-  'i do not have', 'i don\'t have', 'i do not have access',
 ] as const
 
 export interface LightweightAnalysisResult {
@@ -57,6 +57,9 @@ export function analyzeTurnLightweight(
   }
   if (!hasToolCalls && !hasChanges) {
     return { status: 'warning', reason: 'No tool calls or changes this turn' }
+  }
+  if (hasToolCalls && !hasChanges) {
+    return { status: 'warning', reason: 'Tool calls produced no observable changes' }
   }
   if (isStalled && !hasChanges) {
     return { status: 'warning', reason: 'Stalled for multiple turns' }

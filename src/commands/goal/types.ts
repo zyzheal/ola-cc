@@ -47,8 +47,7 @@ export interface Goal {
   mode: GoalMode                  // Prompt tier
   autoEdit: boolean               // Auto-approve file edits only
   goalTaskListId?: string         // Dedicated task list ID
-  consecutiveErrors?: number      // Error counter for auto-pause
-  turnsWithNoChanges?: number     // Dead-turn detection
+  // Analysis counters moved to GoalRuntimeState (runtime-only, not persisted)
 }
 
 export interface GoalRuntimeState {
@@ -104,8 +103,6 @@ export const IDLE_GOAL: Goal = {
   totalApiWallMs: 0,
   mode: 'standard' as GoalMode,
   autoEdit: false,
-  consecutiveErrors: 0,
-  turnsWithNoChanges: 0,
 }
 
 /**
@@ -119,7 +116,5 @@ export function migrateGoal(goal: Goal): Goal {
     totalApiWallMs: goal.totalApiWallMs ?? (goal.timeUsedSeconds ?? 0) * 1000,
     mode: goal.mode ?? 'standard',
     autoEdit: goal.autoEdit ?? false,
-    consecutiveErrors: goal.consecutiveErrors ?? 0,
-    turnsWithNoChanges: goal.turnsWithNoChanges ?? 0,
   }
 }
