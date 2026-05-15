@@ -181,12 +181,7 @@ export function processGoalRuntimeEvent(
         // Auto-start first task if none is in progress
         const todos = context.getTodos?.()
         if (todos && todos.length > 0 && !todos.some(t => t.status === 'in_progress')) {
-          const firstPendingIndex = todos.findIndex(t => t.status === 'pending')
-          if (firstPendingIndex !== -1) {
-            const updatedTodos = [...todos]
-            updatedTodos[firstPendingIndex] = { ...updatedTodos[firstPendingIndex], status: 'in_progress' }
-            context.updateTodos?.(updatedTodos)
-          }
+          autoProgressTasks(todos, context.updateTodos)
         }
         return { shouldContinue: true }
       }
@@ -256,8 +251,7 @@ export function processGoalRuntimeEvent(
       const lastTurn = runtime.accounting.turn
       runtime.accounting.turn = null
 
-      // Track if goal was updated this turn
-      let goalWasUpdated = false
+      // Track updated goal reference
       let updatedGoalRef: Goal = goal
 
       // Dead-turn detection: 2+ turns with no observable changes
@@ -307,7 +301,6 @@ export function processGoalRuntimeEvent(
         }
 
         context.updateGoal(updatedGoal)
-        goalWasUpdated = true
       }
 
       // Record turn in ring buffer
@@ -331,7 +324,7 @@ export function processGoalRuntimeEvent(
       runtime.totalApiWallMs = (runtime.totalApiWallMs ?? 0) + thisTurnWall
 
       // Use updated goal status for continuation check
-      const effectiveGoal = goalWasUpdated ? updatedGoalRef : goal
+      const effectiveGoal = updatedGoalRef
 
       // If 2+ dead turns, inject strategy check into continuation prompt
       let strategyCheck = ''
