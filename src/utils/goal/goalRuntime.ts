@@ -340,11 +340,28 @@ export function processGoalRuntimeEvent(
         turnsWithNoChanges
       )
 
+      // Track consecutive critical analyses (auto-pause circuit breaker)
+      if (analysisResult.status === 'critical') {
+        runtime.consecutiveCritical = (runtime.consecutiveCritical ?? 0) + 1
+      } else {
+        runtime.consecutiveCritical = 0
+      }
+
       if (analysisResult.status !== 'ok') {
         runtime.pendingAnalysis = {
           reason: analysisResult.reason ?? 'Analysis needed',
           severity: analysisResult.status === 'critical' ? 'critical' : 'warning',
           triggerTurnId: lastTurn?.turnId ?? 'unknown'
+        }
+      }
+
+      // Circuit breaker: auto-pause after 3 consecutive critical analyses
+      if ((runtime.consecutiveCritical ?? 0) >= 3) {
+        const pausedGoal = { ...goal, status: Status.Paused, updatedAt: Date.now() }
+        context.updateGoal(pausedGoal)
+        return {
+          shouldContinue: false,
+          injectedPrompt: `[Goal auto-paused] 3 consecutive critical issues detected. Latest: "${analysisResult.reason ?? 'Unknown'}". Use /goal resume to continue or /goal stop to cancel.`,
         }
       }
 
@@ -405,6 +422,11 @@ export function processGoalRuntimeEvent(
       context.updateGoal(event.goal)
       runtime.accounting.wallClock.activeGoalId = event.goal.id
       runtime.accounting.wallClock.lastAccountedAt = Date.now()
+      // Initialize analysis fields for new goal
+      runtime._toolCallsThisTurn = []
+      runtime.turnsWithNoChanges = 0
+      runtime.consecutiveErrors = 0
+      runtime.consecutiveCritical = 0
 
       // Start first task as in_progress
       const todos = context.getTodos?.()

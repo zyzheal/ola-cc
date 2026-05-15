@@ -66,6 +66,8 @@ export function GoalProgress() {
   const goalAutoEdit = useAppState(s => s.goal?.autoEdit ?? false)
   const goalTaskListId = useAppState(s => s.goal?.goalTaskListId ?? undefined)
   const goalConsecutiveErrors = useAppState(s => s.goalRuntime?.consecutiveErrors ?? 0)
+  const lastAnalysisResult = useAppState(s => s.goalRuntime?.lastAnalysisResult)
+  const consecutiveCritical = useAppState(s => s.goalRuntime?.consecutiveCritical ?? 0)
 
   const goalTasks = useAppState(s => {
     const taskListId = s.goal?.goalTaskListId
@@ -176,6 +178,17 @@ export function GoalProgress() {
       {goalConsecutiveErrors > 0 && (
         <Box>
           <Text color="red">Errors: {goalConsecutiveErrors}/3 before auto-pause</Text>
+        </Box>
+      )}
+
+      {/* Analysis status indicator */}
+      {lastAnalysisResult && (
+        <Box>
+          <Text color="yellow">Analysis: </Text>
+          <Text dimColor>{lastAnalysisResult}</Text>
+          {consecutiveCritical > 0 && (
+            <Text color="red"> ({consecutiveCritical}/3 critical)</Text>
+          )}
         </Box>
       )}
     </Box>

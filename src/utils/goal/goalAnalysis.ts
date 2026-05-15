@@ -1,8 +1,20 @@
 import type { TurnRecord } from '../../commands/goal/types.js'
 
+// Error patterns that indicate actual failures (not normal descriptions)
+// Each pattern is a multi-word phrase to reduce false positives
 const WARNING_PATTERNS = [
-  'i cannot', 'blocked', 'permission denied',
-  'error', 'failed', 'unable to', 'not allowed'
+  // Clear failures
+  'i cannot', 'i can\'t', 'i am unable',
+  'permission denied', 'access denied',
+  // Error context with specific framing (not "error handling" or "as expected")
+  'error occurred', 'an error', 'the error', 'error:',
+  'failed to', 'has failed', 'will fail',
+  // Permission/capability
+  'not allowed', 'not permitted',
+  // Timeout/network
+  'connection refused', 'connection timed out', 'network error',
+  // Agent limitations
+  'i do not have', 'i don\'t have', 'i do not have access',
 ] as const
 
 export interface LightweightAnalysisResult {
