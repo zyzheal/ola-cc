@@ -464,6 +464,8 @@ export function processGoalRuntimeEvent(
       if (runtime.consecutiveErrors >= 3) {
         const pausedGoal = { ...goal, status: Status.Paused, updatedAt: Date.now() }
         context.updateGoal(pausedGoal)
+        // Clear pending analysis on pause to prevent stale injection on resume
+        runtime.pendingAnalysis = undefined
         return {
           shouldContinue: false,
           injectedPrompt: `[Goal paused due to errors] 3 consecutive errors encountered. Use /goal resume to continue or /goal stop to cancel.`,

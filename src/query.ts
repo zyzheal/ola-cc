@@ -1759,6 +1759,25 @@ async function* queryLoop(
       }
     }
     queryCheckpoint('query_tool_execution_end')
+
+    // Dispatch tool_completed events for goal runtime tracking
+    if (toolUseBlocks.length > 0 && toolUseContext.getAppState().goal?.id) {
+      for (const toolUse of toolUseBlocks) {
+        processGoalRuntimeEvent(
+          { type: 'tool_completed', toolName: toolUse.name },
+          {
+            goal: toolUseContext.getAppState().goal!,
+            runtime: toolUseContext.getAppState().goalRuntime!,
+            currentTokenUsage: { inputTokens: 0, cachedInputTokens: 0, outputTokens: 0, reasoningOutputTokens: 0, totalTokens: 0 },
+            injectPrompt: async () => {},
+            updateGoal: (updatedGoal: Goal) => {
+              toolUseContext.setAppState(prev => ({ ...prev, goal: updatedGoal }))
+            },
+          }
+        )
+      }
+    }
+
     logForDebugging?.(`[QUERY LOOP] tool execution complete: toolResults=${toolResults.length}, shouldPreventContinuation=${shouldPreventContinuation}, aborted=${toolUseContext.abortController.signal.aborted}`)
 
     // Generate tool use summary after tool batch completes — passed to next recursive call
