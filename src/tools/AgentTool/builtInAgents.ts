@@ -8,6 +8,7 @@ import { GENERAL_PURPOSE_AGENT } from './built-in/generalPurposeAgent.js'
 import { PLAN_AGENT } from './built-in/planAgent.js'
 import { STATUSLINE_SETUP_AGENT } from './built-in/statuslineSetup.js'
 import { VERIFICATION_AGENT } from './built-in/verificationAgent.js'
+import { GOAL_ANALYSIS_AGENT } from './built-in/goalAnalysisAgent.js'
 import type { AgentDefinition } from './loadAgentsDir.js'
 
 export function areExplorePlanAgentsEnabled(): boolean {
@@ -67,6 +68,9 @@ export function getBuiltInAgents(): AgentDefinition[] {
   ) {
     agents.push(VERIFICATION_AGENT)
   }
+
+  // Add goal analysis agent for intelligent goal execution
+  agents.push(GOAL_ANALYSIS_AGENT)
 
   return agents
 }
