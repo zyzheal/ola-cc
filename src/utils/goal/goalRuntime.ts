@@ -256,9 +256,11 @@ export function processGoalRuntimeEvent(
 
       // Dead-turn detection: 2+ turns with no observable changes
       let turnsWithNoChanges = runtime.turnsWithNoChanges ?? 0
-      const hadObservableChanges = lastTurn && context.currentTokenUsage &&
-        (context.currentTokenUsage.outputTokens > 0 ||
-         context.currentTokenUsage.outputTokens > (lastTurn.lastTokenUsage?.outputTokens ?? 0))
+      const hadObservableChanges = lastTurn && context.currentTokenUsage && (
+        context.currentTokenUsage.outputTokens > 0 ||
+        context.currentTokenUsage.outputTokens > (lastTurn.lastTokenUsage?.outputTokens ?? 0) ||
+        context.currentTokenUsage.inputTokens > (lastTurn.lastTokenUsage?.inputTokens ?? 0)
+      )
 
       if (!hadObservableChanges) {
         turnsWithNoChanges++

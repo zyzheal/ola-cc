@@ -1130,15 +1130,15 @@ async function* queryLoop(
           const lastAssistantMsg = assistantMessages.at(-1)
           const apiUsage = lastAssistantMsg?.message.usage
           if (apiUsage) {
-            // Update local token tracking variable
-            currentTokenUsage ??= {
-              inputTokens: apiUsage.input_tokens,
-              cachedInputTokens: apiUsage.cache_read_input_tokens || 0,
-              outputTokens: apiUsage.output_tokens,
-              reasoningOutputTokens:
-                (apiUsage as unknown as Record<string, number>).reasoning_tokens ||
-                0,
-              totalTokens: apiUsage.input_tokens + apiUsage.output_tokens,
+            // Accumulate token usage from all API responses in this turn
+            // (multi-tool turns may have multiple API calls)
+            currentTokenUsage = {
+              inputTokens: (currentTokenUsage?.inputTokens ?? 0) + apiUsage.input_tokens,
+              cachedInputTokens: (currentTokenUsage?.cachedInputTokens ?? 0) + (apiUsage.cache_read_input_tokens || 0),
+              outputTokens: (currentTokenUsage?.outputTokens ?? 0) + apiUsage.output_tokens,
+              reasoningOutputTokens: (currentTokenUsage?.reasoningOutputTokens ?? 0) +
+                ((apiUsage as unknown as Record<string, number>).reasoning_tokens || 0),
+              totalTokens: (currentTokenUsage?.totalTokens ?? 0) + apiUsage.input_tokens + apiUsage.output_tokens,
             }
           }
         } catch (innerError) {
