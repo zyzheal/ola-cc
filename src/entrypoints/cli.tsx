@@ -28,6 +28,21 @@ if (!('MACRO' in globalThis)) {
 // eslint-disable-next-line custom-rules/no-top-level-side-effects
 process.env.COREPACK_ENABLE_AUTO_PIN = '0';
 
+// Windows: set console output code page to UTF-8 (65001) so Chinese and other
+// multi-byte characters render correctly. Without this, Windows defaults to
+// the system locale code page (e.g., CP936 for Chinese Windows), causing
+// UTF-8 text from Bun/Node to appear garbled in both input and output.
+// Must run before any stdin/stdout interaction.
+if (process.platform === 'win32') {
+  try {
+    // Use createRequire for ESM compatibility (works in both Bun and Node.js)
+    const { execSync } = await import('child_process')
+    execSync('chcp 65001', { stdio: 'ignore' })
+  } catch {
+    // Ignore failures (e.g., non-interactive sessions, missing chcp)
+  }
+}
+
 // Set max heap size for child processes in CCR environments (containers have 16GB)
 // eslint-disable-next-line custom-rules/no-top-level-side-effects, custom-rules/no-process-env-top-level, custom-rules/safe-env-boolean-check
 if (process.env.CLAUDE_CODE_REMOTE === 'true') {
