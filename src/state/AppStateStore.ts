@@ -2,7 +2,7 @@ import type { Notification } from 'src/context/notifications.js'
 import type { TodoList } from 'src/utils/todo/types.js'
 import type { BridgePermissionCallbacks } from '../bridge/bridgePermissionCallbacks.js'
 import type { Command } from '../commands.js'
-import type { Goal, GoalRuntimeState } from '../commands/goal/types.js'
+import type { Goal, GoalMode, GoalRuntimeState, GoalTask } from '../commands/goal/types.js'
 import type { ChannelPermissionCallbacks } from '../services/mcp/channelPermissions.js'
 import type { ElicitationRequestEvent } from '../services/mcp/elicitationHandler.js'
 import type {
@@ -452,6 +452,7 @@ export type AppState = DeepImmutable<{
   // Goal state for thread-based goal tracking
   goal: Goal
   goalRuntime: GoalRuntimeState
+  goalTasks: { [listId: string]: GoalTask[] }
 }
 
 export type AppStateStore = Store<AppState>
@@ -576,6 +577,12 @@ export function getDefaultAppState(): AppState {
       createdAt: 0,
       updatedAt: 0,
       todoListId: undefined, // 方案 C: 关联 TodoWrite 列表
+      totalApiTokens: 0,
+      totalApiWallMs: 0,
+      mode: 'standard' as GoalMode,
+      autoEdit: false,
+      consecutiveErrors: 0,
+      turnsWithNoChanges: 0,
     },
     goalRuntime: {
       accounting: {
@@ -584,7 +591,14 @@ export function getDefaultAppState(): AppState {
       },
       budgetLimitReportedGoalId: null,
       continuationTurnId: null,
+      turnBuffer: [],
+      totalApiTokens: 0,
+      totalApiWallMs: 0,
+      consecutiveErrors: 0,
+      turnsWithNoChanges: 0,
+      _currentTurnWallStartMs: 0,
     },
+    goalTasks: {},
     effortValue: undefined,
     fastMode: false,
     activeOverlays: new Set<string>(),
