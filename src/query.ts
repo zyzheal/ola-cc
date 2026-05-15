@@ -423,9 +423,15 @@ async function* queryLoop(
           isMeta: true,
         }),
       ]
-      // Clear pending analysis after injection
-      currentAppState.goalRuntime.pendingAnalysis = undefined
-      currentAppState.goalRuntime.lastAnalysisResult = pendingAnalysis.reason
+      // Clear pending analysis after injection (use setAppState to persist)
+      toolUseContext.setAppState(prev => ({
+        ...prev,
+        goalRuntime: prev.goalRuntime ? {
+          ...prev.goalRuntime,
+          pendingAnalysis: undefined,
+          lastAnalysisResult: pendingAnalysis.reason,
+        } : undefined,
+      }))
     }
 
     // Reset autoContinue for this iteration - will be set to true if goal wants to continue
