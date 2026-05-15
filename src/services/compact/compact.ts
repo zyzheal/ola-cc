@@ -1690,7 +1690,7 @@ type SetAppStateFn = (f: (prev: AppState) => AppState) => void
  */
 export function resetGoalRuntimeAfterCompact(
   setAppState: SetAppStateFn,
-  compactionUsage?: { input_tokens: number; output_tokens: number },
+  compactionUsage?: { input_tokens: number; output_tokens: number; cache_read_input_tokens?: number },
 ): void {
   setAppState(prev => {
     if (!prev.goal?.id) return prev
@@ -1722,7 +1722,7 @@ export function resetGoalRuntimeAfterCompact(
         turnId: prev.goalRuntime?.accounting.turn?.turnId ?? `compact-${Date.now()}`,
         inputTokens: compactionUsage.input_tokens,
         outputTokens: compactionUsage.output_tokens,
-        cacheReadTokens: 0,
+        cacheReadTokens: compactionUsage.cache_read_input_tokens ?? 0,
         wallStartMs: Date.now(),
         wallEndMs: Date.now(),
       }
@@ -1731,7 +1731,10 @@ export function resetGoalRuntimeAfterCompact(
       if (buffer.length > 3) buffer.shift()
 
       // Accumulate compact tokens into cumulative totals (matching turn_finished semantics)
-      const compactTokenTotal = compactionUsage.input_tokens + compactionUsage.output_tokens
+      // Exclude cached input tokens (they're part of inputTokens, not additional cost)
+      const compactTokenTotal = compactionUsage.input_tokens +
+        compactionUsage.output_tokens -
+        (compactionUsage.cache_read_input_tokens ?? 0)
       const prevTotalApiTokens = prev.goalRuntime?.totalApiTokens ?? 0
       const prevTotalApiWallMs = prev.goalRuntime?.totalApiWallMs ?? 0
 
