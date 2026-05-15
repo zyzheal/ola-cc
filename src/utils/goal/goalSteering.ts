@@ -1,4 +1,4 @@
-import type { Goal } from '../../commands/goal/types.js'
+import type { Goal, GoalMode } from '../../commands/goal/types.js'
 import { getRemainingBudget } from './goalAccounting.js'
 
 // 内联模板内容（避免在 publish build 中依赖文件系统）
@@ -89,6 +89,27 @@ The system has marked the goal as budget_limited, so do not start new substantiv
 
 Do not call update_goal unless the goal is actually complete.`
 
+const SIMPLE_CONTINUATION_TEMPLATE = `Continue working toward: {{objective}}. Next action?`
+
+const COMPLEX_CONTUATION_TEMPLATE = CONTINUATION_TEMPLATE + `
+
+## Self-Review
+Before proceeding, briefly assess:
+1. Is the current approach working? If no, switch strategy.
+2. Am I making progress toward the objective? If no, reconsider the plan.
+3. Are there simpler alternatives? If yes, prefer them.`
+
+function getContinuationTemplate(mode: GoalMode): string {
+  switch (mode) {
+    case 'simple':
+      return SIMPLE_CONTINUATION_TEMPLATE
+    case 'standard':
+      return CONTINUATION_TEMPLATE
+    case 'complex':
+      return COMPLEX_CONTUATION_TEMPLATE
+  }
+}
+
 function renderTemplate(template: string, vars: Record<string, string>): string {
   let result = template
   for (const [key, value] of Object.entries(vars)) {
@@ -100,14 +121,15 @@ function renderTemplate(template: string, vars: Record<string, string>): string 
 }
 
 export function buildContinuationPrompt(goal: Goal): string {
+  const template = getContinuationTemplate(goal.mode ?? 'standard')
   const tokenBudget = goal.tokenBudget?.toString() ?? 'unbounded'
   const remainingVal = getRemainingBudget(goal)
   const remaining = remainingVal === 'unbounded' ? 'unbounded' : remainingVal.toString()
 
-  return renderTemplate(CONTINUATION_TEMPLATE, {
+  return renderTemplate(template, {
     objective: escapeXml(goal.objective),
-    tokens_used: goal.tokensUsed.toString(),
-    time_used_seconds: goal.timeUsedSeconds.toString(),
+    tokens_used: (goal.totalApiTokens || goal.tokensUsed).toString(),
+    time_used_seconds: Math.floor((goal.totalApiWallMs || goal.timeUsedSeconds * 1000) / 1000).toString(),
     token_budget: tokenBudget,
     remaining_tokens: remaining,
   })
@@ -118,8 +140,8 @@ export function buildBudgetLimitPrompt(goal: Goal): string {
 
   return renderTemplate(BUDGET_LIMIT_TEMPLATE, {
     objective: escapeXml(goal.objective),
-    tokens_used: goal.tokensUsed.toString(),
-    time_used_seconds: goal.timeUsedSeconds.toString(),
+    tokens_used: (goal.totalApiTokens || goal.tokensUsed).toString(),
+    time_used_seconds: Math.floor((goal.totalApiWallMs || goal.timeUsedSeconds * 1000) / 1000).toString(),
     token_budget: tokenBudget,
   })
 }
