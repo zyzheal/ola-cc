@@ -597,6 +597,7 @@ export function getDefaultAppState(): AppState {
       consecutiveErrors: 0,
       turnsWithNoChanges: 0,
       _currentTurnWallStartMs: 0,
+      _toolCallsThisTurn: [],
     },
     goalTasks: {},
     effortValue: undefined,

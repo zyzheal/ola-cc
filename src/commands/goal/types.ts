@@ -74,6 +74,9 @@ export interface GoalRuntimeState {
 
   // NEW: Last analysis result (persists across turns)
   lastAnalysisResult?: string
+
+  // NEW: Accumulate tool calls during current turn
+  _toolCallsThisTurn?: string[]
 }
 
 export interface TokenUsage {
