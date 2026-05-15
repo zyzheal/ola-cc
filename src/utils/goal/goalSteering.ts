@@ -135,8 +135,8 @@ export function buildContinuationPrompt(goal: Goal): string {
 
   return renderTemplate(template, {
     objective: escapeXml(goal.objective),
-    tokens_used: (goal.totalApiTokens || goal.tokensUsed).toString(),
-    time_used_seconds: Math.floor((goal.totalApiWallMs || goal.timeUsedSeconds * 1000) / 1000).toString(),
+    tokens_used: (goal.totalApiTokens ?? goal.tokensUsed).toString(),
+    time_used_seconds: Math.floor((goal.totalApiWallMs ?? goal.timeUsedSeconds * 1000) / 1000).toString(),
     token_budget: tokenBudget,
     remaining_tokens: remaining,
   })
@@ -147,8 +147,8 @@ export function buildBudgetLimitPrompt(goal: Goal): string {
 
   return renderTemplate(BUDGET_LIMIT_TEMPLATE, {
     objective: escapeXml(goal.objective),
-    tokens_used: (goal.totalApiTokens || goal.tokensUsed).toString(),
-    time_used_seconds: Math.floor((goal.totalApiWallMs || goal.timeUsedSeconds * 1000) / 1000).toString(),
+    tokens_used: (goal.totalApiTokens ?? goal.tokensUsed).toString(),
+    time_used_seconds: Math.floor((goal.totalApiWallMs ?? goal.timeUsedSeconds * 1000) / 1000).toString(),
     token_budget: tokenBudget,
   })
 }

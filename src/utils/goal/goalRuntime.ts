@@ -1,6 +1,6 @@
 import type { Goal, GoalRuntimeState, TokenUsage } from '../../commands/goal/types.js'
 import { ThreadGoalStatus as Status, migrateGoal } from '../../commands/goal/types.js'
-import { tokenDeltaSinceLastAccounting, timeDeltaSinceLastAccounted, isBudgetExhausted, recordTurnApiUsage, totalTokensFromBuffer, totalWallTimeFromBuffer } from './goalAccounting.js'
+import { tokenDeltaSinceLastAccounting, timeDeltaSinceLastAccounted, isBudgetExhausted, recordTurnApiUsage } from './goalAccounting.js'
 import { buildContinuationPrompt, buildBudgetLimitPrompt } from './goalSteering.js'
 import type { TodoItem } from '../todo/types.js'
 
@@ -322,9 +322,10 @@ export function processGoalRuntimeEvent(
       )
 
       // Accumulate authoritative totals (cumulative, not just last-3-turns)
+      // Exclude cached input tokens (they're part of inputTokens, not additional cost)
       const thisTurnTokens = (context.currentTokenUsage?.outputTokens ?? 0) +
-        (context.currentTokenUsage?.inputTokens ?? 0) +
-        (context.currentTokenUsage?.cachedInputTokens ?? 0)
+        ((context.currentTokenUsage?.inputTokens ?? 0) -
+         (context.currentTokenUsage?.cachedInputTokens ?? 0))
       const thisTurnWall = wallEndMs - wallStartMs
       runtime.totalApiTokens = (runtime.totalApiTokens ?? 0) + thisTurnTokens
       runtime.totalApiWallMs = (runtime.totalApiWallMs ?? 0) + thisTurnWall
