@@ -153,6 +153,25 @@ export function buildBudgetLimitPrompt(goal: Goal): string {
   })
 }
 
+interface PendingAnalysis {
+  reason: string
+  severity: 'warning' | 'critical'
+  triggerTurnId: string
+}
+
+export function buildAnalysisPrompt(pending: PendingAnalysis): string {
+  const severity = pending.severity.toUpperCase()
+  return `
+<analysis_context>
+[${severity}] Previous turn flagged: ${pending.reason}
+Triggered at turn: ${pending.triggerTurnId}
+</analysis_context>
+
+Before continuing, address the above issue.
+Consider: adjust strategy, try different approach, or /goal pause if blocked.
+`
+}
+
 function escapeXml(input: string): string {
   return input
     .replace(/&/g, '&amp;')
