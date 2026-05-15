@@ -1698,7 +1698,26 @@ export function resetGoalRuntimeAfterCompact(
     const status = prev.goal.status
     if (status !== ThreadGoalStatus.Active && status !== ThreadGoalStatus.BudgetLimited) return prev
 
-    // Record compact tokens in ring buffer
+    // Always reset accounting.turn to prevent negative delta
+    // Session Memory Compact has no compactionUsage, but still needs the turn reset
+    if (!prev.goalRuntime) return prev
+
+    const baseUpdate = {
+      ...prev,
+      goal: {
+        ...prev.goal,
+        updatedAt: Date.now(),
+      },
+      goalRuntime: {
+        ...prev.goalRuntime,
+        accounting: {
+          ...prev.goalRuntime?.accounting,
+          turn: null,
+        },
+      },
+    }
+
+    // Record compact tokens in ring buffer (only when compactionUsage is available)
     if (compactionUsage) {
       const compactTurn: TurnRecord = {
         turnId: prev.goalRuntime?.accounting.turn?.turnId ?? 'compact',
@@ -1716,27 +1735,22 @@ export function resetGoalRuntimeAfterCompact(
       const totalApiWallMs = totalWallTimeFromBuffer(buffer)
 
       return {
-        ...prev,
+        ...baseUpdate,
         goal: {
-          ...prev.goal,
+          ...baseUpdate.goal,
           totalApiTokens,
           totalApiWallMs,
           tokensUsed: prev.goal.tokensUsed + (compactionUsage.input_tokens + compactionUsage.output_tokens),
-          updatedAt: Date.now(),
         },
         goalRuntime: {
-          ...prev.goalRuntime,
+          ...baseUpdate.goalRuntime,
           turnBuffer: buffer,
           totalApiTokens,
           totalApiWallMs,
-          accounting: {
-            ...prev.goalRuntime?.accounting,
-            turn: null,
-          },
         },
       }
     }
-    return prev
+    return baseUpdate
   })
 }
 
