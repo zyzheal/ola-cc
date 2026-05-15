@@ -18,6 +18,8 @@ export interface GoalContextOptions {
   getTodos: (listId: string) => TodoItem[] | undefined
   /** Updates todos for a given list ID */
   updateTodos: (listId: string, todos: TodoItem[]) => void
+  /** First 200 chars of last API response for analysis */
+  outputSummary?: string
 }
 
 /**
@@ -46,6 +48,7 @@ export function finishTurnForGoal(
       goal,
       runtime,
       currentTokenUsage: effectiveTokenUsage,
+      outputSummary: opts.outputSummary,
       injectPrompt: async (prompt: string) => {
         opts.onInjectPrompt(prompt)
       },
@@ -80,6 +83,7 @@ export interface GoalRuntimeContext {
   goal: Goal
   runtime: GoalRuntimeState
   currentTokenUsage: TokenUsage  // Pass current token usage from caller
+  outputSummary?: string         // First 200 chars of last API response
   injectPrompt: (prompt: string) => Promise<void>
   updateGoal: (goal: Goal) => void
   updateTodos?: (todos: TodoItem[]) => void  // Optional: update task list
@@ -262,11 +266,12 @@ export function processGoalRuntimeEvent(
 
       // Dead-turn detection: 2+ turns with no observable changes
       let turnsWithNoChanges = runtime.turnsWithNoChanges ?? 0
-      const hadObservableChanges = lastTurn && context.currentTokenUsage && (
+      // Use Boolean() to ensure strict boolean type (fixes null issue)
+      // Only check outputTokens growth, not inputTokens (context grows naturally)
+      const hadObservableChanges = !!(lastTurn && context.currentTokenUsage && (
         context.currentTokenUsage.outputTokens > 0 ||
-        context.currentTokenUsage.outputTokens > (lastTurn.lastTokenUsage?.outputTokens ?? 0) ||
-        context.currentTokenUsage.inputTokens > (lastTurn.lastTokenUsage?.inputTokens ?? 0)
-      )
+        context.currentTokenUsage.outputTokens > (lastTurn.lastTokenUsage?.outputTokens ?? 0)
+      ))
 
       if (!hadObservableChanges) {
         turnsWithNoChanges++
@@ -322,6 +327,7 @@ export function processGoalRuntimeEvent(
         wallEndMs,
         {
           toolCallsSummary: runtime._toolCallsThisTurn ?? [],
+          outputSummary: context.outputSummary,
           hadObservableChanges,
         },
       )

@@ -36,9 +36,12 @@ export function analyzeTurnLightweight(
   // 4. Stall detection
   const isStalled = previousTurnsWithNoChanges >= 2
 
-  // Decision tree
+  // Decision tree (order matters: most specific first)
   if (hasError && !hasChanges) {
     return { status: 'critical', reason: 'Errors with no progress' }
+  }
+  if (hasError && hasToolCalls) {
+    return { status: 'warning', reason: 'Error detected in output despite tool calls' }
   }
   if (!hasToolCalls && !hasChanges) {
     return { status: 'warning', reason: 'No tool calls or changes this turn' }

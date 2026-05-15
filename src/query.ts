@@ -352,6 +352,7 @@ async function* queryLoop(
   let pendingGoalPrompt: string | undefined = undefined
   let autoContinue = false
   let currentTokenUsage: TokenUsage | undefined = undefined
+  let currentOutputSummary: string | undefined = undefined
 
   const budgetTracker = feature('TOKEN_BUDGET') ? createBudgetTracker() : null
 
@@ -1164,6 +1165,17 @@ async function* queryLoop(
                 ((apiUsage as unknown as Record<string, number>).reasoning_tokens || 0),
               totalTokens: (currentTokenUsage?.totalTokens ?? 0) + apiUsage.input_tokens + apiUsage.output_tokens,
             }
+
+            // Extract first 200 chars of output for goal analysis
+            const content = lastAssistantMsg?.message?.content
+            if (content) {
+              const textContent = typeof content === 'string'
+                ? content
+                : Array.isArray(content)
+                  ? content.map(b => (typeof b === 'object' && 'text' in b ? b.text : '')).join('')
+                  : ''
+              currentOutputSummary = textContent.slice(0, 200)
+            }
           }
         } catch (innerError) {
           if (innerError instanceof FallbackTriggeredError && fallbackModel) {
@@ -1656,6 +1668,7 @@ async function* queryLoop(
                 todos: { ...prev.todos, [listId]: todos },
               }))
             },
+            outputSummary: currentOutputSummary,
           }
         )
 
@@ -2055,6 +2068,7 @@ async function* queryLoop(
               todos: { ...prev.todos, [listId]: todos },
             }))
           },
+          outputSummary: currentOutputSummary,
         }
       )
 
