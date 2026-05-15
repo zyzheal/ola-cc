@@ -21,6 +21,13 @@ The system automatically advances tasks each turn. **DO NOT call TodoWrite tool*
 ## Your Task
 Continue working toward the objective. Choose the next concrete action.
 
+**⚠️ Automatic Goal Review (Every Turn)**
+Before taking action, briefly assess:
+1. **Goal Alignment**: Is my current work directly advancing the objective? If not, redirect.
+2. **Progress Check**: Am I making measurable progress? If stuck for 2+ turns, try a different approach.
+3. **Scope Awareness**: Am I staying within scope? Avoid scope creep or tangential work.
+4. **Completion Criteria**: Can I verify the objective is met? If close, focus on finishing touches.
+
 **CRITICAL: Work Autonomously**
 - **DO NOT ask the user for confirmation, approval, or input**
 - **DO NOT present options and ask "which one?"**
