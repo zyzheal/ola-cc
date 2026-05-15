@@ -109,6 +109,9 @@ function isWorkTool(toolName: string): boolean {
   return WORK_TOOLS.has(toolName)
 }
 
+/** Threshold for consecutive critical analyses before auto-pause */
+const AUTO_PAUSE_CRITICAL_THRESHOLD = 3
+
 // Helper: Auto-progress task status
 function autoProgressTasks(todos: TodoItem[] | undefined, updateTodos: ((todos: TodoItem[]) => void) | undefined): void {
   if (!todos || !updateTodos || todos.length === 0) return
@@ -355,10 +358,12 @@ export function processGoalRuntimeEvent(
         }
       }
 
-      // Circuit breaker: auto-pause after 3 consecutive critical analyses
-      if ((runtime.consecutiveCritical ?? 0) >= 3) {
+      // Circuit breaker: auto-pause after consecutive critical analyses
+      if ((runtime.consecutiveCritical ?? 0) >= AUTO_PAUSE_CRITICAL_THRESHOLD) {
         const pausedGoal = { ...goal, status: Status.Paused, updatedAt: Date.now() }
         context.updateGoal(pausedGoal)
+        // Clear pending analysis on pause to prevent stale injection on resume
+        runtime.pendingAnalysis = undefined
         return {
           shouldContinue: false,
           injectedPrompt: `[Goal auto-paused] 3 consecutive critical issues detected. Latest: "${analysisResult.reason ?? 'Unknown'}". Use /goal resume to continue or /goal stop to cancel.`,

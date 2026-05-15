@@ -416,7 +416,12 @@ async function* queryLoop(
     const currentAppState = toolUseContext.getAppState()
     if (currentAppState.goalRuntime?.pendingAnalysis && currentAppState.goal?.status === ThreadGoalStatus.Active) {
       const pendingAnalysis = currentAppState.goalRuntime.pendingAnalysis
-      const analysisPrompt = buildAnalysisPrompt(pendingAnalysis)
+      // Get context from the last turn in buffer
+      const lastTurn = currentAppState.goalRuntime.turnBuffer?.[currentAppState.goalRuntime.turnBuffer.length - 1]
+      const analysisPrompt = buildAnalysisPrompt(pendingAnalysis, {
+        outputSummary: lastTurn?.outputSummary,
+        toolCallsSummary: lastTurn?.toolCallsSummary,
+      })
       state.messages = [
         ...state.messages,
         createUserMessage({

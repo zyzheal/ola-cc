@@ -159,17 +159,22 @@ interface PendingAnalysis {
   triggerTurnId: string
 }
 
-export function buildAnalysisPrompt(pending: PendingAnalysis): string {
-  const severity = pending.severity.toUpperCase()
-  return `
-<analysis_context>
-[${severity}] Previous turn flagged: ${pending.reason}
-Triggered at turn: ${pending.triggerTurnId}
-</analysis_context>
+interface AnalysisContext {
+  outputSummary?: string
+  toolCallsSummary?: string[]
+}
 
-Before continuing, address the above issue.
-Consider: adjust strategy, try different approach, or /goal pause if blocked.
-`
+export function buildAnalysisPrompt(pending: PendingAnalysis, context?: AnalysisContext): string {
+  const severity = pending.severity.toUpperCase()
+  let prompt = `<analysis_context>\n[${severity}] Previous turn flagged: ${pending.reason}\nTriggered at turn: ${pending.triggerTurnId}\n`
+  if (context?.toolCallsSummary?.length) {
+    prompt += `Tools called: ${context.toolCallsSummary.join(', ')}\n`
+  }
+  if (context?.outputSummary) {
+    prompt += `Output preview: ${context.outputSummary}\n`
+  }
+  prompt += `</analysis_context>\n\nBefore continuing, address the above issue.\nConsider: adjust strategy, try different approach, or /goal pause if blocked.\n`
+  return prompt
 }
 
 function escapeXml(input: string): string {

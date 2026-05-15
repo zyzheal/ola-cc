@@ -1755,6 +1755,7 @@ export function resetGoalRuntimeAfterCompact(
           // Reset counters after compact since context has been refreshed
           turnsWithNoChanges: 0,
           consecutiveErrors: 0,
+          consecutiveCritical: 0,
         },
       }
     }
