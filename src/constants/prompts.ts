@@ -150,8 +150,8 @@ const skillSearchFeatureCheck = feature('EXPERIMENTAL_SKILL_SEARCH')
 import type { OutputStyleConfig } from './outputStyles.js'
 import { CYBER_RISK_INSTRUCTION } from './cyberRiskInstruction.js'
 
-export const CLAUDE_CODE_DOCS_MAP_URL =
-  'https://code.claude.com/docs/en/claude_code_docs_map.md'
+export const OLA_CC_DOCS_MAP_URL =
+  'https://code.claude.com/docs/en/ola_cc_docs_map.md'
 
 /**
  * Boundary marker separating static (cross-org cacheable) content from dynamic content.
@@ -166,13 +166,13 @@ export const SYSTEM_PROMPT_DYNAMIC_BOUNDARY =
   '__SYSTEM_PROMPT_DYNAMIC_BOUNDARY__'
 
 // @[MODEL LAUNCH]: Update the latest frontier model - use env var or generic name
-const FRONTIER_MODEL_NAME = process.env.CLAUDE_CODE_FRONTIER_MODEL_NAME || 'Opus'
+const FRONTIER_MODEL_NAME = process.env.OLA_CC_FRONTIER_MODEL_NAME || 'Opus'
 
 // @[MODEL LAUNCH]: Update the model family IDs below - all from env vars
-const CLAUDE_4_5_OR_4_6_MODEL_IDS = {
-  opus: process.env.CLAUDE_CODE_MODEL_OPUS_46 || 'opus-4-6',
-  sonnet: process.env.CLAUDE_CODE_MODEL_SONNET_46 || 'sonnet-4-6',
-  haiku: process.env.CLAUDE_CODE_MODEL_HAIKU_45 || 'haiku-4-5',
+const OLA_CC_4_5_OR_4_6_MODEL_IDS = {
+  opus: process.env.OLA_CC_MODEL_OPUS_46 || 'opus-4-6',
+  sonnet: process.env.OLA_CC_MODEL_SONNET_46 || 'sonnet-4-6',
+  haiku: process.env.OLA_CC_MODEL_HAIKU_45 || 'haiku-4-5',
 }
 
 function getHooksSection(): string {
@@ -499,7 +499,7 @@ export async function getSystemPrompt(
   additionalWorkingDirectories?: string[],
   mcpClients?: MCPServerConnection[],
 ): Promise<string[]> {
-  if (isEnvTruthy(process.env.CLAUDE_CODE_SIMPLE)) {
+  if (isEnvTruthy(process.env.OLA_CC_SIMPLE)) {
     return [
       `You are ola-cc, Anthropic's official CLI for Claude.\n\nCWD: ${getSessionCwd()}\nDate: ${getSessionStartDate()}`,
     ]
@@ -748,7 +748,7 @@ export async function computeSimpleEnvInfo(
     knowledgeCutoffMessage,
     process.env.USER_TYPE === 'ant' && isUndercover()
       ? null
-      : `The most recent Claude model family is Claude 4.5/4.6. Model IDs — Opus 4.6: '${CLAUDE_4_5_OR_4_6_MODEL_IDS.opus}', Sonnet 4.6: '${CLAUDE_4_5_OR_4_6_MODEL_IDS.sonnet}', Haiku 4.5: '${CLAUDE_4_5_OR_4_6_MODEL_IDS.haiku}'. When building AI applications, default to the latest and most capable Claude models.`,
+      : `The most recent Claude model family is Claude 4.5/4.6. Model IDs -- Opus 4.6: '${OLA_CC_4_5_OR_4_6_MODEL_IDS.opus}', Sonnet 4.6: '${OLA_CC_4_5_OR_4_6_MODEL_IDS.sonnet}', Haiku 4.5: '${OLA_CC_4_5_OR_4_6_MODEL_IDS.haiku}'. When building AI applications, default to the latest and most capable Claude models.`,
     process.env.USER_TYPE === 'ant' && isUndercover()
       ? null
       : `ola-cc is available as a CLI in the terminal, desktop app (Mac/Windows), web app (claude.ai/code), and IDE extensions (VS Code, JetBrains).`,
