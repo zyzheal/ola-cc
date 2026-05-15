@@ -1719,7 +1719,7 @@ export function resetGoalRuntimeAfterCompact(
     // Record compact tokens in ring buffer (only when compactionUsage is available)
     if (compactionUsage) {
       const compactTurn: TurnRecord = {
-        turnId: prev.goalRuntime?.accounting.turn?.turnId ?? 'compact',
+        turnId: prev.goalRuntime?.accounting.turn?.turnId ?? `compact-${Date.now()}`,
         inputTokens: compactionUsage.input_tokens,
         outputTokens: compactionUsage.output_tokens,
         cacheReadTokens: 0,
