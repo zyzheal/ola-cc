@@ -158,9 +158,6 @@ export function processGoalRuntimeEvent(
       }
     }
 
-    // Reset error counter on any successful event processing
-    runtime.consecutiveErrors = 0
-
     // Safety checks
     if (!goal || !goal.id) {
       return { shouldContinue: false }
@@ -171,6 +168,8 @@ export function processGoalRuntimeEvent(
 
     switch (event.type) {
       case 'turn_started': {
+        // Reset error counter on turn start
+        runtime.consecutiveErrors = 0
         // Initialize turn accounting
         runtime.accounting.turn = {
           turnId: event.turnId,
@@ -191,7 +190,7 @@ export function processGoalRuntimeEvent(
         }
         return { shouldContinue: true }
       }
-    
+
     case 'tool_completed': {
       // Don't account for update_goal tool calls
       if (event.toolName === 'update_goal') {
@@ -205,40 +204,6 @@ export function processGoalRuntimeEvent(
       if (inProgressTask && isWorkTool(event.toolName)) {
         autoProgressTasks(todos, context.updateTodos)
       }
-
-      // Account token usage - get from context
-      const usage = context.currentTokenUsage
-      const lastUsage = runtime.accounting.turn?.lastTokenUsage || usage
-      const tokenDelta = tokenDeltaSinceLastAccounting(lastUsage, usage)
-      const timeDelta = timeDeltaSinceLastAccounted(
-        runtime.accounting.wallClock.lastAccountedAt
-      )
-
-      // Update goal with usage
-      let updatedGoal: Goal = {
-        ...goal,
-        tokensUsed: goal.tokensUsed + tokenDelta,
-        timeUsedSeconds: goal.timeUsedSeconds + timeDelta,
-        updatedAt: Date.now(),
-      }
-
-      // Check budget
-      if (isBudgetExhausted(updatedGoal)) {
-        updatedGoal = {
-          ...updatedGoal,
-          status: Status.BudgetLimited,
-        }
-        const budgetPrompt = buildBudgetLimitPrompt(updatedGoal)
-        context.updateGoal(updatedGoal)
-        return { shouldContinue: true, injectedPrompt: budgetPrompt }
-      }
-
-      context.updateGoal(updatedGoal)
-      // Only update turn accounting if turn exists
-      if (runtime.accounting.turn) {
-        runtime.accounting.turn.lastTokenUsage = usage
-      }
-      runtime.accounting.wallClock.lastAccountedAt = Date.now()
 
       return { shouldContinue: true }
     }
@@ -299,7 +264,7 @@ export function processGoalRuntimeEvent(
       let turnsWithNoChanges = runtime.turnsWithNoChanges ?? 0
       const hadObservableChanges = lastTurn && context.currentTokenUsage &&
         (context.currentTokenUsage.outputTokens > 0 ||
-         context.currentTokenUsage.totalTokens > (lastTurn.lastTokenUsage?.totalTokens ?? 0))
+         context.currentTokenUsage.outputTokens > (lastTurn.lastTokenUsage?.outputTokens ?? 0))
 
       if (!hadObservableChanges) {
         turnsWithNoChanges++
@@ -356,9 +321,13 @@ export function processGoalRuntimeEvent(
         wallEndMs,
       )
 
-      // Update authoritative totals
-      runtime.totalApiTokens = totalTokensFromBuffer(runtime.turnBuffer)
-      runtime.totalApiWallMs = totalWallTimeFromBuffer(runtime.turnBuffer)
+      // Accumulate authoritative totals (cumulative, not just last-3-turns)
+      const thisTurnTokens = (context.currentTokenUsage?.outputTokens ?? 0) +
+        (context.currentTokenUsage?.inputTokens ?? 0) +
+        (context.currentTokenUsage?.cachedInputTokens ?? 0)
+      const thisTurnWall = wallEndMs - wallStartMs
+      runtime.totalApiTokens = (runtime.totalApiTokens ?? 0) + thisTurnTokens
+      runtime.totalApiWallMs = (runtime.totalApiWallMs ?? 0) + thisTurnWall
 
       // Use updated goal status for continuation check
       const effectiveGoal = goalWasUpdated ? updatedGoalRef : goal
