@@ -5,6 +5,27 @@ export enum ThreadGoalStatus {
   Complete = 'complete',
 }
 
+// GoalMode: tiered prompt complexity
+export type GoalMode = 'simple' | 'standard' | 'complex'
+
+// TurnRecord: per-turn API usage for ring buffer
+export interface TurnRecord {
+  turnId: string
+  inputTokens: number
+  outputTokens: number
+  cacheReadTokens: number
+  wallStartMs: number
+  wallEndMs: number
+}
+
+// GoalTask: dedicated task (decoupled from TodoWrite)
+export interface GoalTask {
+  id: string
+  content: string
+  status: 'pending' | 'in_progress' | 'completed'
+  order: number
+}
+
 export interface Goal {
   id: string
   threadId: string
@@ -17,6 +38,13 @@ export interface Goal {
   updatedAt: number
   // 方案 C: 关联 TodoWrite 列表
   todoListId?: string  // 关联的 TodoWrite 列表 ID（sessionId 或 agentId）
+  totalApiTokens: number          // Authoritative API token sum
+  totalApiWallMs: number          // Total API wall time ms
+  mode: GoalMode                  // Prompt tier
+  autoEdit: boolean               // Auto-approve file edits only
+  goalTaskListId?: string         // Dedicated task list ID
+  consecutiveErrors?: number      // Error counter for auto-pause
+  turnsWithNoChanges?: number     // Dead-turn detection
 }
 
 export interface GoalRuntimeState {
@@ -26,6 +54,12 @@ export interface GoalRuntimeState {
   }
   budgetLimitReportedGoalId: string | null
   continuationTurnId: string | null
+  turnBuffer: TurnRecord[]        // Ring buffer, max 3
+  totalApiTokens: number           // Sum of API response tokens
+  totalApiWallMs: number           // Sum of API wall time
+  consecutiveErrors: number        // Consecutive error counter
+  turnsWithNoChanges: number       // Turns with no observable changes
+  _currentTurnWallStartMs: number  // Internal: track current turn API start
 }
 
 export interface TokenUsage {
@@ -46,4 +80,8 @@ export const IDLE_GOAL: Goal = {
   timeUsedSeconds: 0,
   createdAt: 0,
   updatedAt: 0,
+  totalApiTokens: 0,
+  totalApiWallMs: 0,
+  mode: 'standard' as GoalMode,
+  autoEdit: false,
 }
