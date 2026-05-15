@@ -171,6 +171,8 @@ export function processGoalRuntimeEvent(
       case 'turn_started': {
         // Reset error counter on turn start
         runtime.consecutiveErrors = 0
+        // Clear tool calls accumulator for new turn
+        runtime._toolCallsThisTurn = []
         // Initialize turn accounting
         runtime.accounting.turn = {
           turnId: event.turnId,
@@ -192,6 +194,9 @@ export function processGoalRuntimeEvent(
       if (event.toolName === 'update_goal') {
         return { shouldContinue: true }
       }
+
+      // Accumulate tool calls for analysis
+      runtime._toolCallsThisTurn = [...(runtime._toolCallsThisTurn ?? []), event.toolName]
 
       // Auto-progress task after significant tool completion
       const todos = context.getTodos?.()
@@ -306,7 +311,7 @@ export function processGoalRuntimeEvent(
         context.updateGoal(updatedGoal)
       }
 
-      // Record turn in ring buffer
+      // Record turn in ring buffer with analysis fields
       const wallEndMs = Date.now()
       const wallStartMs = runtime._currentTurnWallStartMs ?? wallEndMs
       runtime.turnBuffer = recordTurnApiUsage(
@@ -315,7 +320,13 @@ export function processGoalRuntimeEvent(
         context.currentTokenUsage,
         wallStartMs,
         wallEndMs,
+        {
+          toolCallsSummary: runtime._toolCallsThisTurn ?? [],
+          hadObservableChanges,
+        },
       )
+      // Clear tool calls accumulator for next turn
+      runtime._toolCallsThisTurn = []
 
       // Lightweight analysis after turn completion
       const analysisResult = analyzeTurnLightweight(

@@ -47,6 +47,11 @@ export function recordTurnApiUsage(
   usage: TokenUsage,
   wallStartMs: number,
   wallEndMs: number,
+  analysisFields?: {
+    toolCallsSummary?: string[]
+    outputSummary?: string
+    hadObservableChanges?: boolean
+  },
 ): TurnRecord[] {
   const record: TurnRecord = {
     turnId,
@@ -55,6 +60,7 @@ export function recordTurnApiUsage(
     cacheReadTokens: usage.cachedInputTokens,
     wallStartMs,
     wallEndMs,
+    ...analysisFields,
   }
   const buffer = [...turnBuffer]
   buffer.push(record)
