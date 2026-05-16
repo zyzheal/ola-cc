@@ -10,6 +10,7 @@ import {
   cleanupDeadSessions,
   type SessionEntry,
 } from '../daemon/sessionRegistry.js'
+import { isDaemonRunning, sendDaemonRequest } from '../services/daemon/client.js'
 
 function generateSessionId(): string {
   return 'sess_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 8)
@@ -25,8 +26,6 @@ function getSessionLogPath(id: string): string {
  * Handle `ola-cc --bg "prompt"` - start a background session
  */
 export async function handleBgFlag(args: string[]): Promise<void> {
-  await cleanupDeadSessions()
-
   const bgIndex = args.indexOf('--bg')
   const bgIndexAlt = args.indexOf('--background')
   const index = bgIndex >= 0 ? bgIndex : bgIndexAlt
@@ -41,6 +40,27 @@ export async function handleBgFlag(args: string[]): Promise<void> {
     console.error('Usage: ola-cc --bg "your prompt here"')
     process.exit(1)
   }
+
+  // Try daemon mode first if available
+  if (await isDaemonRunning()) {
+    const res = await sendDaemonRequest({
+      type: 'start_session',
+      prompt,
+      workdir: process.cwd(),
+    })
+    if (res.type === 'ok') {
+      const sessionId = (res.data as any).id
+      console.log(`Background session started: ${sessionId}`)
+      console.log(`View logs:  ola-cc logs ${sessionId}`)
+    } else {
+      console.error(`Failed: ${res.message}`)
+      process.exit(1)
+    }
+    return
+  }
+
+  // Fallback: direct spawn mode (no daemon running)
+  await cleanupDeadSessions()
 
   const id = generateSessionId()
   const logPath = getSessionLogPath(id)
@@ -96,9 +116,23 @@ export async function handleBgFlag(args: string[]): Promise<void> {
  * Handle `ola-cc ps` - list background sessions
  */
 export async function psHandler(_args: string[]): Promise<void> {
+  // Try daemon mode first
+  if (await isDaemonRunning()) {
+    const res = await sendDaemonRequest({ type: 'list_sessions' })
+    if (res.type === 'ok' && Array.isArray(res.data)) {
+      printSessionTable(res.data as SessionEntry[])
+    } else if (res.type === 'error') {
+      console.error(`Failed: ${res.message}`)
+    }
+    return
+  }
+
   await cleanupDeadSessions()
   const sessions = await listSessions()
+  printSessionTable(sessions)
+}
 
+function printSessionTable(sessions: SessionEntry[]): void {
   if (sessions.length === 0) {
     console.log('No background sessions.')
     return
@@ -137,6 +171,22 @@ export async function logsHandler(id?: string): Promise<void> {
   if (!id) {
     console.error('Usage: ola-cc logs <session-id>')
     process.exit(1)
+  }
+
+  // Try daemon mode first
+  if (await isDaemonRunning()) {
+    const res = await sendDaemonRequest({ type: 'get_logs', id })
+    if (res.type === 'ok') {
+      const logs = (res.data as any).logs as string
+      if (logs.trim().length === 0) {
+        console.log('Logs are empty (session just started).')
+      } else {
+        console.log(logs)
+      }
+    } else {
+      console.error(`Failed: ${res.message}`)
+    }
+    return
   }
 
   const session = await getSession(id)
@@ -203,6 +253,18 @@ export async function killHandler(id?: string): Promise<void> {
   if (!id) {
     console.error('Usage: ola-cc kill <session-id>')
     process.exit(1)
+  }
+
+  // Try daemon mode first
+  if (await isDaemonRunning()) {
+    const res = await sendDaemonRequest({ type: 'kill_session', id })
+    if (res.type === 'ok') {
+      console.log(`Session ${id} terminated.`)
+    } else {
+      console.error(`Failed: ${res.message}`)
+      process.exit(1)
+    }
+    return
   }
 
   const session = await getSession(id)
