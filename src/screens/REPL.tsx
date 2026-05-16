@@ -1602,6 +1602,7 @@ export function REPL({
   const [spinnerMessage, setSpinnerMessage] = useState<string | null>(null);
   const [spinnerColor, setSpinnerColor] = useState<keyof Theme | null>(null);
   const [spinnerShimmerColor, setSpinnerShimmerColor] = useState<keyof Theme | null>(null);
+  const [spinnerProgress, setSpinnerProgress] = useState<number | null>(null);
   const [isMessageSelectorVisible, setIsMessageSelectorVisible] = useState(false);
   const [messageSelectorPreselect, setMessageSelectorPreselect] = useState<UserMessage | undefined>(undefined);
   const [showCostDialog, setShowCostDialog] = useState(false);
@@ -1775,7 +1776,7 @@ export function REPL({
     if (wt.creationDurationMs < 15_000) return;
     worktreeTipShownRef.current = true;
     const secs = Math.round(wt.creationDurationMs / 1000);
-    setMessages(prev => [...prev, createSystemMessage(`Worktree creation took ${secs}s. For large repos, set \`worktree.sparsePaths\` in .claude/settings.json to check out only the directories you need — e.g. \`{"worktree": {"sparsePaths": ["src", "packages/foo"]}}\`.`, 'info')]);
+    setMessages(prev => [...prev, createSystemMessage(`Worktree creation took ${secs}s. For large repos, set \`worktree.sparsePaths\` in .ola-cc/settings.json to check out only the directories you need — e.g. \`{"worktree": {"sparsePaths": ["src", "packages/foo"]}}\`.`, 'info')]);
   }, [setMessages]);
 
   // Hide spinner when the only in-progress tool is Sleep
@@ -2634,14 +2635,21 @@ export function REPL({
             setSpinnerColor('claudeBlue_FOR_SYSTEM_SPINNER');
             setSpinnerShimmerColor('claudeBlueShimmer_FOR_SYSTEM_SPINNER');
             setSpinnerMessage(event.hookType === 'pre_compact' ? 'Running PreCompact hooks\u2026' : event.hookType === 'post_compact' ? 'Running PostCompact hooks\u2026' : 'Running SessionStart hooks\u2026');
+            setSpinnerProgress(null);
             break;
           case 'compact_start':
-            setSpinnerMessage('Compacting conversation');
+            setSpinnerMessage('正在压缩对话...');
+            setSpinnerProgress(0);
+            break;
+          case 'compact_progress':
+            setSpinnerMessage(event.message || '压缩中...');
+            setSpinnerProgress(event.progress);
             break;
           case 'compact_end':
             setSpinnerMessage(null);
             setSpinnerColor(null);
             setSpinnerShimmerColor(null);
+            setSpinnerProgress(null);
             break;
         }
       },
@@ -4008,7 +4016,7 @@ export function REPL({
   // empty to non-empty, not on every length change -- otherwise a render loop
   // (concurrent onQuery thrashing, etc.) spams saveGlobalConfig, which hits
   // ELOCKED under concurrent sessions and falls back to unlocked writes.
-  // That write storm is the primary trigger for ~/.claude.json corruption
+  // That write storm is the primary trigger for ~/.ola-cc.json corruption
   // (GH #3117).
   const hasCountedQueueUseRef = useRef(false);
   useEffect(() => {
@@ -4210,7 +4218,7 @@ export function REPL({
     onSubmitMessage: handleIncomingPrompt
   });
 
-  // Scheduled tasks from .claude/scheduled_tasks.json (CronCreate/Delete/List)
+  // Scheduled tasks from .ola-cc/scheduled_tasks.json (CronCreate/Delete/List)
   if (feature('AGENT_TRIGGERS')) {
     // Assistant mode bypasses the isLoading gate (the proactive tick →
     // Sleep → tick loop would otherwise starve the scheduler).
@@ -4758,7 +4766,7 @@ export function REPL({
               {"external" === 'ant' && <TungstenLiveMonitor />}
               {feature('WEB_BROWSER_TOOL') ? WebBrowserPanelModule && <WebBrowserPanelModule.WebBrowserPanel /> : null}
               <Box flexGrow={1} />
-              {showSpinner && <SpinnerWithVerb mode={streamMode} spinnerTip={spinnerTip} responseLengthRef={responseLengthRef} apiMetricsRef={apiMetricsRef} overrideMessage={spinnerMessage} spinnerSuffix={stopHookSpinnerSuffix} verbose={verbose} loadingStartTimeRef={loadingStartTimeRef} totalPausedMsRef={totalPausedMsRef} pauseStartTimeRef={pauseStartTimeRef} overrideColor={spinnerColor} overrideShimmerColor={spinnerShimmerColor} hasActiveTools={inProgressToolUseIDs.size > 0} leaderIsIdle={!isLoading} />}
+              {showSpinner && <SpinnerWithVerb mode={streamMode} spinnerTip={spinnerTip} responseLengthRef={responseLengthRef} apiMetricsRef={apiMetricsRef} overrideMessage={spinnerMessage} spinnerSuffix={stopHookSpinnerSuffix} verbose={verbose} loadingStartTimeRef={loadingStartTimeRef} totalPausedMsRef={totalPausedMsRef} pauseStartTimeRef={pauseStartTimeRef} overrideColor={spinnerColor} overrideShimmerColor={spinnerShimmerColor} hasActiveTools={inProgressToolUseIDs.size > 0} leaderIsIdle={!isLoading} progress={spinnerProgress} />}
               {!showSpinner && !isLoading && !userInputOnProcessing && !hasRunningTeammates && isBriefOnly && !viewedAgentTask && <BriefIdleStatus />}
               {isFullscreenEnvEnabled() && <PromptInputQueuedCommands />}
             </>} bottom={<Box flexDirection={feature('BUDDY') && companionNarrow ? 'column' : 'row'} width="100%" alignItems={feature('BUDDY') && companionNarrow ? undefined : 'flex-end'}>

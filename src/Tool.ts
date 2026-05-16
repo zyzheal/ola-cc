@@ -153,6 +153,12 @@ export type CompactProgressEvent =
       hookType: 'pre_compact' | 'post_compact' | 'session_start'
     }
   | { type: 'compact_start' }
+  | {
+      type: 'compact_progress'
+      stage: 'summarizing' | 'processing' | 'post_processing' | 'complete'
+      progress: number // 0-100
+      message?: string
+    }
   | { type: 'compact_end' }
 
 export type ToolUseContext = {
