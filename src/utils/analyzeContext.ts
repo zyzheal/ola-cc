@@ -322,7 +322,7 @@ async function countMemoryFileTokens(): Promise<{
   claudeMdTokens: number
 }> {
   // Simple mode disables CLAUDE.md loading, so don't report tokens for them
-  if (isEnvTruthy(process.env.CLAUDE_CODE_SIMPLE)) {
+  if (isEnvTruthy(process.env.OLA_CC_SIMPLE)) {
     return { memoryFileDetails: [], claudeMdTokens: 0 }
   }
 
@@ -1379,4 +1379,72 @@ export async function analyzeContextUsage(
     messageBreakdown: formattedMessageBreakdown,
     apiUsage,
   }
+}
+
+/**
+ * Plugin cost estimation interface
+ * Per upstream 2.1.139/2.1.143: provides per-turn and per-invocation token cost
+ */
+export interface PluginCostEstimate {
+  pluginId: string
+  pluginName: string
+  perTurnTokens: number
+  perInvocationTokens: number
+  toolCount: number
+  hooksCount: number
+}
+
+/**
+ * Estimate token cost for all loaded plugins
+ *
+ * This provides the "projected context cost (per-turn and per-invocation token estimates)"
+ * feature mentioned in upstream changelog 2.1.143
+ */
+export async function estimatePluginCosts(
+  getToolPermissionContext: () => Promise<ToolPermissionContext>,
+  tools: Tools,
+): Promise<PluginCostEstimate[]> {
+  // Group tools by their source plugin
+  const toolsByPlugin = new Map<string, { toolNames: string[]; toolCount: number }>()
+
+  for (const tool of tools) {
+    // MCP tools have mcpInfo, others are built-in
+    if (tool.isMcp) {
+      const serverName = tool.mcpInfo?.serverName ?? 'unknown'
+      const existing = toolsByPlugin.get(serverName) ?? { toolNames: [], toolCount: 0 }
+      existing.toolNames.push(tool.name)
+      existing.toolCount++
+      toolsByPlugin.set(serverName, existing)
+    }
+  }
+
+  // Also check for plugin-defined agents, hooks, etc.
+  // This is a simplified estimation - actual implementation would need
+  // to query the plugin loader for detailed metadata
+
+  const estimates: PluginCostEstimate[] = []
+
+  // Calculate per-plugin costs
+  for (const [pluginId, data] of toolsByPlugin) {
+    // Rough estimation: ~50 tokens per tool schema on average
+    const toolTokens = data.toolCount * 50
+
+    estimates.push({
+      pluginId,
+      pluginName: pluginId,
+      perTurnTokens: toolTokens,
+      perInvocationTokens: toolTokens,
+      toolCount: data.toolCount,
+      hooksCount: 0, // Would need plugin metadata
+    })
+  }
+
+  return estimates
+}
+
+/**
+ * Get total plugin cost for display
+ */
+export function getTotalPluginCost(estimates: PluginCostEstimate[]): number {
+  return estimates.reduce((sum, e) => sum + e.perTurnTokens, 0)
 }
