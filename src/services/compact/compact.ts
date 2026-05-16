@@ -442,6 +442,12 @@ export async function compactConversation(
     context.setStreamMode?.('requesting')
     context.setResponseLength?.(() => 0)
     context.onCompactProgress?.({ type: 'compact_start' })
+    context.onCompactProgress?.({
+      type: 'compact_progress',
+      stage: 'summarizing',
+      progress: 5,
+      message: '准备压缩对话...',
+    })
 
     // 3P default: true — forked-agent path reuses main conversation's prompt cache.
     // Experiment (Jan 2026) confirmed: false path is 98% cache miss, costs ~0.76% of
@@ -476,6 +482,7 @@ export async function compactConversation(
         preCompactTokenCount,
         cacheSafeParams: retryCacheSafeParams,
         promptCacheSharingEnabled,
+        isThirdParty,
       })
       summary = getAssistantMessageText(summaryResponse)
       if (!summary?.startsWith(PROMPT_TOO_LONG_ERROR_MESSAGE)) break
@@ -540,6 +547,12 @@ export async function compactConversation(
     }
 
     logCompactDuration('stream_compact_summary_end')
+    context.onCompactProgress?.({
+      type: 'compact_progress',
+      stage: 'processing',
+      progress: 50,
+      message: '正在生成摘要...',
+    })
 
     // Store the current file state before clearing
     const preCompactReadFileState = cacheToObject(context.readFileState)
@@ -777,6 +790,12 @@ export async function compactConversation(
       .join('\n')
 
     logCompactDuration('complete')
+    context.onCompactProgress?.({
+      type: 'compact_progress',
+      stage: 'post_processing',
+      progress: 80,
+      message: '正在处理附件...',
+    })
     return {
       boundaryMarker,
       summaryMessages,
@@ -800,6 +819,12 @@ export async function compactConversation(
   } finally {
     context.setStreamMode?.('requesting')
     context.setResponseLength?.(() => 0)
+    context.onCompactProgress?.({
+      type: 'compact_progress',
+      stage: 'complete',
+      progress: 100,
+      message: '压缩完成',
+    })
     context.onCompactProgress?.({ type: 'compact_end' })
     context.setSDKStatus?.(null)
   }
@@ -919,6 +944,7 @@ export async function partialCompactConversation(
         preCompactTokenCount,
         cacheSafeParams: retryCacheSafeParams,
         promptCacheSharingEnabled,
+        isThirdParty,
       })
       summary = getAssistantMessageText(summaryResponse)
       if (!summary?.startsWith(PROMPT_TOO_LONG_ERROR_MESSAGE)) break
@@ -1205,6 +1231,7 @@ async function streamCompactSummary({
   preCompactTokenCount,
   cacheSafeParams,
   promptCacheSharingEnabled,
+  isThirdParty,
 }: {
   messages: Message[]
   summaryRequest: UserMessage
@@ -1213,6 +1240,7 @@ async function streamCompactSummary({
   preCompactTokenCount: number
   cacheSafeParams: CacheSafeParams
   promptCacheSharingEnabled: boolean
+  isThirdParty?: boolean
 }): Promise<AssistantMessage> {
   // promptCacheSharingEnabled is computed once in compactConversation and passed here
   // to avoid redundant isThirdPartyProvider() calls and URL parsing
