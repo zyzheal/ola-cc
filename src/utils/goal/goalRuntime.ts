@@ -327,6 +327,13 @@ export function processGoalRuntimeEvent(
 					autoProgressTasks(todos, context.updateTodos);
 				}
 
+				// Also check goalTasks for work tool completions
+				const goalTasks = context.getGoalTasks?.();
+				const inProgressGoalTask = goalTasks?.find((t) => t.status === "in_progress");
+				if (inProgressGoalTask && isWorkTool(event.toolName)) {
+					autoAdvanceGoalTasks(goalTasks, context.updateGoalTasks);
+				}
+
 				return { shouldContinue: true };
 			}
 

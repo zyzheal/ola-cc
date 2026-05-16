@@ -1936,12 +1936,13 @@ async function* queryLoop(
 
 		// Dispatch tool_completed events for goal runtime tracking
 		if (toolUseBlocks.length > 0 && toolUseContext.getAppState().goal?.id) {
+			const appState = toolUseContext.getAppState();
 			for (const toolUse of toolUseBlocks) {
 				processGoalRuntimeEvent(
 					{ type: "tool_completed", toolName: toolUse.name },
 					{
-						goal: toolUseContext.getAppState().goal!,
-						runtime: toolUseContext.getAppState().goalRuntime!,
+						goal: appState.goal!,
+						runtime: appState.goalRuntime!,
 						currentTokenUsage: {
 							inputTokens: 0,
 							cachedInputTokens: 0,
@@ -1954,6 +1955,32 @@ async function* queryLoop(
 							toolUseContext.setAppState((prev) => ({
 								...prev,
 								goal: updatedGoal,
+							}));
+						},
+						getTodos: () => {
+							const todoListId = appState.goal?.todoListId;
+							if (!todoListId) return undefined;
+							return appState.todos?.[todoListId];
+						},
+						updateTodos: (todos) => {
+							const todoListId = appState.goal?.todoListId;
+							if (!todoListId) return;
+							toolUseContext.setAppState((prev) => ({
+								...prev,
+								todos: { ...prev.todos, [todoListId]: todos },
+							}));
+						},
+						getGoalTasks: () => {
+							const goalTaskListId = (appState.goal as any)?.goalTaskListId;
+							if (!goalTaskListId) return undefined;
+							return appState.goalTasks?.[goalTaskListId];
+						},
+						updateGoalTasks: (tasks) => {
+							const goalTaskListId = (appState.goal as any)?.goalTaskListId;
+							if (!goalTaskListId) return;
+							toolUseContext.setAppState((prev) => ({
+								...prev,
+								goalTasks: { ...prev.goalTasks, [goalTaskListId]: tasks },
 							}));
 						},
 					},
