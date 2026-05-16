@@ -1394,10 +1394,10 @@ async function streamCompactSummary({
           isNonInteractiveSession: context.options.isNonInteractiveSession,
           hasAppendSystemPrompt: !!context.options.appendSystemPrompt,
           // For 3P providers, use smaller output to speed up response
-          // Configurable via CLAUDE_CODE_COMPACT_OUTPUT_TOKENS
+          // Configurable via OLA_CC_COMPACT_OUTPUT_TOKENS
           maxOutputTokensOverride: (() => {
-            const thirdPartyCompactTokens = process.env.CLAUDE_CODE_COMPACT_OUTPUT_TOKENS
-              ? parseInt(process.env.CLAUDE_CODE_COMPACT_OUTPUT_TOKENS, 10)
+            const thirdPartyCompactTokens = process.env.OLA_CC_COMPACT_OUTPUT_TOKENS
+              ? parseInt(process.env.OLA_CC_COMPACT_OUTPUT_TOKENS, 10)
               : 8_000
             return Math.min(
               isThirdParty ? thirdPartyCompactTokens : COMPACT_MAX_OUTPUT_TOKENS,
@@ -1735,9 +1735,9 @@ export function resetGoalRuntimeAfterCompact(
 
       // Accumulate compact tokens into cumulative totals (matching turn_finished semantics)
       // Exclude cached input tokens (they're part of inputTokens, not additional cost)
-      const compactTokenTotal = compactionUsage.input_tokens +
-        compactionUsage.output_tokens -
-        (compactionUsage.cache_read_input_tokens ?? 0)
+      const compactTokenTotal = Math.max(0, compactionUsage.output_tokens) +
+        Math.max(0, compactionUsage.input_tokens -
+          (compactionUsage.cache_read_input_tokens ?? 0))
       const prevTotalApiTokens = prev.goalRuntime?.totalApiTokens ?? 0
       const prevTotalApiWallMs = prev.goalRuntime?.totalApiWallMs ?? 0
 
@@ -1991,7 +1991,7 @@ function shouldExcludeFromPostCompactRestore(
 
   // Exclude all types of claude.md files
   // TODO: Refactor to use isMemoryFilePath() from claudemd.ts for consistency
-  // and to also match child directory memory files (.claude/rules/*.md, etc.)
+  // and to also match child directory memory files (.ola-cc/rules/*.md, etc.)
   try {
     const normalizedMemoryPaths = new Set(
       MEMORY_TYPE_VALUES.map(type => expandPath(getMemoryPath(type))),

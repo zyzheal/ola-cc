@@ -215,7 +215,7 @@ export function getOauthOrgNotAllowedErrorMessage(): string {
  * not via /login. Transient auth errors should suggest retrying, not logging in.
  */
 function isCCRMode(): boolean {
-  return isEnvTruthy(process.env.CLAUDE_CODE_REMOTE)
+  return isEnvTruthy(process.env.OLA_CC_REMOTE)
 }
 
 // Temp helper to log tool_use/tool_result mismatch errors
@@ -827,11 +827,21 @@ export function getAssistantMessageFromError(
     const isExternalSource =
       source === 'ANTHROPIC_API_KEY' || source === 'apiKeyHelper'
 
+    // When using third-party provider (OpenAI-compatible), show provider-specific message
+    const isThirdParty =
+      source === 'none' ||
+      isEnvTruthy(process.env.CLAUDE_CODE_USE_OPENAI) ||
+      isEnvTruthy(process.env.OLA_CC_USE_OPENAI)
+
     return createAssistantAPIErrorMessage({
       error: 'authentication_failed',
-      content: isExternalSource
-        ? INVALID_API_KEY_ERROR_MESSAGE_EXTERNAL
-        : INVALID_API_KEY_ERROR_MESSAGE,
+      content: isThirdParty
+        ? `Authentication failed · Check your API key and endpoint: ${error.message.slice(0, 200)}`
+        : isExternalSource
+          ? INVALID_API_KEY_ERROR_MESSAGE_EXTERNAL
+          : source === 'none'
+            ? 'Authentication failed · Check your API key'
+            : INVALID_API_KEY_ERROR_MESSAGE,
     })
   }
 
@@ -874,18 +884,27 @@ export function getAssistantMessageFromError(
       })
     }
 
+    // Check if using third-party provider (OpenAI-compatible or env var key)
+    const { source } = getAnthropicApiKeyWithSource()
+    const isThirdParty =
+      source === 'none' ||
+      isEnvTruthy(process.env.CLAUDE_CODE_USE_OPENAI) ||
+      isEnvTruthy(process.env.OLA_CC_USE_OPENAI)
+
     return createAssistantAPIErrorMessage({
       error: 'authentication_failed',
-      content: getIsNonInteractiveSession()
-        ? `Failed to authenticate. ${API_ERROR_MESSAGE_PREFIX}: ${error.message}`
-        : `Please run /login · ${API_ERROR_MESSAGE_PREFIX}: ${error.message}`,
+      content: isThirdParty
+        ? `Authentication failed · Check your API key and endpoint: ${error.message.slice(0, 200)}`
+        : getIsNonInteractiveSession()
+          ? `Failed to authenticate. ${API_ERROR_MESSAGE_PREFIX}: ${error.message}`
+          : `Please run /login · ${API_ERROR_MESSAGE_PREFIX}: ${error.message}`,
     })
   }
 
   // Bedrock errors like "403 You don't have access to the model with the specified model ID."
   // don't contain the actual model ID
   if (
-    isEnvTruthy(process.env.CLAUDE_CODE_USE_BEDROCK) &&
+    isEnvTruthy(process.env.OLA_CC_USE_BEDROCK) &&
     error instanceof Error &&
     error.message.toLowerCase().includes('model id')
   ) {
@@ -1134,7 +1153,7 @@ export function classifyAPIError(error: unknown): string {
 
   // Bedrock-specific errors
   if (
-    isEnvTruthy(process.env.CLAUDE_CODE_USE_BEDROCK) &&
+    isEnvTruthy(process.env.OLA_CC_USE_BEDROCK) &&
     error instanceof Error &&
     error.message.toLowerCase().includes('model id')
   ) {

@@ -106,8 +106,8 @@ export async function getAnthropicClient({
   fetchOverride?: ClientOptions['fetch']
   source?: string
 }): Promise<Anthropic> {
-  const containerId = process.env.CLAUDE_CODE_CONTAINER_ID
-  const remoteSessionId = process.env.CLAUDE_CODE_REMOTE_SESSION_ID
+  const containerId = process.env.OLA_CC_CONTAINER_ID
+  const remoteSessionId = process.env.OLA_CC_REMOTE_SESSION_ID
   const clientApp = process.env.CLAUDE_AGENT_SDK_CLIENT_APP
   const customHeaders = getCustomHeaders()
   const defaultHeaders: { [key: string]: string } = {
@@ -130,7 +130,7 @@ export async function getAnthropicClient({
 
   // Add additional protection header if enabled via env var
   const additionalProtectionEnabled = isEnvTruthy(
-    process.env.CLAUDE_CODE_ADDITIONAL_PROTECTION,
+    process.env.OLA_CC_ADDITIONAL_PROTECTION,
   )
   if (additionalProtectionEnabled) {
     defaultHeaders['x-anthropic-additional-protection'] = 'true'
@@ -158,7 +158,7 @@ export async function getAnthropicClient({
       fetch: resolvedFetch,
     }),
   }
-  if (isEnvTruthy(process.env.CLAUDE_CODE_USE_BEDROCK)) {
+  if (isEnvTruthy(process.env.OLA_CC_USE_BEDROCK)) {
     const { AnthropicBedrock } = await import('@anthropic-ai/bedrock-sdk')
     // Use region override for small fast model if specified
     const awsRegion =
@@ -170,7 +170,7 @@ export async function getAnthropicClient({
     const bedrockArgs: ConstructorParameters<typeof AnthropicBedrock>[0] = {
       ...ARGS,
       awsRegion,
-      ...(isEnvTruthy(process.env.CLAUDE_CODE_SKIP_BEDROCK_AUTH) && {
+      ...(isEnvTruthy(process.env.OLA_CC_SKIP_BEDROCK_AUTH) && {
         skipAuth: true,
       }),
       ...(isDebugToStdErr() && { logger: createStderrLogger() }),
@@ -184,7 +184,7 @@ export async function getAnthropicClient({
         ...bedrockArgs.defaultHeaders,
         Authorization: `Bearer ${process.env.AWS_BEARER_TOKEN_BEDROCK}`,
       }
-    } else if (!isEnvTruthy(process.env.CLAUDE_CODE_SKIP_BEDROCK_AUTH)) {
+    } else if (!isEnvTruthy(process.env.OLA_CC_SKIP_BEDROCK_AUTH)) {
       // Refresh auth and get credentials with cache clearing
       const cachedCredentials = await refreshAndGetAwsCredentials()
       if (cachedCredentials) {
@@ -196,13 +196,13 @@ export async function getAnthropicClient({
     // we have always been lying about the return type - this doesn't support batching or models
     return new AnthropicBedrock(bedrockArgs) as unknown as Anthropic
   }
-  if (isEnvTruthy(process.env.CLAUDE_CODE_USE_FOUNDRY)) {
+  if (isEnvTruthy(process.env.OLA_CC_USE_FOUNDRY)) {
     const { AnthropicFoundry } = await import('@anthropic-ai/foundry-sdk')
     // Determine Azure AD token provider based on configuration
     // SDK reads ANTHROPIC_FOUNDRY_API_KEY by default
     let azureADTokenProvider: (() => Promise<string>) | undefined
     if (!process.env.ANTHROPIC_FOUNDRY_API_KEY) {
-      if (isEnvTruthy(process.env.CLAUDE_CODE_SKIP_FOUNDRY_AUTH)) {
+      if (isEnvTruthy(process.env.OLA_CC_SKIP_FOUNDRY_AUTH)) {
         // Mock token provider for testing/proxy scenarios (similar to Vertex mock GoogleAuth)
         azureADTokenProvider = () => Promise.resolve('')
       } else {
@@ -226,10 +226,10 @@ export async function getAnthropicClient({
     // we have always been lying about the return type - this doesn't support batching or models
     return new AnthropicFoundry(foundryArgs) as unknown as Anthropic
   }
-  if (isEnvTruthy(process.env.CLAUDE_CODE_USE_VERTEX)) {
+  if (isEnvTruthy(process.env.OLA_CC_USE_VERTEX)) {
     // Refresh GCP credentials if gcpAuthRefresh is configured and credentials are expired
     // This is similar to how we handle AWS credential refresh for Bedrock
-    if (!isEnvTruthy(process.env.CLAUDE_CODE_SKIP_VERTEX_AUTH)) {
+    if (!isEnvTruthy(process.env.OLA_CC_SKIP_VERTEX_AUTH)) {
       await refreshGcpCredentialsIfNeeded()
     }
 
@@ -271,7 +271,7 @@ export async function getAnthropicClient({
       process.env['GOOGLE_APPLICATION_CREDENTIALS'] ||
       process.env['google_application_credentials']
 
-    const googleAuth = isEnvTruthy(process.env.CLAUDE_CODE_SKIP_VERTEX_AUTH)
+    const googleAuth = isEnvTruthy(process.env.OLA_CC_SKIP_VERTEX_AUTH)
       ? ({
           // Mock GoogleAuth for testing/proxy scenarios
           getClient: () => ({
@@ -305,7 +305,7 @@ export async function getAnthropicClient({
     return new AnthropicVertex(vertexArgs) as unknown as Anthropic
   }
 
-  if (isEnvTruthy(process.env.CLAUDE_CODE_USE_OPENAI)) {
+  if (isEnvTruthy(process.env.OLA_CC_USE_OPENAI) || isEnvTruthy(process.env.CLAUDE_CODE_USE_OPENAI)) {
     // OpenAI-compatible API provider (supports OpenAI API, Ollama, vLLM, etc.)
     // Use enhanced shim client with schema sanitization, better tool handling, and default retries
     const openaiArgs: ShimClientOptions = {
@@ -321,9 +321,12 @@ export async function getAnthropicClient({
   }
 
   // Determine authentication method based on available tokens
+  // When apiKey is explicitly passed (e.g., third-party provider verification),
+  // use it directly without going through the Claude AI subscriber logic.
+  const resolvedApiKey = apiKey || (isClaudeAISubscriber() ? null : getAnthropicApiKey())
   const clientConfig: ConstructorParameters<typeof Anthropic>[0] = {
-    apiKey: isClaudeAISubscriber() ? null : apiKey || getAnthropicApiKey(),
-    authToken: isClaudeAISubscriber()
+    apiKey: resolvedApiKey,
+    authToken: isClaudeAISubscriber() && !apiKey
       ? getClaudeAIOAuthTokens()?.accessToken
       : undefined,
     // Set baseURL from ANTHROPIC_BASE_URL env var (for proxy/custom endpoints)

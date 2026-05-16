@@ -81,21 +81,21 @@ function parseGoalArgs(args: string[]): GoalCommandArgs {
 
 function formatGoalStatus(goal: Goal | undefined, todos: TodoItem[] | undefined): string {
   if (!goal || !goal.id || !goal.status || goal.status === ThreadGoalStatus.Complete) {
-    return 'No active goal. Use /goal <objective> [--budget <tokens>] to set one.'
+    return '当前未设置活跃目标。使用 /goal <目标描述> [--budget <tokens>] 创建一个。'
   }
   const remaining = goal.tokenBudget
-    ? `${goal.tokenBudget - goal.tokensUsed} remaining`
-    : 'unbounded'
+    ? `剩余 ${goal.tokenBudget - goal.tokensUsed} tokens`
+    : '无上限'
 
-  let statusMessage = `Goal: ${goal.objective}\nStatus: ${goal.status}\nTokens: ${goal.tokensUsed} / ${goal.tokenBudget ?? 'unbounded'} (${remaining})\nTime: ${goal.timeUsedSeconds}s`
+  let statusMessage = `目标：${goal.objective}\n状态：${goal.status}\nTokens：${goal.tokensUsed} / ${goal.tokenBudget ?? '无上限'} (${remaining})\n用时：${goal.timeUsedSeconds}s`
 
   // Add task progress if available
   if (todos && todos.length > 0) {
     const completedCount = todos.filter(t => t.status === 'completed').length
     const inProgress = todos.find(t => t.status === 'in_progress')
-    statusMessage += `\nTasks: ${completedCount}/${todos.length} completed`
+    statusMessage += `\n任务：${completedCount}/${todos.length} 已完成`
     if (inProgress) {
-      statusMessage += `\nCurrent: ${inProgress.content}`
+      statusMessage += `\n当前：${inProgress.content}`
     }
   }
 
@@ -124,14 +124,14 @@ export const call: LocalJSXCommandCall = async (onDone, context, args) => {
   // clear
   if (action === 'clear') {
     context.setAppState(s => ({ ...s, goal: { ...IDLE_GOAL } }))
-    onDone('Goal cleared.', { display: 'system' })
+    onDone('目标已清除。', { display: 'system' })
     return null
   }
 
   // pause/resume
   if (action === 'pause' || action === 'resume') {
     if (!goal || !goal.id) {
-      const message = 'No active goal to pause/resume. Use /goal <objective> first.'
+      const message = '当前未设置活跃目标，无法暂停/恢复。请先使用 /goal <目标描述>。'
       onDone(message, { display: 'system' })
       return null
     }
@@ -140,7 +140,7 @@ export const call: LocalJSXCommandCall = async (onDone, context, args) => {
       ...s,
       goal: { ...s.goal, status: newStatus, updatedAt: Date.now() }
     }))
-    const message = `Goal ${action}d.`
+    const message = `目标已${action === 'pause' ? '暂停' : '恢复'}。`
     onDone(message, { display: 'system' })
     return null
   }
@@ -148,56 +148,56 @@ export const call: LocalJSXCommandCall = async (onDone, context, args) => {
   // edit: modify goal objective
   if (action === 'edit') {
     if (!goal || !goal.id) {
-      onDone('No active goal to edit.', { display: 'system' })
+      onDone('当前未设置活跃目标，无法编辑。', { display: 'system' })
       return null
     }
     if (!editObjective) {
-      onDone('Usage: /goal edit <new objective>', { display: 'system' })
+      onDone('用法：/goal edit <新目标描述>', { display: 'system' })
       return null
     }
     context.setAppState(s => ({
       ...s,
       goal: { ...s.goal, objective: editObjective, updatedAt: Date.now() },
     }))
-    onDone(`Goal objective updated.`, { display: 'system' })
+    onDone('目标描述已更新。', { display: 'system' })
     return null
   }
 
   // budget: dynamically adjust token budget
   if (action === 'budget') {
     if (!goal || !goal.id) {
-      onDone('No active goal to adjust budget.', { display: 'system' })
+      onDone('当前未设置活跃目标，无法调整预算。', { display: 'system' })
       return null
     }
     if (newBudget == null || isNaN(newBudget)) {
-      onDone('Usage: /goal budget <tokens>', { display: 'system' })
+      onDone('用法：/goal budget <token数量>', { display: 'system' })
       return null
     }
     context.setAppState(s => ({
       ...s,
       goal: { ...s.goal, tokenBudget: newBudget, updatedAt: Date.now() },
     }))
-    onDone(`Goal budget set to ${newBudget} tokens.`, { display: 'system' })
+    onDone(`目标预算已设为 ${newBudget} tokens。`, { display: 'system' })
     return null
   }
 
   // mode: change prompt tier
   if (action === 'mode') {
     if (!goal || !goal.id) {
-      onDone('No active goal to change mode.', { display: 'system' })
+      onDone('当前未设置活跃目标，无法切换模式。', { display: 'system' })
       return null
     }
     context.setAppState(s => ({
       ...s,
       goal: { ...s.goal, mode: mode ?? 'standard', updatedAt: Date.now() },
     }))
-    onDone(`Goal mode set to ${mode ?? 'standard'}.`, { display: 'system' })
+    onDone(`目标模式已设为 ${mode ?? 'standard'}。`, { display: 'system' })
     return null
   }
 
   // Create new goal
   if (!objective) {
-    onDone('Error: No objective provided. Use /goal <objective>', { display: 'system' })
+    onDone('错误：未提供目标描述。用法：/goal <目标描述>', { display: 'system' })
     return null
   }
 
@@ -224,6 +224,10 @@ export const call: LocalJSXCommandCall = async (onDone, context, args) => {
   // Create dedicated goalTask list (decoupled from TodoWrite)
   const goalTaskListId = `goal_${newGoal.id}`
   const defaultGoalTasks: GoalTask[] = createDefaultGoalTasks(objective || '')
+  // Auto-start first task as in_progress (matching defaultTodos behavior)
+  if (defaultGoalTasks.length > 0) {
+    defaultGoalTasks[0] = { ...defaultGoalTasks[0], status: 'in_progress' }
+  }
   const continuationPrompt = buildContinuationPrompt(newGoal)
 
   // Initialize goalRuntime when creating a new goal
@@ -295,7 +299,7 @@ export const call: LocalJSXCommandCall = async (onDone, context, args) => {
     notifyPermissionModeChanged('bypassPermissions')
   }
 
-  const message = `Goal set: ${objective}${tokenBudget ? `\nToken budget: ${tokenBudget}` : ''}${autoEdit ? `\nAuto-edit: enabled (file edits auto-approved)` : ''}${autoAccept ? `\nAuto-accept: enabled (bypassing all permission prompts)` : ''}\nLinked to TodoWrite: /todos\nUse /goal to check status, /goal pause to pause, /goal clear to cancel.`
+  const message = `目标已创建：${objective}${tokenBudget ? `\nToken 预算：${tokenBudget}` : ''}${autoEdit ? `\n自动编辑：已启用（文件修改自动批准）` : ''}${autoAccept ? `\n自动接受：已启用（跳过所有权限提示）` : ''}\n已关联 TodoWrite：/todos\n使用 /goal 查看状态，/goal pause 暂停，/goal clear 清除。`
   // Trigger auto-execute via metaMessages and shouldQuery
   onDone(message, { display: 'system', metaMessages: [continuationPrompt], shouldQuery: true })
   return null

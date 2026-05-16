@@ -2,7 +2,7 @@ import type { TokenUsage, Goal, TurnRecord } from '../../commands/goal/types.js'
 
 // Calculate token delta since last accounting (excludes cached input, doesn't double-count reasoning)
 export function goalTokenDeltaForUsage(usage: TokenUsage): number {
-  const nonCachedInput = usage.inputTokens - usage.cachedInputTokens
+  const nonCachedInput = Math.max(0, usage.inputTokens - usage.cachedInputTokens)
   const output = Math.max(usage.outputTokens, 0)
   return nonCachedInput + output
 }
@@ -74,7 +74,7 @@ export function recordTurnApiUsage(
  */
 export function totalTokensFromBuffer(turnBuffer: TurnRecord[]): number {
   return turnBuffer.reduce((sum, r) => {
-    const nonCachedInput = r.inputTokens - r.cacheReadTokens
+    const nonCachedInput = Math.max(0, r.inputTokens - r.cacheReadTokens)
     const output = Math.max(r.outputTokens, 0)
     return sum + nonCachedInput + output
   }, 0)
