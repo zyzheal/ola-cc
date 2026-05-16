@@ -209,6 +209,17 @@ async function main(): Promise<void> {
     return;
   }
 
+  // Fast-path for `--bg-worker=<id>` (internal — spawned by --bg flag).
+  if (feature('BG_SESSIONS') && args[0] === '--bg-worker') {
+    const { enableConfigs } = await import('../utils/config.js');
+    enableConfigs();
+    const { runBgWorker } = await import('../daemon/bgWorker.js');
+    // args[1] = sessionId, args[2] = '--', args[3] = prompt
+    const prompt = args[3] ?? args.slice(2).join(' ');
+    await runBgWorker(args[1], prompt);
+    return;
+  }
+
   // Fast-path for `claude remote-control` (also accepts legacy `claude remote` / `claude sync` / `claude bridge`):
   // serve local machine as bridge environment.
   // feature() must stay inline for build-time dead code elimination;
@@ -284,7 +295,7 @@ async function main(): Promise<void> {
   }
 
   // Fast-path for `claude ps|logs|attach|kill` and `--bg`/`--background`.
-  // Session management against the ~/.claude/sessions/ registry. Flag
+  // Session management against the ~/.ola-cc/sessions/ registry. Flag
   // literals are inlined so bg.js only loads when actually dispatching.
   if (feature('BG_SESSIONS') && (args[0] === 'ps' || args[0] === 'logs' || args[0] === 'attach' || args[0] === 'kill' || args.includes('--bg') || args.includes('--background'))) {
     profileCheckpoint('cli_bg_path');
