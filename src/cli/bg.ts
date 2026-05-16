@@ -80,9 +80,11 @@ export async function handleBgFlag(args: string[]): Promise<void> {
   }
 
   // Spawn child process running the same binary with the prompt
+  // For compiled Bun binaries, process.argv[1] may be a virtual path
+  // that the child can't access. Pass args directly after execPath.
   const child = spawn(
     process.execPath,
-    [process.argv[1], '--bg-worker', id, '--', prompt],
+    ['--bg-worker', id, '--', prompt],
     {
       detached: true,
       stdio: ['ignore', 'pipe', 'pipe'],
@@ -153,7 +155,7 @@ function printSessionTable(sessions: SessionEntry[]): void {
 
   for (const s of sessions) {
     const started = new Date(s.startedAt).toLocaleString()
-    const promptText = s.prompt.length > 45 ? s.prompt.slice(0, 42) + '...' : s.prompt
+    const promptText = s.prompt ? (s.prompt.length > 45 ? s.prompt.slice(0, 42) + '...' : s.prompt) : '(no prompt)'
     console.log(
       s.id.padEnd(36),
       s.status.padEnd(12),

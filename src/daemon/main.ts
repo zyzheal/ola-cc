@@ -75,7 +75,7 @@ async function handleRequest(req: DaemonRequest): Promise<DaemonResponse> {
         const logPath = await ensureLogPath(id)
         const child = spawn(
           process.execPath,
-          [process.argv[1], '--bg-worker', id, '--', req.prompt],
+          ['--bg-worker', id, '--', req.prompt],
           {
             detached: true,
             stdio: ['ignore', 'pipe', 'pipe'],

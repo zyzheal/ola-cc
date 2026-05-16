@@ -12,30 +12,11 @@ export async function runBgWorker(sessionId: string, prompt: string): Promise<vo
 
   // Redirect stdout/stderr to log file
   const logStream = fs.createWriteStream(logPath, { flags: 'a' })
-  const originalStdoutWrite = process.stdout.write.bind(process.stdout)
-  const originalStderrWrite = process.stderr.write.bind(process.stderr)
 
-  process.stdout.write = (chunk: any, ...args: any[]) => {
-    logStream.write(typeof chunk === 'string' ? chunk : String(chunk))
-    return originalStdoutWrite(chunk, ...args)
-  }
-  process.stderr.write = (chunk: any, ...args: any[]) => {
-    logStream.write(typeof chunk === 'string' ? chunk : String(chunk))
-    return originalStderrWrite(chunk, ...args)
-  }
-
-  // Intercept console methods
-  const originalConsole = {
-    log: console.log,
-    error: console.error,
-    warn: console.warn,
-    info: console.info,
-  }
-
+  // Intercept console methods only (stdout/stderr from subprocess go directly to pipe)
   const redirectConsole = (method: 'log' | 'error' | 'warn' | 'info', ...args: any[]) => {
     const text = args.map(a => typeof a === 'string' ? a : JSON.stringify(a)).join(' ')
     logStream.write(text + '\n')
-    originalConsole[method](...args)
   }
 
   console.log = (...args: any[]) => redirectConsole('log', ...args)
@@ -49,17 +30,17 @@ export async function runBgWorker(sessionId: string, prompt: string): Promise<vo
     console.log(`Worker started for session ${sessionId}`)
     console.log(`Prompt: ${prompt}`)
 
+    // Clean up process.argv so main.tsx's Commander doesn't see --bg-worker
+    // Replace argv with a clean --print invocation BEFORE importing main
+    process.argv = [process.argv[0], process.argv[1], '--print', prompt]
+
     // Load the main query engine and execute non-interactively
     const { main: queryMain } = await import('../main.js')
-    const result = await queryMain({
-      bgMode: true,
-      bgSessionId: sessionId,
-      initialPrompt: prompt,
-    })
+    await queryMain()
 
     await updateSession(sessionId, {
-      status: result?.success ? 'completed' : 'failed',
-      exitCode: result?.success ? 0 : 1,
+      status: 'completed',
+      exitCode: 0,
       lastActivity: Date.now(),
     })
 
