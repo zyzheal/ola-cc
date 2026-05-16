@@ -352,6 +352,32 @@ interface AgentViewConfig {
 
 **总计: 约 10-14 周**
 
+## 实施状态
+
+| 阶段 | 状态 | 完成时间 |
+|------|------|----------|
+| Phase 1: 快速见效 | ✅ 完成 | 2026-05-16 |
+| Phase 2: 压缩系统 | ✅ 完成 | 2026-05-16 |
+| Phase 3: 插件增强 | ✅ 部分完成 (P3.3 Token Cost) | 2026-05-16 |
+| Phase 4: Daemon/Worker | ✅ 完成 | 2026-05-17 |
+| Phase 5: Agent View | ✅ 完成 | 2026-05-17 |
+
+### Phase 4 详细实现
+- [x] 文件注册表 (`src/daemon/sessionRegistry.ts`)
+- [x] BG CLI 命令 (`src/cli/bg.ts`) - ps/logs/attach/kill/--bg
+- [x] Worker 进程 (`src/daemon/bgWorker.ts`)
+- [x] Daemon 主进程 (`src/daemon/main.ts`)
+- [x] Socket 服务器 (`src/daemon/socketServer.ts`)
+- [x] IPC 协议 (`src/daemon/protocol.ts`)
+- [x] 客户端通信 (`src/services/daemon/client.ts`)
+- [x] 功能标志集成 (`scripts/build.ts`)
+- [x] CLI 入口集成 (`src/entrypoints/cli.tsx`)
+
+### Phase 5 详细实现
+- [x] 会话查看 TUI (`src/components/agents/BgSessionView.tsx`)
+- [x] /sessions 命令 (`src/commands/sessions/`)
+- [x] 命令注册 (`src/commands.ts`)
+
 ## 风险与缓解
 
 | 风险 | 影响 | 缓解措施 |
