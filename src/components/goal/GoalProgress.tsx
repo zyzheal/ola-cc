@@ -82,7 +82,8 @@ export function GoalProgress() {
     return s.todos?.[todoListId] ?? null
   })
 
-  if (!goalId || !goalStatus || goalStatus === '') {
+  // Hide goal banner when complete — the work is done, no need to keep showing it
+  if (goalStatus === ThreadGoalStatus.Complete) {
     return null
   }
 
@@ -103,11 +104,11 @@ export function GoalProgress() {
   const totalTasks = taskItems.length
   const taskProgress = totalTasks > 0 ? Math.round((completedTasks / totalTasks) * 100) : 0
 
-  const budgetProgress = goalTokenBudget != null
-    ? Math.min(100, (goalTokensUsed / goalTokenBudget) * 100)
+  const budgetProgress = goalTokenBudget != null && goalTokenBudget > 0
+    ? Math.max(0, Math.min(100, (Math.max(0, goalTokensUsed) / goalTokenBudget) * 100))
     : 0
 
-  const displayTokens = goalTotalApiTokens > 0 ? goalTotalApiTokens : goalTokensUsed
+  const displayTokens = Math.max(0, goalTotalApiTokens > 0 ? goalTotalApiTokens : goalTokensUsed)
 
   return (
     <Box flexDirection="column" borderStyle="round" borderColor={color} paddingX={1}>
