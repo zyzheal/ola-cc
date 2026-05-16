@@ -58,6 +58,17 @@ const DETAILED_ANALYSIS_INSTRUCTION_PARTIAL = `Before providing your final summa
    - Pay special attention to specific user feedback that you received, especially if the user told you to do something differently.
 2. Double-check for technical accuracy and completeness, addressing each required element thoroughly.`
 
+// Sensitive instructions protection - added per upstream 2.1.139
+const SENSITIVE_INSTRUCTIONS_PROTECTION = `
+IMPORTANT: Preserve any sensitive user instructions or security-related configurations.
+Do not summarize or remove:
+- API keys, tokens, or credentials mentioned in the conversation
+- Security policies, access control rules, or permission configurations
+- Custom prompts, system instructions, or agent configurations
+- Environment variables or deployment settings that the user explicitly provided
+
+Retain these in the condensed conversation as needed for context.`
+
 const BASE_COMPACT_PROMPT = `Your task is to create a detailed summary of the conversation so far, paying close attention to the user's explicit requests and your previous actions.
 This summary should be thorough in capturing technical details, code patterns, and architectural decisions that would be essential for continuing development work without losing context.
 
@@ -285,7 +296,7 @@ export function getPartialCompactPrompt(
     prompt += `\n\nAdditional Instructions:\n${customInstructions}`
   }
 
-  prompt += NO_TOOLS_TRAILER
+  prompt += SENSITIVE_INSTRUCTIONS_PROTECTION + NO_TOOLS_TRAILER
 
   return prompt
 }
@@ -297,7 +308,7 @@ export function getCompactPrompt(customInstructions?: string): string {
     prompt += `\n\nAdditional Instructions:\n${customInstructions}`
   }
 
-  prompt += NO_TOOLS_TRAILER
+  prompt += SENSITIVE_INSTRUCTIONS_PROTECTION + NO_TOOLS_TRAILER
 
   return prompt
 }
