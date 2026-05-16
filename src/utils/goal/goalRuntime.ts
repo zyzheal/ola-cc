@@ -293,6 +293,17 @@ export function processGoalRuntimeEvent(
 				) {
 					autoProgressTasks(todos, context.updateTodos);
 				}
+
+				// Also check goalTasks if todos didn't trigger
+				const goalTasks = context.getGoalTasks?.();
+				if (
+					goalTasks &&
+					goalTasks.length > 0 &&
+					!goalTasks.some((t) => t.status === "in_progress")
+				) {
+					autoAdvanceGoalTasks(goalTasks, context.updateGoalTasks);
+				}
+
 				return { shouldContinue: true };
 			}
 
