@@ -30,6 +30,9 @@ const MIN_TOOL_COUNT = 15
 /** Maximum number of tools to send to the API */
 const MAX_TOOL_COUNT = 25
 
+/** Phase 1: number of candidates for second-phase detailed scoring */
+const PHASE1_MAX_CANDIDATES = 30
+
 /** Tools that are always included regardless of ranking score */
 const ALWAYS_INCLUDE_TOOLS = [
   'Bash',
@@ -253,6 +256,129 @@ export async function rankTools(
     .map(s => s.tool)
 
   return result
+}
+
+/**
+ * Two-phase tool ranking for better performance:
+ * - Phase 1: Lightweight scoring using only name + searchHint (no async)
+ * - Phase 2: Full description scoring for top-K candidates
+ *
+ * This reduces latency by avoiding async tool.prompt() calls for tools
+ * that won't make it to the final selection anyway.
+ */
+export async function rankToolsTwoPhase(
+  tools: Tools,
+  query: string,
+  opts?: RankOptions,
+): Promise<Tools> {
+  if (tools.length <= MIN_TOOL_COUNT) {
+    return tools
+  }
+
+  const queryTerms = extractTerms(query)
+  if (queryTerms.length === 0) {
+    return tools.slice(0, MAX_TOOL_COUNT)
+  }
+
+  // Pre-compile regex patterns
+  const termPatterns = new Map<string, RegExp>()
+  for (const term of queryTerms) {
+    termPatterns.set(term, new RegExp(`\\b${escapeRegExp(term)}\\b`))
+  }
+
+  // === PHASE 1: Lightweight scoring (name + searchHint only) ===
+  const alwaysInclude = new Set<string>(ALWAYS_INCLUDE_TOOLS)
+  const phase1Scores: ToolScore[] = []
+
+  for (const tool of tools) {
+    // Core tools always included
+    if (alwaysInclude.has(tool.name)) {
+      phase1Scores.push({ tool, score: 1000 }) // High score to ensure inclusion
+      continue
+    }
+
+    // Lightweight scoring: name + searchHint (no async call)
+    let score = 0
+    const toolNameLower = tool.name.toLowerCase()
+    const toolNameParts = extractTerms(tool.name)
+
+    for (const term of queryTerms) {
+      // Exact name match
+      if (toolNameLower === term) {
+        score += 100
+        continue
+      }
+      // Name part match
+      if (toolNameParts.includes(term)) {
+        score += 20
+      } else if (toolNameParts.some(part => part.includes(term))) {
+        score += 10
+      }
+      // searchHint match
+      if (tool.searchHint) {
+        const hintLower = tool.searchHint.toLowerCase()
+        if (hintLower.includes(term)) {
+          score += 15
+        }
+      }
+    }
+
+    phase1Scores.push({ tool, score })
+  }
+
+  // Sort by phase1 score and take top candidates
+  phase1Scores.sort((a, b) => b.score - a.score)
+  const phase1Top = phase1Scores
+    .filter(s => !alwaysInclude.has(s.tool.name))
+    .slice(0, PHASE1_MAX_CANDIDATES)
+    .map(s => s.tool)
+
+  // === PHASE 2: Full description scoring for candidates ===
+  // If no opts, skip phase 2 and return phase1 results
+  if (!opts) {
+    const combined = [
+      ...tools.filter(t => alwaysInclude.has(t.name)),
+      ...phase1Top.slice(0, MAX_TOOL_COUNT - ALWAYS_INCLUDE_TOOLS.length),
+    ]
+    return combined.slice(0, MAX_TOOL_COUNT)
+  }
+
+  // Phase 2: Get full descriptions for candidates
+  const cacheKey = `tools:${tools.length}:agents:${opts.agents.length ?? 0}`
+  const candidateDescriptions = new Map<string, string>()
+
+  for (const tool of phase1Top) {
+    const desc = await getToolDescriptionMemoized(cacheKey, tool.name, tools, opts)
+    candidateDescriptions.set(tool.name, desc.toLowerCase())
+  }
+
+  // Score with full descriptions
+  const phase2Scores: ToolScore[] = []
+
+  for (const tool of tools) {
+    if (alwaysInclude.has(tool.name)) {
+      phase2Scores.push({ tool, score: 1000 })
+      continue
+    }
+
+    const descLower = candidateDescriptions.get(tool.name) ?? ''
+    const score = scoreTool(tool, queryTerms, termPatterns, descLower)
+    phase2Scores.push({ tool, score })
+  }
+
+  // Final sort and selection
+  phase2Scores.sort((a, b) => b.score - a.score)
+
+  const finalCore = phase2Scores.filter(s => alwaysInclude.has(s.tool.name))
+  const finalRanked = phase2Scores.filter(s => !alwaysInclude.has(s.tool.name))
+
+  const remainingSlots = Math.max(0, MAX_TOOL_COUNT - finalCore.length)
+  const finalResult = [
+    ...finalCore,
+    ...finalRanked.slice(0, remainingSlots),
+  ].slice(0, MAX_TOOL_COUNT).map(s => s.tool)
+
+  return finalResult
 }
 
 /**
