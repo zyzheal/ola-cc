@@ -75,12 +75,15 @@ async function tryReactiveCompact(
   const result = groups.slice(actualDropCount).flat()
 
   // 如果删除后仍然超出限制，递归尝试
-  const newTokenCount = roughTokenCountEstimationForMessages(result)
-  if (newTokenCount > targetDropTokens * 1.5 && config.maxRetries > 1) {
-    // 还需要更多删除，递归重试（减少 multiplier）
+  const remainingTokens = roughTokenCountEstimationForMessages(result)
+  const originalTokens = roughTokenCountEstimationForMessages(messages)
+  const stillNeedToDrop = originalTokens - targetDropTokens - remainingTokens
+
+  if (stillNeedToDrop > 0 && config.maxRetries > 1 && groups.length - actualDropCount > config.minMessagesToKeep) {
+    // 还需要更多删除，递归重试（增加 drop target）
     return tryReactiveCompact(
       result,
-      targetDropTokens * 0.8,
+      targetDropTokens + stillNeedToDrop,
       { ...config, maxRetries: config.maxRetries - 1 },
     )
   }

@@ -395,13 +395,17 @@ export function processGoalRuntimeEvent(
 				let turnsWithNoChanges = runtime.turnsWithNoChanges ?? 0;
 				// Use Boolean() to ensure strict boolean type (fixes null issue)
 				// Only check outputTokens growth, not inputTokens (context grows naturally)
-				const hadObservableChanges = !!(
-					lastTurn &&
-					context.currentTokenUsage &&
-					(context.currentTokenUsage.outputTokens > 0 ||
-						context.currentTokenUsage.outputTokens >
-							(lastTurn.lastTokenUsage?.outputTokens ?? 0))
-				);
+				// When outputTokens is undefined, treat as "cannot determine" (conservatively assume changes)
+				const currentOutput = context.currentTokenUsage?.outputTokens;
+				const lastOutput = lastTurn?.lastTokenUsage?.outputTokens;
+				const hadObservableChanges = currentOutput != null
+					? !!(
+						lastTurn &&
+						context.currentTokenUsage &&
+						(currentOutput > 0 ||
+							currentOutput > (lastOutput ?? 0))
+					)
+					: true; // undefined outputTokens — conservatively assume changes occurred
 
 				if (!hadObservableChanges) {
 					turnsWithNoChanges++;

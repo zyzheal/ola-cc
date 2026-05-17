@@ -1,4 +1,4 @@
-import { spawn, execSync } from 'child_process'
+import { spawn as spawnChild } from 'child_process'
 import path from 'path'
 import os from 'os'
 import fs from 'fs'
@@ -82,7 +82,7 @@ export async function handleBgFlag(args: string[]): Promise<void> {
   // Spawn child process running the same binary with the prompt
   // For compiled Bun binaries, process.argv[1] may be a virtual path
   // that the child can't access. Pass args directly after execPath.
-  const child = spawn(
+  const child = spawnChild(
     process.execPath,
     ['--bg-worker', id, '--', prompt],
     {
@@ -240,11 +240,11 @@ export async function attachHandler(id?: string): Promise<void> {
   // Tail the log file for live output
   const logPath = session.logPath
   if (logPath) {
-    try {
-      execSync(`tail -f "${logPath}"`, { stdio: 'inherit' })
-    } catch {
-      // User pressed Ctrl+C - normal detach
-    }
+    const tail = spawnChild('tail', ['-f', logPath], { stdio: 'inherit' })
+    tail.on('error', () => {
+      // tail not available or log file inaccessible
+    })
+    // Ctrl+C will terminate the child and detach us
   }
 }
 
@@ -279,15 +279,26 @@ export async function killHandler(id?: string): Promise<void> {
     process.kill(session.pid, 'SIGTERM')
     await updateSession(id, { status: 'killed', lastActivity: Date.now() })
     console.log(`Session ${id} terminated.`)
-  } catch {
-    // Try force kill as fallback
+  } catch (err: any) {
+    // ESRCH means process already exited — treat as already completed
+    if (err?.code === 'ESRCH') {
+      await updateSession(id, { status: 'completed', lastActivity: Date.now() })
+      console.log(`Session ${id} has already exited.`)
+      return
+    }
+    // Try force kill as fallback for other errors
     try {
       process.kill(session.pid, 'SIGKILL')
       await updateSession(id, { status: 'killed', lastActivity: Date.now() })
       console.log(`Session ${id} force-killed.`)
-    } catch {
-      await updateSession(id, { status: 'failed', lastActivity: Date.now() })
-      console.log(`Session ${id} marked as failed (process not found).`)
+    } catch (err2: any) {
+      if (err2?.code === 'ESRCH') {
+        await updateSession(id, { status: 'completed', lastActivity: Date.now() })
+        console.log(`Session ${id} has already exited.`)
+      } else {
+        await updateSession(id, { status: 'failed', lastActivity: Date.now() })
+        console.log(`Session ${id} marked as failed (process not found).`)
+      }
     }
   }
 }
