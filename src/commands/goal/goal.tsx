@@ -66,7 +66,11 @@ function parseGoalArgs(args: string[]): GoalCommandArgs {
   const retryIntervalIndex = args.findIndex(a => a === '--retry-interval' || a === '-r')
   let retryInterval: string | undefined
   if (retryIntervalIndex !== -1 && args[retryIntervalIndex + 1]) {
-    retryInterval = args[retryIntervalIndex + 1]
+    const intervalValue = args[retryIntervalIndex + 1]
+    // 验证格式：数字 + 单位 (s/m/h)，如 10s, 5m, 1h
+    if (/^\d+[smh]$/.test(intervalValue)) {
+      retryInterval = intervalValue
+    }
     args = args.filter((_, i) => i !== retryIntervalIndex && i !== retryIntervalIndex + 1)
   }
 
@@ -74,7 +78,11 @@ function parseGoalArgs(args: string[]): GoalCommandArgs {
   const maxHoursIndex = args.findIndex(a => a === '--max-hours' || a === '-t')
   let maxRetryHours: number | undefined
   if (maxHoursIndex !== -1 && args[maxHoursIndex + 1]) {
-    maxRetryHours = parseInt(args[maxHoursIndex + 1], 10)
+    const parsed = parseInt(args[maxHoursIndex + 1], 10)
+    // 验证：正整数且在合理范围内 (1-720 小时 = 30天)
+    if (!isNaN(parsed) && parsed > 0 && parsed <= 720) {
+      maxRetryHours = parsed
+    }
     args = args.filter((_, i) => i !== maxHoursIndex && i !== maxHoursIndex + 1)
   }
 

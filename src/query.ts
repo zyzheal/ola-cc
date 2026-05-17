@@ -4,7 +4,7 @@ import type {
 	ToolUseBlock,
 } from "@anthropic-ai/sdk/resources/index.mjs";
 import type { CanUseToolFn } from "./hooks/useCanUseTool.js";
-import { FallbackTriggeredError } from "./services/api/withRetry.js";
+import { FallbackTriggeredError, CannotRetryError } from "./services/api/withRetry.js";
 import {
 	calculateTokenWarningState,
 	isAutoCompactEnabled,
@@ -28,7 +28,7 @@ import {
 } from "src/services/analytics/index.js";
 import { ImageSizeError } from "./utils/imageValidation.js";
 import { ImageResizeError } from "./utils/imageResizer.js";
-import { findToolByName, type ToolUseContext } from "./Tool.js";
+import { createToolRegistry, type ToolUseContext } from "./Tool.js";
 import { asSystemPrompt, type SystemPrompt } from "./utils/systemPromptType.js";
 import type {
 	AssistantMessage,
@@ -41,6 +41,7 @@ import type {
 	TombstoneMessage,
 } from "./types/message.js";
 import { logError } from "./utils/log.js";
+import { sleep } from "./utils/sleep.js";
 import {
 	PROMPT_TOO_LONG_ERROR_MESSAGE,
 	isPromptTooLongMessage,
@@ -1120,10 +1121,8 @@ async function* queryLoop(
 									typeof block.input === "object" &&
 									block.input !== null
 								) {
-									const tool = findToolByName(
-										toolUseContext.options.tools,
-										block.name,
-									);
+									const toolRegistry = createToolRegistry(toolUseContext.options.tools);
+									const tool = toolRegistry.find(block.name);
 									if (tool?.backfillObservableInput) {
 										const originalInput = block.input as Record<
 											string,
@@ -1376,6 +1375,91 @@ async function* queryLoop(
 				queryDepth: queryTracking.depth,
 			});
 
+			// Goal fallback retry detection - handle non-retryable errors when goal has retry config
+			const appState = toolUseContext.getAppState();
+			const goal = appState.goal as Goal | undefined;
+
+			if (
+				error instanceof CannotRetryError &&
+				goal &&
+				goal.status === ThreadGoalStatus.Active &&
+				goal.retryConfig?.enabled
+			) {
+				// Check for permanent errors (401/403) - should not retry
+				const originalError = error.originalError;
+				let isPermanentError = false;
+				if (originalError && typeof originalError === "object") {
+					const status = (originalError as any).status;
+					isPermanentError = status === 401 || status === 403;
+				}
+
+				if (isPermanentError) {
+					// Permanent error - don't retry, let it propagate
+					logError(new Error(`Goal retry skipped: permanent error ${status}`));
+				} else {
+					// Implement full fallback retry loop
+					const retryConfig = goal.retryConfig;
+					const startTime = Date.now();
+					const maxRetryTimeMs = retryConfig.maxRetryHours * 3600000;
+
+					while (true) {
+						// Check if we've exceeded max retry time
+						const elapsed = Date.now() - startTime;
+						if (elapsed >= maxRetryTimeMs) {
+							yield createSystemMessage(
+								`❌ Goal 兜底重试超时：已超过最大重试时间 ${retryConfig.maxRetryHours} 小时`,
+								"error",
+							);
+							break;
+						}
+
+						// Check if goal still exists and is active
+						const currentGoal = toolUseContext.getAppState().goal;
+						if (!currentGoal || currentGoal.status !== ThreadGoalStatus.Active) {
+							yield createSystemMessage(
+								"⚠️ Goal 已暂停或取消，终止兜底重试",
+								"warning",
+							);
+							break;
+						}
+
+						const retryNumber = (currentGoal.retryCount || 0) + 1;
+						const nextRetryAt = new Date(Date.now() + retryConfig.intervalMs);
+
+						// Output fallback retry info
+						const retryMessage = `🔄 Goal 触发兜底重试 (第 ${retryNumber} 次)
+  上次错误: ${error.message || "Unknown error"}
+  下次重试: ${nextRetryAt.toLocaleTimeString()} (${Math.round(retryConfig.intervalMs / 60000)} 分钟后)
+  已耗时: ${Math.floor(elapsed / 60000)} 分钟 / 最大 ${retryConfig.maxRetryHours} 小时`;
+
+						yield createSystemMessage(retryMessage, "warning");
+
+						// Update goal retry count
+						toolUseContext.setAppState((prev) => ({
+							...prev,
+							goal: prev.goal
+								? { ...prev.goal, retryCount: retryNumber }
+								: undefined,
+						}));
+
+						// Wait for the configured interval before retrying
+						await sleep(retryConfig.intervalMs);
+
+						// Try to continue the goal - this will trigger a new query
+						yield {
+							type: "system" as const,
+							subtype: "goal_retry_trigger",
+							content: "重新尝试执行 Goal...",
+							retryCount: retryNumber,
+						};
+
+						// Break the loop and let the outer query loop handle the retry
+						// The outer loop will see the goal is still active and continue
+						return { reason: "goal_retry_triggered", retryCount: retryNumber };
+					}
+				}
+			}
+
 			// Handle image size/resize errors with user-friendly messages
 			if (
 				error instanceof ImageSizeError ||
@@ -1620,7 +1704,7 @@ async function* queryLoop(
 				if (
 					capEnabled &&
 					maxOutputTokensOverride === undefined &&
-					!process.env.CLAUDE_CODE_MAX_OUTPUT_TOKENS
+					!process.env.OLA_CC_MAX_OUTPUT_TOKENS
 				) {
 					logEvent("tengu_max_tokens_escalate", {
 						escalatedTo: ESCALATED_MAX_TOKENS,
