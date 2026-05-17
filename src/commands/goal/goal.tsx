@@ -1,6 +1,6 @@
 import { getSessionId } from '../../bootstrap/state.js'
 import type { LocalJSXCommandCall } from '../../types/command.js'
-import { type Goal, ThreadGoalStatus, IDLE_GOAL, type GoalMode, type GoalTask, migrateGoal } from './types.js'
+import { type Goal, ThreadGoalStatus, IDLE_GOAL, type GoalMode, type GoalTask, migrateGoal, getRetryConfig } from './types.js'
 import type { TodoItem } from '../../utils/todo/types.js'
 import { buildContinuationPrompt } from '../../utils/goal/goalSteering.js'
 import { notifyPermissionModeChanged } from '../../utils/sessionState.js'
@@ -232,6 +232,7 @@ export const call: LocalJSXCommandCall = async (onDone, context, args) => {
     createdAt: Date.now(),
     updatedAt: Date.now(),
     todoListId: sessionId,
+    retryConfig: getRetryConfig({ retryInterval, maxRetryHours }),
   }
 
   const defaultTodos = createDefaultTodoItems(objective || '')
