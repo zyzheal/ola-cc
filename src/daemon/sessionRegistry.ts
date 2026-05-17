@@ -12,6 +12,7 @@ export interface SessionEntry {
   lastActivity: number
   logPath?: string
   exitCode?: number
+  usedWarmPool?: boolean
 }
 
 function getSessionDir(): string {
@@ -31,10 +32,20 @@ export async function registerSession(entry: SessionEntry): Promise<void> {
 }
 
 export async function updateSession(id: string, updates: Partial<SessionEntry>): Promise<void> {
-  const existing = await getSession(id)
-  if (!existing) return
-  const updated = { ...existing, ...updates, lastActivity: Date.now() }
-  await registerSession(updated)
+  const filePath = path.join(getSessionDir(), `${id}.json`)
+  const tmpPath = filePath + '.tmp'
+
+  try {
+    const existing = await getSession(id)
+    if (!existing) return
+    const updated = { ...existing, ...updates, lastActivity: Date.now() }
+    // Atomic write: write to temp file then rename
+    await fs.writeFile(tmpPath, JSON.stringify(updated, null, 2))
+    await fs.rename(tmpPath, filePath)
+  } catch {
+    // Clean up temp file on failure
+    await fs.unlink(tmpPath).catch(() => {})
+  }
 }
 
 export async function getSession(id: string): Promise<SessionEntry | null> {
@@ -75,13 +86,15 @@ export async function removeSession(id: string): Promise<void> {
 
 export async function cleanupDeadSessions(): Promise<void> {
   const sessions = await listSessions()
-  for (const s of sessions) {
-    if (s.status === 'running') {
+  const runningSessions = sessions.filter(s => s.status === 'running')
+
+  await Promise.allSettled(
+    runningSessions.map(async (s) => {
       try {
         process.kill(s.pid, 0)
       } catch {
         await updateSession(s.id, { status: 'failed', exitCode: -1 })
       }
-    }
-  }
+    }),
+  )
 }
