@@ -35,6 +35,9 @@ interface GoalCommandArgs {
   mode?: GoalMode
   editObjective?: string
   newBudget?: number
+  // 新增
+  retryInterval?: string  // e.g., "5m", "10m", "30s"
+  maxRetryHours?: number
 }
 
 function parseGoalArgs(args: string[]): GoalCommandArgs {
@@ -59,6 +62,22 @@ function parseGoalArgs(args: string[]): GoalCommandArgs {
     args = args.filter(a => a.toLowerCase() !== mode)
   }
 
+  // 解析 --retry-interval / -r
+  const retryIntervalIndex = args.findIndex(a => a === '--retry-interval' || a === '-r')
+  let retryInterval: string | undefined
+  if (retryIntervalIndex !== -1 && args[retryIntervalIndex + 1]) {
+    retryInterval = args[retryIntervalIndex + 1]
+    args = args.filter((_, i) => i !== retryIntervalIndex && i !== retryIntervalIndex + 1)
+  }
+
+  // 解析 --max-hours / -t
+  const maxHoursIndex = args.findIndex(a => a === '--max-hours' || a === '-t')
+  let maxRetryHours: number | undefined
+  if (maxHoursIndex !== -1 && args[maxHoursIndex + 1]) {
+    maxRetryHours = parseInt(args[maxHoursIndex + 1], 10)
+    args = args.filter((_, i) => i !== maxHoursIndex && i !== maxHoursIndex + 1)
+  }
+
   const budgetIndex = args.indexOf('--budget')
   let tokenBudget: number | undefined
   if (budgetIndex !== -1 && args[budgetIndex + 1]) {
@@ -76,7 +95,7 @@ function parseGoalArgs(args: string[]): GoalCommandArgs {
   if (firstArg === 'budget' && args[1]) return { action: 'budget', newBudget: parseInt(args[1], 10) }
   if (firstArg === 'mode' && mode) return { action: 'mode', mode }
 
-  return { objective: args.join(' '), tokenBudget, autoAccept, autoEdit, mode }
+  return { objective: args.join(' '), tokenBudget, autoAccept, autoEdit, mode, retryInterval, maxRetryHours }
 }
 
 function formatGoalStatus(goal: Goal | undefined, todos: TodoItem[] | undefined): string {
@@ -104,7 +123,7 @@ function formatGoalStatus(goal: Goal | undefined, todos: TodoItem[] | undefined)
 
 export const call: LocalJSXCommandCall = async (onDone, context, args) => {
   const argsArray = args ? args.trim().split(/\s+/).filter(Boolean) : []
-  const { objective, action, tokenBudget, autoAccept, autoEdit, mode, editObjective, newBudget } = parseGoalArgs(argsArray)
+  const { objective, action, tokenBudget, autoAccept, autoEdit, mode, editObjective, newBudget, retryInterval, maxRetryHours } = parseGoalArgs(argsArray)
   const appState = context.getAppState()
   let goal = appState.goal
   // Migrate existing goal if it has old schema
