@@ -115,6 +115,47 @@ AI 可以自主探索项目结构，理解代码架构：
 | `/rename` | 重命名当前会话 | `/rename "auth refactor"` |
 | `/compact` | 压缩对话上下文 | `/compact` |
 | `/status` | 查看会话状态 | `/status` |
+| `/goal` | 目标管理（支持长时间兜底重试） | `/goal "帮我写一个排序算法"` |
+
+#### /goal 高级选项
+
+| 参数 | 简写 | 功能 | 默认值 |
+|------|------|------|--------|
+| `--retry-interval` | `-r` | 兜底重试间隔 | 10m (10分钟) |
+| `--max-hours` | `-t` | 最大重试小时数 | 24h |
+| `--budget` | - | Token 预算 | 无上限 |
+| `--auto-edit` | - | 自动批准文件编辑 | 关闭 |
+| `--auto-accept` | - | 自动批准所有操作 | 关闭 |
+
+**示例：**
+```bash
+# 使用默认配置
+/goal "帮我写一个排序算法"
+
+# 自定义重试间隔（5分钟）
+/goal "帮我写一个排序算法" -r 5m
+
+# 自定义最大重试时间（48小时）
+/goal "帮我写一个排序算法" -t 48
+
+# 组合使用
+/goal "帮我写一个排序算法" -r 5m -t 48 --budget 100000
+
+# 查看目标状态
+/goal status
+
+# 暂停/继续目标
+/goal pause
+/goal resume
+
+# 清除目标
+/goal clear
+```
+
+**兜底重试机制：**
+- 阶段 1：指数退避重试（10 次，0.5s → 32s）
+- 阶段 2：如果 10 次都失败，自动进入兜底模式，每 10 分钟重新执行 goal
+- 兜底会在以下情况终止：目标完成、手动取消、超过最大时间、遇到永久错误（401/403）
 
 ### 工具管理类
 
@@ -438,7 +479,7 @@ AI 在执行任务时可自动调用以下工具。用户无需手动调用，�
 **启动方式**：
 ```bash
 claude --chrome              # 启用 Chrome MCP
-CLAUDE_CODE_ENABLE_CFC=1 claude  # 通过环境变量启用
+OLA_CC_ENABLE_CFC=1 claude  # 通过环境变量启用
 ```
 
 ### Voice 语音模式 [VOICE_MODE]
@@ -670,22 +711,22 @@ CLAUDE_CODE_ENABLE_CFC=1 claude  # 通过环境变量启用
 | 环境变量 | 功能 |
 |----------|------|
 | `ANTHROPIC_MODEL` | 覆盖默认模型 |
-| `CLAUDE_CODE_MAX_OUTPUT_TOKENS` | 最大输出 token 数 |
-| `CLAUDE_CODE_DISABLE_THINKING` | 禁用思考过程 |
-| `CLAUDE_CODE_DISABLE_ADAPTIVE_THINKING` | 禁用自适应思考 |
-| `CLAUDE_CODE_SYNTAX_HIGHLIGHT` | 语法高亮主题 |
-| `CLAUDE_CODE_DISABLE_AUTO_MEMORY` | 禁用自动记忆 |
-| `CLAUDE_CODE_IDLE_THRESHOLD_MINUTES` | 空闲阈值（默认 75 分钟） |
-| `CLAUDE_CODE_MAX_TOOL_USE_CONCURRENCY` | 最大工具并发数 |
+| `OLA_CC_MAX_OUTPUT_TOKENS` | 最大输出 token 数 |
+| `OLA_CC_DISABLE_THINKING` | 禁用思考过程 |
+| `OLA_CC_DISABLE_ADAPTIVE_THINKING` | 禁用自适应思考 |
+| `OLA_CC_SYNTAX_HIGHLIGHT` | 语法高亮主题 |
+| `OLA_CC_DISABLE_AUTO_MEMORY` | 禁用自动记忆 |
+| `OLA_CC_IDLE_THRESHOLD_MINUTES` | 空闲阈值（默认 75 分钟） |
+| `OLA_CC_MAX_TOOL_USE_CONCURRENCY` | 最大工具并发数 |
 
 ### 模式开关
 
 | 环境变量 | 功能 |
 |----------|------|
-| `CLAUDE_CODE_PROACTIVE` | 启用主动模式 |
-| `CLAUDE_CODE_COORDINATOR_MODE` | 启用协调器模式 |
-| `CLAUDE_CODE_BRIEF` | 启用简报模式 |
-| `CLAUDE_CODE_ENABLE_CFC` | 强制启用 Chrome MCP (1/0) |
+| `OLA_CC_PROACTIVE` | 启用主动模式 |
+| `OLA_CC_COORDINATOR_MODE` | 启用协调器模式 |
+| `OLA_CC_BRIEF` | 启用简报模式 |
+| `OLA_CC_ENABLE_CFC` | 强制启用 Chrome MCP (1/0) |
 | `CLAUDE_CHROME_PERMISSION_MODE` | Chrome 权限模式 (ask/skip_all/follow_a_plan) |
 
 ### 第三方模型
@@ -702,18 +743,18 @@ CLAUDE_CODE_ENABLE_CFC=1 claude  # 通过环境变量启用
 
 | 环境变量 | 功能 |
 |----------|------|
-| `CLAUDE_CODE_EXTRA_BODY` | API 请求附加 JSON body |
-| `CLAUDE_CODE_EXTRA_METADATA` | API 请求附加元数据 |
-| `CLAUDE_CODE_CLIENT_CERT` | 客户端证书 |
+| `OLA_CC_EXTRA_BODY` | API 请求附加 JSON body |
+| `OLA_CC_EXTRA_METADATA` | API 请求附加元数据 |
+| `OLA_CC_CLIENT_CERT` | 客户端证书 |
 
 ### 会话与身份
 
 | 环境变量 | 功能 |
 |----------|------|
-| `CLAUDE_CODE_OAUTH_TOKEN` | OAuth 令牌 |
-| `CLAUDE_CODE_OAUTH_REFRESH_TOKEN` | OAuth 刷新令牌 |
-| `CLAUDE_CODE_ACCOUNT_UUID` | 帐户 UUID |
-| `CLAUDE_CODE_CUSTOM_OAUTH_URL` | 自定义 OAuth URL |
+| `OLA_CC_OAUTH_TOKEN` | OAuth 令牌 |
+| `OLA_CC_OAUTH_REFRESH_TOKEN` | OAuth 刷新令牌 |
+| `OLA_CC_ACCOUNT_UUID` | 帐户 UUID |
+| `OLA_CC_CUSTOM_OAUTH_URL` | 自定义 OAuth URL |
 
 ---
 
