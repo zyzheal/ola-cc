@@ -1404,10 +1404,11 @@ async function* queryLoop(
 					let retryNumber = (goal.retryCount || 0) + 1;
 					let lastErrorMessage = error.message || "Unknown error";
 
-					// Output immediate notification
+					// Output immediate notification when entering fallback mode
 					const nextRetryAt = new Date(Date.now() + retryConfig.intervalMs);
-					const initialMessage = `⏳ Goal 10 次快速重试均失败，进入兜底重试模式
-   下次重试: ${nextRetryAt.toLocaleTimeString()} (${Math.round(retryConfig.intervalMs / 60000)} 分钟后)
+					const intervalMinutes = Math.round(retryConfig.intervalMs / 60000);
+					const initialMessage = `⏳ Goal 快速重试均失败，进入兜底重试模式
+   下次重试: ${nextRetryAt.toLocaleTimeString()} (${intervalMinutes} 分钟后)
    最大重试时间: ${retryConfig.maxRetryHours} 小时`;
 
 					yield createSystemMessage(initialMessage, "warning");
@@ -1459,9 +1460,11 @@ async function* queryLoop(
 						}));
 
 						// Chunked sleep with heartbeat - check abort every 30 seconds
+						// and yield progress messages to keep session alive
 						const HEARTBEAT_INTERVAL = 30_000;
 						let sleepRemaining = retryConfig.intervalMs;
 						let sleepCancelled = false;
+						let heartbeatCount = 0;
 
 						while (sleepRemaining > 0) {
 							if (toolUseContext.abortController?.signal.aborted) {
@@ -1470,6 +1473,18 @@ async function* queryLoop(
 							}
 
 							const chunk = Math.min(sleepRemaining, HEARTBEAT_INTERVAL);
+							heartbeatCount++;
+
+							// Yield heartbeat progress every 30 seconds
+							const remainingMinutes = Math.ceil(sleepRemaining / 60000);
+							if (sleepRemaining > HEARTBEAT_INTERVAL) {
+								yield {
+									type: "system" as const,
+									subtype: "goal_retry_progress",
+									content: `⏳ 等待中... 距离下次重试还有约 ${remainingMinutes} 分钟`,
+								};
+							}
+
 							try {
 								await sleep(chunk, toolUseContext.abortController?.signal, {
 									abortError: () => new Error("Retry cancelled by user"),
@@ -1494,18 +1509,18 @@ async function* queryLoop(
 						}
 
 						// Execute retry - yield a system message to trigger re-query
+						// The QueryEngine will detect this and re-invoke submitMessage()
 						yield {
 							type: "system" as const,
 							subtype: "goal_retry_trigger",
 							content: "重新尝试执行 Goal...",
 							retryCount: retryNumber,
-						};
+						} as const;
 
 						// Update retry number for next iteration
 						retryNumber++;
 
-						// Break and let the outer loop handle the retry
-						// The goal_retry_trigger message will signal that retry is needed
+						// Break and let the QueryEngine handle the retry
 						return { reason: "goal_retry_triggered", retryCount: retryNumber - 1 };
 					}
 				}

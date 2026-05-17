@@ -72,6 +72,16 @@ export type SystemApiMetricsMessage = SystemMessage
 export type SystemAPIErrorMessage = SystemMessage & { error?: string }
 export type SystemFileSnapshotMessage = SystemMessage
 
+// Goal fallback retry message types
+export type SystemGoalRetryTriggerMessage = SystemMessage & {
+  subtype: 'goal_retry_trigger'
+  retryCount: number
+}
+
+export type SystemGoalRetryStatusMessage = SystemMessage & {
+  subtype: 'goal_retry_status'
+}
+
 export type HookResultMessage = MessageBase & {
   type: 'hook_result'
 }

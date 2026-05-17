@@ -684,10 +684,11 @@ export class QueryEngine {
       maxTurns,
       taskBudget,
     })) {
-      // Check for goal retry trigger - handle before other message processing
-      if (message.type === 'system' && (message as any).subtype === 'goal_retry_trigger') {
-        // This signals that QueryEngine should re-invoke query after the loop completes
-        // The actual retry logic is handled below after the for-await loop
+      // Check for goal retry trigger - this message signals that the query
+      // detected a CannotRetryError and entered fallback retry mode.
+      // The actual retry (re-invoking query) is handled below after the loop.
+      if (message.type === 'system' && message.subtype === 'goal_retry_trigger') {
+        // No-op here: retry is handled after the for-await loop completes
       }
 
       // Record assistant, user, and compact boundary messages
@@ -1056,14 +1057,14 @@ export class QueryEngine {
 
     // Check for goal retry trigger - if present, re-invoke query
     const hasGoalRetryTrigger = messages.some(
-      m => m.type === 'system' && (m as any).subtype === 'goal_retry_trigger'
+      m => m.type === 'system' && m.subtype === 'goal_retry_trigger'
     )
 
     if (hasGoalRetryTrigger) {
       const goal = getAppState().goal
       if (goal && goal.status === ThreadGoalStatus.Active && goal.retryConfig?.enabled) {
         const retryConfig = goal.retryConfig
-        const retryCount = (goal.retryCount || 0)
+        const retryCount = goal.retryCount || 0
 
         // Yield retry status message
         yield {
