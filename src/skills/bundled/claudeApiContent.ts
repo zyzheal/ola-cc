@@ -33,11 +33,11 @@ import typescriptClaudeApiToolUse from './claude-api/typescript/claude-api/tool-
 // All model names are configurable via environment variables for proxy endpoints.
 export const SKILL_MODEL_VARS = {
   OPUS_ID: process.env.CLAUDE_CODE_MODEL_OPUS_46 || 'opus-4-6',
-  OPUS_NAME: process.env.CLAUDE_CODE_OPUS_NAME || 'Opus 4.6',
+  OPUS_NAME: process.env.OLA_CC_OPUS_NAME || 'Opus 4.6',
   SONNET_ID: process.env.CLAUDE_CODE_MODEL_SONNET_46 || 'sonnet-4-6',
-  SONNET_NAME: process.env.CLAUDE_CODE_SONNET_NAME || 'Sonnet 4.6',
+  SONNET_NAME: process.env.OLA_CC_SONNET_NAME || 'Sonnet 4.6',
   HAIKU_ID: process.env.CLAUDE_CODE_MODEL_HAIKU_45 || 'haiku-4-5',
-  HAIKU_NAME: process.env.CLAUDE_CODE_HAIKU_NAME || 'Haiku 4.5',
+  HAIKU_NAME: process.env.OLA_CC_HAIKU_NAME || 'Haiku 4.5',
   // Previous Sonnet ID — used in "do not append date suffixes" example in SKILL.md.
   PREV_SONNET_ID: process.env.CLAUDE_CODE_MODEL_SONNET_45 || 'sonnet-4-5',
 } satisfies Record<string, string>

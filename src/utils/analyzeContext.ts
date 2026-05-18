@@ -22,7 +22,7 @@ import {
 } from '../services/tokenEstimation.js'
 import { estimateSkillFrontmatterTokens } from '../skills/loadSkillsDir.js'
 import {
-  findToolByName,
+  createToolRegistry,
   type Tool,
   type ToolPermissionContext,
   type Tools,
@@ -515,7 +515,7 @@ async function countBuiltInToolTokens(
 }
 
 function findSkillTool(tools: Tools): Tool | undefined {
-  return findToolByName(tools, SKILL_TOOL_NAME)
+  return createToolRegistry(tools).find(SKILL_TOOL_NAME)
 }
 
 async function countSlashCommandTokens(

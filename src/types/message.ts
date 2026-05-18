@@ -50,6 +50,7 @@ export type SystemMessage = MessageBase & {
   subtype?: string
   level?: SystemMessageLevel
   message?: string
+  content?: string
 }
 
 export type SystemLocalCommandMessage = SystemMessage & {
@@ -80,6 +81,14 @@ export type SystemGoalRetryTriggerMessage = SystemMessage & {
 
 export type SystemGoalRetryStatusMessage = SystemMessage & {
   subtype: 'goal_retry_status'
+}
+
+export type SystemGoalRetryProgressMessage = SystemMessage & {
+  subtype: 'goal_retry_progress'
+}
+
+export type SystemGoalRetryAbortedMessage = SystemMessage & {
+  subtype: 'goal_retry_aborted'
 }
 
 export type HookResultMessage = MessageBase & {

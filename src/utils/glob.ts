@@ -299,7 +299,7 @@ export async function glob(
   ig.add('.svn')
 
   // Read .gitignore if it exists and user hasn't disabled it
-  const noIgnore = isEnvTruthy(process.env.CLAUDE_CODE_GLOB_NO_IGNORE || 'true')
+  const noIgnore = isEnvTruthy(process.env.OLA_CC_GLOB_NO_IGNORE || 'true')
   if (!noIgnore) {
     try {
       const { readFile } = await import('fs/promises')
@@ -322,7 +322,7 @@ export async function glob(
   }
 
   // Build file matching predicate
-  const includeHidden = isEnvTruthy(process.env.CLAUDE_CODE_GLOB_HIDDEN || 'true')
+  const includeHidden = isEnvTruthy(process.env.OLA_CC_GLOB_HIDDEN || 'true')
   const filePredicate = globToPredicate(searchPattern)
 
   // Walk with BFS — collect enough results to handle offset + limit

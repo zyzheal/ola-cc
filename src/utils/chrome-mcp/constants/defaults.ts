@@ -36,7 +36,7 @@ export const NATIVE_MESSAGING_DEFAULTS = {
   MANIFEST_NAME: 'com.anthropic.claude_code_browser_extension.json',
   
   /** 包装脚本目录 */
-  WRAPPER_DIR: '~/.claude/chrome',
+  WRAPPER_DIR: '~/.ola-cc/chrome',
   
   /** 包装脚本名称（Unix） */
   WRAPPER_NAME_UNIX: 'chrome-native-host',

@@ -57,7 +57,7 @@ export function logForDiagnosticsNoPII(
 }
 
 function getDiagnosticLogFile(): string | undefined {
-  return process.env.CLAUDE_CODE_DIAGNOSTICS_FILE
+  return process.env.OLA_CC_DIAGNOSTICS_FILE
 }
 
 /**
