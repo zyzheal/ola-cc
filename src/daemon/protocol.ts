@@ -8,6 +8,8 @@ export type DaemonRequest =
   | { type: 'kill_session'; id: string }
   | { type: 'get_logs'; id: string; tail?: number }
   | { type: 'attach_session'; id: string }
+  | { type: 'get_warm_pool_status' }
+  | { type: 'set_warm_pool_size'; size: number }
   | { type: 'ping' }
 
 // Response types from daemon to client
@@ -17,7 +19,22 @@ export type DaemonResponse =
   | { type: 'session_output'; id: string; output: string }
 
 // Session status
-export type SessionStatus = 'starting' | 'running' | 'completed' | 'failed' | 'killed'
+export type SessionStatus = 'starting' | 'running' | 'completed' | 'failed' | 'killed' | 'idle'
+
+/** Internal IPC message to assign work to a warm worker */
+export interface WarmWorkerAssign {
+  type: 'assign_work'
+  sessionId: string
+  prompt: string
+  workdir: string
+  logPath: string
+}
+
+/** Response from warm worker when work is assigned */
+export interface WarmWorkerAck {
+  type: 'work_ack'
+  sessionId: string
+}
 
 export interface SessionInfo {
   id: string

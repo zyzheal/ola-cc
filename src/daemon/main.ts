@@ -12,6 +12,9 @@ import {
   cleanupDeadSessions,
   type SessionEntry,
 } from './sessionRegistry.js'
+import { WarmPool } from './warmPool.js'
+
+const warmPool = new WarmPool()
 
 function generateSessionId(): string {
   return 'sess_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 8)
@@ -60,6 +63,7 @@ async function handleRequest(req: DaemonRequest): Promise<DaemonResponse> {
 
       case 'start_session': {
         const id = generateSessionId()
+        const logPath = await ensureLogPath(id)
         const entry: SessionEntry = {
           id,
           pid: 0,
@@ -71,8 +75,35 @@ async function handleRequest(req: DaemonRequest): Promise<DaemonResponse> {
         }
         await registerSession(entry)
 
-        // Spawn worker via CLI self-invocation
-        const logPath = await ensureLogPath(id)
+        // Try to use a warm worker from the pool
+        const warmWorker = warmPool.acquireWorker()
+        if (warmWorker) {
+          // Assign work to warm worker via IPC
+          const assigned = await warmPool.assignWork(warmWorker, {
+            type: 'assign_work',
+            sessionId: id,
+            prompt: req.prompt,
+            workdir: req.workdir,
+            logPath,
+          })
+
+          if (assigned) {
+            // Worker accepted the work - update session with worker PID
+            entry.pid = warmWorker.pid
+            entry.logPath = logPath
+            entry.usedWarmPool = true
+            await registerSession(entry)
+
+            // Replenish pool asynchronously
+            warmPool.replenish().catch(err => {
+              console.error('[daemon] warm pool replenish failed:', err)
+            })
+            return { type: 'ok', data: { id } }
+          }
+          // If assignment failed, fall through to regular spawn
+        }
+
+        // Fallback: spawn worker via CLI self-invocation
         const child = spawn(
           process.execPath,
           ['--bg-worker', id, '--', req.prompt],
@@ -99,6 +130,15 @@ async function handleRequest(req: DaemonRequest): Promise<DaemonResponse> {
 
         child.unref()
         return { type: 'ok', data: { id } }
+      }
+
+      case 'get_warm_pool_status': {
+        return { type: 'ok', data: warmPool.getStatus() }
+      }
+
+      case 'set_warm_pool_size': {
+        warmPool.setTargetSize(req.size)
+        return { type: 'ok', data: warmPool.getStatus() }
       }
 
       case 'get_logs': {
@@ -172,6 +212,9 @@ export async function daemonMain(args: string[] = []): Promise<void> {
   // Start daemon
   const server = createDaemonSocketServer({ handleRequest })
 
+  // Initialize warm pool
+  await warmPool.initialize()
+
   await new Promise<void>((resolve, reject) => {
     server.listen(getSocketPath(), () => {
       try {
@@ -186,7 +229,8 @@ export async function daemonMain(args: string[] = []): Promise<void> {
   })
 
   // Handle graceful shutdown
-  const shutdown = () => {
+  const shutdown = async () => {
+    await warmPool.shutdown()
     server.close(() => {
       try { fs.unlinkSync(getSocketPath()) } catch {}
       try { fs.unlinkSync(pidFile) } catch {}
