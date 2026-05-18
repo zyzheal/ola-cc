@@ -47,10 +47,10 @@ export class BigQueryMetricsExporter implements PushMetricExporter {
   constructor(options: { timeout?: number } = {}) {
     if (
       process.env.USER_TYPE === 'ant' &&
-      process.env.ANT_CLAUDE_CODE_METRICS_ENDPOINT
+      process.env.ANT_OLA_CC_METRICS_ENDPOINT
     ) {
       this.endpoint =
-        process.env.ANT_CLAUDE_CODE_METRICS_ENDPOINT +
+        process.env.ANT_OLA_CC_METRICS_ENDPOINT +
         '/api/claude_code/metrics'
     } else {
       this.endpoint = getEnvOrThrow('CLAUDE_METRICS_URL')

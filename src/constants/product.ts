@@ -107,6 +107,9 @@ export function getOlaCcAiBaseUrl(
   return OLA_CC_AI_BASE_URL
 }
 
+// Backward compatibility alias (deprecated)
+export const getClaudeAiBaseUrl = getOlaCcAiBaseUrl
+
 /**
  * Get the full session URL for a remote ola-cc session.
  */

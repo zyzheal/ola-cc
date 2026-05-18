@@ -131,13 +131,13 @@ type State = {
   useCoworkPlugins: boolean
   // Session-only bypass permissions mode flag (not persisted)
   sessionBypassPermissionsMode: boolean
-  // Session-only flag gating the .claude/scheduled_tasks.json watcher
+  // Session-only flag gating the .ola-cc/scheduled_tasks.json watcher
   // (useScheduledTasks). Set by cronScheduler.start() when the JSON has
   // entries, or by CronCreateTool. Not persisted.
   scheduledTasksEnabled: boolean
   // Session-only cron tasks created via CronCreate with durable: false.
   // Fire on schedule like file-backed tasks but are never written to
-  // .claude/scheduled_tasks.json — they die with the process. Typed via
+  // .ola-cc/scheduled_tasks.json — they die with the process. Typed via
   // SessionCronTask below (not importing from cronTasks.ts keeps
   // bootstrap a leaf of the import DAG).
   sessionCronTasks: SessionCronTask[]
@@ -925,9 +925,27 @@ export function resetStateForTests(): void {
   if (process.env.NODE_ENV !== 'test') {
     throw new Error('resetStateForTests can only be called in tests')
   }
-  Object.entries(getInitialState()).forEach(([key, value]) => {
-    STATE[key as keyof State] = value as never
-  })
+  // Deep-rebuild STATE from fresh initial values to prevent cross-test
+  // pollution. Shallow assignment (STATE[key] = value) was insufficient
+  // because Map/Set/Array instances were shared between tests — test A
+  // mutating a Map would leak into test B.
+  const fresh = getInitialState()
+  for (const key of Object.keys(fresh) as (keyof State)[]) {
+    const value = fresh[key]
+    if (value instanceof Map) {
+      STATE[key] = new Map() as never
+    } else if (value instanceof Set) {
+      STATE[key] = new Set() as never
+    } else if (Array.isArray(value)) {
+      STATE[key] = [] as never
+    } else if (value && typeof value === 'object') {
+      // Deep-clone nested objects (but not class instances like Meter/Provider)
+      STATE[key] = structuredClone(value) as never
+    } else {
+      // Primitives and nulls: direct assignment is safe
+      STATE[key] = value as never
+    }
+  }
   outputTokensAtTurnStart = 0
   currentTurnTokenBudget = null
   budgetContinuationCount = 0

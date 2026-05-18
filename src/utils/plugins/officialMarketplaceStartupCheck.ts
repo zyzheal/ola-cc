@@ -46,7 +46,7 @@ export type OfficialMarketplaceSkipReason =
  */
 export function isOfficialMarketplaceAutoInstallDisabled(): boolean {
   return isEnvTruthy(
-    process.env.CLAUDE_CODE_DISABLE_OFFICIAL_MARKETPLACE_AUTOINSTALL,
+    process.env.OLA_CC_DISABLE_OFFICIAL_MARKETPLACE_AUTOINSTALL,
   )
 }
 
@@ -56,7 +56,7 @@ export function isOfficialMarketplaceAutoInstallDisabled(): boolean {
  */
 export function shouldKeepMarketplaceCacheOnFailure(): boolean {
   return isEnvTruthy(
-    process.env.CLAUDE_CODE_PLUGIN_KEEP_MARKETPLACE_ON_FAILURE,
+    process.env.OLA_CC_PLUGIN_KEEP_MARKETPLACE_ON_FAILURE,
   )
 }
 

@@ -7,7 +7,7 @@ import {
 import type { SDKMessage } from 'src/entrypoints/agentSdkTypes.js'
 import type { CanUseToolFn } from '../hooks/useCanUseTool.js'
 import { runTools } from '../services/tools/toolOrchestration.js'
-import { findToolByName, type Tool, type Tools } from '../Tool.js'
+import { createToolRegistry, type Tool, type Tools } from '../Tool.js'
 import { BASH_TOOL_NAME } from '../tools/BashTool/toolName.js'
 import { FILE_EDIT_TOOL_NAME } from '../tools/FileEditTool/constants.js'
 import type { Input as FileReadInput } from '../tools/FileReadTool/FileReadTool.js'
@@ -161,8 +161,8 @@ export function* normalizeMessage(message: Message): Generator<SDKMessage> {
         // Filter bash progress to send only one per minute
         // Only emit for ola-cc Remote for now
         if (
-          !isEnvTruthy(process.env.CLAUDE_CODE_REMOTE) &&
-          !process.env.CLAUDE_CODE_CONTAINER_ID
+          !isEnvTruthy(process.env.OLA_CC_REMOTE) &&
+          !process.env.OLA_CC_CONTAINER_ID
         ) {
           break
         }
@@ -253,7 +253,8 @@ export async function* handleOrphanedPermission(
   const toolName = toolUseBlock.name
   const toolInput = toolUseBlock.input
 
-  const toolDefinition = findToolByName(tools, toolName)
+  const toolRegistry = createToolRegistry(tools)
+  const toolDefinition = toolRegistry.find(toolName)
   if (!toolDefinition) {
     return
   }
