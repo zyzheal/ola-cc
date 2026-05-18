@@ -131,7 +131,7 @@ KAIROS 最精巧的子系统——后台运行的子代理，将分散的会话�
 ### 激活方式
 
 - `--proactive` CLI 参数
-- `CLAUDE_CODE_PROACTIVE` 环境变量
+- `OLA_CC_PROACTIVE` 环境变量
 - 受 `feature('PROACTIVE') || feature('KAIROS')` 保护
 
 ### 系统提示

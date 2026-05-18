@@ -202,7 +202,7 @@ const PROD_OAUTH_CONFIG = {
 - 移除 `getLocalOauthConfig()` 函数
 - 简化 `getOauthConfigType()` 只返回 `'prod'`
 - 移除 `ALLOWED_OAUTH_BASE_URLS` 白名单
-- 移除 `CLAUDE_CODE_CUSTOM_OAUTH_URL` override 逻辑
+- 移除 `OLA_CC_CUSTOM_OAUTH_URL` override 逻辑
 
 ### 4. 修改 `src/services/mcp/officialRegistry.ts`
 
@@ -343,7 +343,7 @@ export const CLAUDE_AI_LOCAL_BASE_URL = getEnvOrThrow('CLAUDE_AI_LOCAL_BASE_URL'
 
 ### 10. 处理 `getOauthConfig()` 中的 override 逻辑
 
-现有的 `CLAUDE_CODE_CUSTOM_OAUTH_URL` 覆盖逻辑（行 200-222）整个删除，因为所有 URL 现在都由独立环境变量直接指定，不再需要从 base URL 派生。
+现有的 `OLA_CC_CUSTOM_OAUTH_URL` 覆盖逻辑（行 200-222）整个删除，因为所有 URL 现在都由独立环境变量直接指定，不再需要从 base URL 派生。
 
 ## 错误处理
 
