@@ -50,11 +50,11 @@ export const SwarmPermissionRequestSchema = lazySchema(() =>
   z.object({
     /** Unique identifier for this request */
     id: z.string(),
-    /** Worker's CLAUDE_CODE_AGENT_ID */
+    /** Worker's OLA_CC_AGENT_ID */
     workerId: z.string(),
-    /** Worker's CLAUDE_CODE_AGENT_NAME */
+    /** Worker's OLA_CC_AGENT_NAME */
     workerName: z.string(),
-    /** Worker's CLAUDE_CODE_AGENT_COLOR */
+    /** Worker's OLA_CC_AGENT_COLOR */
     workerColor: z.string().optional(),
     /** Team name for routing */
     teamName: z.string(),
@@ -107,7 +107,7 @@ export type PermissionResolution = {
 
 /**
  * Get the base directory for a team's permission requests
- * Path: ~/.claude/teams/{teamName}/permissions/
+ * Path: ~/.ola-cc/teams/{teamName}/permissions/
  */
 export function getPermissionDir(teamName: string): string {
   return join(getTeamDir(teamName), 'permissions')

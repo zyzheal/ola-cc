@@ -3,19 +3,40 @@ import memoize from 'lodash-es/memoize.js'
 import { homedir } from 'os'
 import { join } from 'path'
 
-// Memoized: 150+ callers, many on hot paths. Keyed off CLAUDE_CONFIG_DIR so
+/**
+ * Env var alias helper. Checks `OLA_CC_${name}` first, falls back to
+ * `CLAUDE_CODE_${name}` for backward compatibility.
+ *
+ * Use this for provider-facing env vars (e.g. USE_OPENAI, MODEL_*) that
+ * external users may still reference by the legacy name.
+ */
+export function envAlias(name: string): string | undefined {
+  return process.env[`OLA_CC_${name}`] ?? process.env[`CLAUDE_CODE_${name}`]
+}
+
+/**
+ * Like envAlias but returns the boolean-truthy interpretation.
+ */
+export function envAliasTruthy(name: string): boolean {
+  return isEnvTruthy(envAlias(name))
+}
+
+// Memoized: 150+ callers, many on hot paths. Keyed off OLA_CC_CONFIG_DIR so
 // tests that change the env var get a fresh value without explicit cache.clear.
-export const getClaudeConfigHomeDir = memoize(
+export const getOlaCcConfigHomeDir = memoize(
   (): string => {
     return (
-      process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), '.claude')
+      process.env.OLA_CC_CONFIG_DIR ?? join(homedir(), '.ola-cc')
     ).normalize('NFC')
   },
-  () => process.env.CLAUDE_CONFIG_DIR,
+  () => process.env.OLA_CC_CONFIG_DIR,
 )
 
+// Backward compatibility alias (deprecated - use getOlaCcConfigHomeDir)
+export const getClaudeConfigHomeDir = getOlaCcConfigHomeDir
+
 export function getTeamsDir(): string {
-  return join(getClaudeConfigHomeDir(), 'teams')
+  return join(getOlaCcConfigHomeDir(), 'teams')
 }
 
 /**
@@ -48,19 +69,19 @@ export function isEnvDefinedFalsy(
 }
 
 /**
- * --bare / CLAUDE_CODE_SIMPLE — skip hooks, LSP, plugin sync, skill dir-walk,
+ * --bare / OLA_CC_SIMPLE — skip hooks, LSP, plugin sync, skill dir-walk,
  * attribution, background prefetches, and ALL keychain/credential reads.
  * Auth is strictly ANTHROPIC_API_KEY env or apiKeyHelper from --settings.
  * Explicit CLI flags (--plugin-dir, --add-dir, --mcp-config) still honored.
  * ~30 gates across the codebase.
  *
  * Checks argv directly (in addition to the env var) because several gates
- * run before main.tsx's action handler sets CLAUDE_CODE_SIMPLE=1 from --bare
+ * run before main.tsx's action handler sets OLA_CC_SIMPLE=1 from --bare
  * — notably startKeychainPrefetch() at main.tsx top-level.
  */
 export function isBareMode(): boolean {
   return (
-    isEnvTruthy(process.env.CLAUDE_CODE_SIMPLE) ||
+    isEnvTruthy(process.env.OLA_CC_SIMPLE) ||
     process.argv.includes('--bare')
   )
 }
@@ -193,7 +214,7 @@ export function getEnvOrThrow(name: string): string {
     try {
       const home = process.env.HOME || process.env.USERPROFILE || ''
       if (home) {
-        const settingsPath = join(home, '.claude', 'settings.json')
+        const settingsPath = join(home, '.ola-cc', 'settings.json')
         const raw = readFileSync(settingsPath, 'utf-8')
         const parsed = JSON.parse(raw)
         value = parsed?.env?.[name]
@@ -205,7 +226,7 @@ export function getEnvOrThrow(name: string): string {
   if (!value) {
     throw new Error(
       `Missing required environment variable: ${name}. ` +
-      `Please configure it in process.env or ~/.claude/settings.json env field.`,
+      `Please configure it in process.env or ~/.ola-cc/settings.json env field.`,
     )
   }
   return value

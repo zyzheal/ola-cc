@@ -2,9 +2,9 @@
  * Environment variables that control inference routing: which provider to use,
  * which endpoint to hit, and which model IDs to send.
  *
- * When CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST is truthy in the spawn env, these
+ * When OLA_CC_PROVIDER_MANAGED_BY_HOST is truthy in the spawn env, these
  * are stripped from settings-sourced env so the host's routing config isn't
- * overridden by a user's ~/.claude/settings.json — e.g. a Bedrock setup for
+ * overridden by a user's ~/.ola-cc/settings.json — e.g. a Bedrock setup for
  * terminal CLI that would break a host that only supports first-party auth.
  *
  * @[MODEL LAUNCH]: New models usually don't need changes here —
@@ -13,7 +13,7 @@
  */
 const PROVIDER_MANAGED_ENV_VARS = new Set([
   // The flag itself — settings can't unset it once the host set it
-  'CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST',
+  'OLA_CC_PROVIDER_MANAGED_BY_HOST',
   // Provider selection
   'CLAUDE_CODE_USE_BEDROCK',
   'CLAUDE_CODE_USE_VERTEX',
@@ -30,7 +30,7 @@ const PROVIDER_MANAGED_ENV_VARS = new Set([
   // Auth
   'ANTHROPIC_API_KEY',
   'ANTHROPIC_AUTH_TOKEN',
-  'CLAUDE_CODE_OAUTH_TOKEN',
+  'OLA_CC_OAUTH_TOKEN',
   'AWS_BEARER_TOKEN_BEDROCK',
   'ANTHROPIC_FOUNDRY_API_KEY',
   'CLAUDE_CODE_SKIP_BEDROCK_AUTH',
@@ -52,7 +52,7 @@ const PROVIDER_MANAGED_ENV_VARS = new Set([
   'ANTHROPIC_DEFAULT_SONNET_MODEL_SUPPORTED_CAPABILITIES',
   'ANTHROPIC_SMALL_FAST_MODEL',
   'ANTHROPIC_SMALL_FAST_MODEL_AWS_REGION',
-  'CLAUDE_CODE_SUBAGENT_MODEL',
+  'OLA_CC_SUBAGENT_MODEL',
 ])
 
 const PROVIDER_MANAGED_ENV_PREFIXES = [
@@ -133,18 +133,18 @@ export const SAFE_ENV_VARS = new Set([
   'BASH_MAX_OUTPUT_LENGTH',
   'BASH_MAX_TIMEOUT_MS',
   'CLAUDE_BASH_MAINTAIN_PROJECT_WORKING_DIR',
-  'CLAUDE_CODE_API_KEY_HELPER_TTL_MS',
-  'CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS',
-  'CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC',
-  'CLAUDE_CODE_DISABLE_TERMINAL_TITLE',
-  'CLAUDE_CODE_ENABLE_TELEMETRY',
-  'CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS',
+  'OLA_CC_API_KEY_HELPER_TTL_MS',
+  'OLA_CC_DISABLE_EXPERIMENTAL_BETAS',
+  'OLA_CC_DISABLE_NONESSENTIAL_TRAFFIC',
+  'OLA_CC_DISABLE_TERMINAL_TITLE',
+  'OLA_CC_ENABLE_TELEMETRY',
+  'OLA_CC_EXPERIMENTAL_AGENT_TEAMS',
   'CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL',
-  'CLAUDE_CODE_MAX_OUTPUT_TOKENS',
+  'OLA_CC_MAX_OUTPUT_TOKENS',
   'CLAUDE_CODE_SKIP_BEDROCK_AUTH',
   'CLAUDE_CODE_SKIP_FOUNDRY_AUTH',
   'CLAUDE_CODE_SKIP_VERTEX_AUTH',
-  'CLAUDE_CODE_SUBAGENT_MODEL',
+  'OLA_CC_SUBAGENT_MODEL',
   'CLAUDE_CODE_USE_BEDROCK',
   'CLAUDE_CODE_USE_FOUNDRY',
   'CLAUDE_CODE_USE_VERTEX',

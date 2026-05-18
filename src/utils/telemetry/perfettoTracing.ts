@@ -13,11 +13,11 @@
  * - User input waiting time
  *
  * Usage:
- * 1. Enable via CLAUDE_CODE_PERFETTO_TRACE=1 or CLAUDE_CODE_PERFETTO_TRACE=<path>
- * 2. Optionally set CLAUDE_CODE_PERFETTO_WRITE_INTERVAL_S=<positive integer> to write the
+ * 1. Enable via OLA_CC_PERFETTO_TRACE=1 or OLA_CC_PERFETTO_TRACE=<path>
+ * 2. Optionally set OLA_CC_PERFETTO_WRITE_INTERVAL_S=<positive integer> to write the
  *    trace file periodically (default: write only on exit).
  * 3. Run ola-cc normally
- * 4. Trace file is written to ~/.claude/traces/trace-<session-id>.json
+ * 4. Trace file is written to ~/.ola-cc/traces/trace-<session-id>.json
  *    or to the specified path
  * 5. Open in ui.perfetto.dev to visualize
  */
@@ -251,7 +251,7 @@ function evictOldestEvents(): void {
  * Call this early in the application lifecycle
  */
 export function initializePerfettoTracing(): void {
-  const envValue = process.env.CLAUDE_CODE_PERFETTO_TRACE
+  const envValue = process.env.OLA_CC_PERFETTO_TRACE
   logForDebugging(
     `[Perfetto] initializePerfettoTracing called, env value: ${envValue}`,
   )
@@ -281,9 +281,9 @@ export function initializePerfettoTracing(): void {
       `[Perfetto] Tracing enabled, will write to: ${tracePath}, isEnabled=${isEnabled}`,
     )
 
-    // Start periodic full-trace write if CLAUDE_CODE_PERFETTO_WRITE_INTERVAL_S is a positive integer
+    // Start periodic full-trace write if OLA_CC_PERFETTO_WRITE_INTERVAL_S is a positive integer
     const intervalSec = parseInt(
-      process.env.CLAUDE_CODE_PERFETTO_WRITE_INTERVAL_S ?? '',
+      process.env.OLA_CC_PERFETTO_WRITE_INTERVAL_S ?? '',
       10,
     )
     if (intervalSec > 0) {

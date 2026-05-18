@@ -144,7 +144,7 @@ import {
 } from './hooks/hookEvents.js'
 import { createAttachmentMessage } from './attachments.js'
 import { all } from './generators.js'
-import { findToolByName, type Tools, type ToolUseContext } from '../Tool.js'
+import { createToolRegistry, type Tools, type ToolUseContext } from '../Tool.js'
 import { execPromptHook } from './hooks/execPromptHook.js'
 import type { Message, AssistantMessage } from '../types/message.js'
 import { execAgentHook } from './hooks/execAgentHook.js'
@@ -174,7 +174,7 @@ const TOOL_HOOK_EXECUTION_TIMEOUT_MS = 10 * 60 * 1000
  */
 const SESSION_END_HOOK_TIMEOUT_MS_DEFAULT = 1500
 export function getSessionEndHookTimeoutMs(): number {
-  const raw = process.env.CLAUDE_CODE_SESSIONEND_HOOKS_TIMEOUT_MS
+  const raw = process.env.OLA_CC_SESSIONEND_HOOKS_TIMEOUT_MS
   const parsed = raw ? parseInt(raw, 10) : NaN
   return Number.isFinite(parsed) && parsed > 0
     ? parsed
@@ -268,7 +268,7 @@ function executeInBackground({
  * Checks if a hook should be skipped due to lack of workspace trust.
  *
  * ALL hooks require workspace trust because they execute arbitrary commands from
- * .claude/settings.json. This is a defense-in-depth security measure.
+ * .ola-cc/settings.json. This is a defense-in-depth security measure.
  *
  * Context: Hooks are captured via captureHooksConfigSnapshot() before the trust
  * dialog is shown. While most hooks won't execute until after trust is established
@@ -741,7 +741,7 @@ function processHookJSONOutput({
  *
  * Shell resolution: hook.shell → 'bash'. PowerShell hooks spawn pwsh
  * with -NoProfile -NonInteractive -Command and skip bash-specific prep
- * (POSIX path conversion, .sh auto-prepend, CLAUDE_CODE_SHELL_PREFIX).
+ * (POSIX path conversion, .sh auto-prepend, OLA_CC_SHELL_PREFIX).
  * See docs/design/ps-shell-selection.md §5.1.
  */
 async function execCommandHook(
@@ -865,13 +865,13 @@ async function execCommandHook(
     }
   }
 
-  // CLAUDE_CODE_SHELL_PREFIX wraps the command via POSIX quoting
+  // OLA_CC_SHELL_PREFIX wraps the command via POSIX quoting
   // (formatShellPrefixCommand uses shell-quote). This makes no sense for
   // PowerShell — see design §8.1. For now PS hooks ignore the prefix;
-  // a CLAUDE_CODE_PS_SHELL_PREFIX (or shell-aware prefix) is a follow-up.
+  // a OLA_CC_PS_SHELL_PREFIX (or shell-aware prefix) is a follow-up.
   const finalCommand =
-    !isPowerShell && process.env.CLAUDE_CODE_SHELL_PREFIX
-      ? formatShellPrefixCommand(process.env.CLAUDE_CODE_SHELL_PREFIX, command)
+    !isPowerShell && process.env.OLA_CC_SHELL_PREFIX
+      ? formatShellPrefixCommand(process.env.OLA_CC_SHELL_PREFIX, command)
       : command
 
   const hookTimeoutMs = hook.timeout
@@ -1401,7 +1401,7 @@ async function prepareIfConditionMatcher(
   }
 
   const toolName = normalizeLegacyToolName(hookInput.tool_name)
-  const tool = tools && findToolByName(tools, hookInput.tool_name)
+  const tool = tools && createToolRegistry(tools).find(hookInput.tool_name)
   const input = tool?.inputSchema.safeParse(hookInput.tool_input)
   const patternMatcher =
     input?.success && tool?.preparePermissionMatcher
@@ -1979,7 +1979,7 @@ async function* executeHooks({
     return
   }
 
-  if (isEnvTruthy(process.env.CLAUDE_CODE_SIMPLE)) {
+  if (isEnvTruthy(process.env.OLA_CC_SIMPLE)) {
     return
   }
 
@@ -2740,8 +2740,22 @@ async function* executeHooks({
 
   let permissionBehavior: PermissionResult['behavior'] | undefined
 
-  // Run all hooks in parallel and wait for all to complete
-  for await (const result of all(hookPromises)) {
+  // Determine concurrency cap based on hook types.
+  // Command/prompt hooks spawn subprocesses — cap to avoid fork storms.
+  // HTTP/callback/function hooks are lightweight.
+  const hasHeavyHooks = matchingHooks.some(
+    h => h.hook.type === 'command' || h.hook.type === 'prompt',
+  )
+  const commandHookCount = matchingHooks.filter(h => h.hook.type === 'command').length
+  const envCap = process.env.OLA_CC_HOOK_CONCURRENCY_CAP
+    ? parseInt(process.env.OLA_CC_HOOK_CONCURRENCY_CAP, 10)
+    : undefined
+  const concurrencyCap = hasHeavyHooks
+    ? envCap ?? Math.min(commandHookCount + 2, 10)
+    : Infinity
+
+  // Run all hooks in parallel with concurrency control
+  for await (const result of all(hookPromises, concurrencyCap)) {
     outcomes[result.outcome]++
 
     // Check for preventContinuation early
@@ -3013,7 +3027,7 @@ async function executeHooksOutsideREPL({
   signal?: AbortSignal
   timeoutMs: number
 }): Promise<HookOutsideReplResult[]> {
-  if (isEnvTruthy(process.env.CLAUDE_CODE_SIMPLE)) {
+  if (isEnvTruthy(process.env.OLA_CC_SIMPLE)) {
     return []
   }
 
@@ -4321,7 +4335,7 @@ export function hasInstructionsLoadedHook(): boolean {
 
 /**
  * Execute InstructionsLoaded hooks when an instruction file (CLAUDE.md or
- * .claude/rules/*.md) is loaded into context. Fire-and-forget — this hook is
+ * .ola-cc/rules/*.md) is loaded into context. Fire-and-forget — this hook is
  * for observability/audit only and does not support blocking.
  *
  * Dispatch sites:

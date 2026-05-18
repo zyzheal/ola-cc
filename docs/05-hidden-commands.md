@@ -130,16 +130,16 @@ Claude Code 中有大量未公开的斜杠命令、CLI 参数和环境变量。
 | 环境变量 | 功能 |
 |----------|------|
 | `ANTHROPIC_MODEL` | 覆盖默认模型 |
-| `CLAUDE_CODE_MAX_OUTPUT_TOKENS` | 最大输出 token 数 |
-| `CLAUDE_CODE_DISABLE_THINKING` | 禁用思考 |
-| `CLAUDE_CODE_DISABLE_ADAPTIVE_THINKING` | 禁用自适应思考 |
-| `CLAUDE_CODE_PROACTIVE` | 主动模式 |
-| `CLAUDE_CODE_COORDINATOR_MODE` | 协调器模式 |
-| `CLAUDE_CODE_BRIEF` | 简报模式 |
-| `CLAUDE_CODE_SYNTAX_HIGHLIGHT` | 语法高亮主题 |
-| `CLAUDE_CODE_DISABLE_AUTO_MEMORY` | 禁用自动记忆 |
-| `CLAUDE_CODE_IDLE_THRESHOLD_MINUTES` | 空闲阈值（默认 75 分钟） |
-| `CLAUDE_CODE_MAX_TOOL_USE_CONCURRENCY` | 最大工具并发数 |
+| `OLA_CC_MAX_OUTPUT_TOKENS` | 最大输出 token 数 |
+| `OLA_CC_DISABLE_THINKING` | 禁用思考 |
+| `OLA_CC_DISABLE_ADAPTIVE_THINKING` | 禁用自适应思考 |
+| `OLA_CC_PROACTIVE` | 主动模式 |
+| `OLA_CC_COORDINATOR_MODE` | 协调器模式 |
+| `OLA_CC_BRIEF` | 简报模式 |
+| `OLA_CC_SYNTAX_HIGHLIGHT` | 语法高亮主题 |
+| `OLA_CC_DISABLE_AUTO_MEMORY` | 禁用自动记忆 |
+| `OLA_CC_IDLE_THRESHOLD_MINUTES` | 空闲阈值（默认 75 分钟） |
+| `OLA_CC_MAX_TOOL_USE_CONCURRENCY` | 最大工具并发数 |
 
 ### 第三方模型集成
 
@@ -155,20 +155,20 @@ Claude Code 中有大量未公开的斜杠命令、CLI 参数和环境变量。
 
 | 环境变量 | 功能 |
 |----------|------|
-| `CLAUDE_CODE_EXTRA_BODY` | API 请求附加 JSON body |
-| `CLAUDE_CODE_EXTRA_METADATA` | API 请求附加元数据 |
-| `CLAUDE_CODE_CLIENT_CERT` | 客户端证书 |
-| `CLAUDE_CODE_ATTRIBUTION_HEADER` | 归属头部 |
+| `OLA_CC_EXTRA_BODY` | API 请求附加 JSON body |
+| `OLA_CC_EXTRA_METADATA` | API 请求附加元数据 |
+| `OLA_CC_CLIENT_CERT` | 客户端证书 |
+| `OLA_CC_ATTRIBUTION_HEADER` | 归属头部 |
 
 ### 会话与身份
 
 | 环境变量 | 功能 |
 |----------|------|
-| `CLAUDE_CODE_OAUTH_TOKEN` | OAuth 令牌 |
-| `CLAUDE_CODE_OAUTH_REFRESH_TOKEN` | OAuth 刷新令牌 |
-| `CLAUDE_CODE_ACCOUNT_UUID` | 帐户 UUID |
-| `CLAUDE_CODE_ORGANIZATION_UUID` | 组织 UUID |
-| `CLAUDE_CODE_CUSTOM_OAUTH_URL` | 自定义 OAuth URL |
+| `OLA_CC_OAUTH_TOKEN` | OAuth 令牌 |
+| `OLA_CC_OAUTH_REFRESH_TOKEN` | OAuth 刷新令牌 |
+| `OLA_CC_ACCOUNT_UUID` | 帐户 UUID |
+| `OLA_CC_ORGANIZATION_UUID` | 组织 UUID |
+| `OLA_CC_CUSTOM_OAUTH_URL` | 自定义 OAuth URL |
 
 ### 仅内部用户
 

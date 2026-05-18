@@ -81,11 +81,11 @@ export function getSkillsPath(
 ): string {
   switch (source) {
     case 'policySettings':
-      return join(getManagedFilePath(), '.claude', dir)
+      return join(getManagedFilePath(), '.ola-cc', dir)
     case 'userSettings':
       return join(getClaudeConfigHomeDir(), dir)
     case 'projectSettings':
-      return `.claude/${dir}`
+      return `.ola-cc/${dir}`
     case 'plugin':
       return 'plugin'
     default:
@@ -638,7 +638,7 @@ async function loadSkillsFromCommandsDir(
 export const getSkillDirCommands = memoize(
   async (cwd: string): Promise<Command[]> => {
     const userSkillsDir = join(getClaudeConfigHomeDir(), 'skills')
-    const managedSkillsDir = join(getManagedFilePath(), '.claude', 'skills')
+    const managedSkillsDir = join(getManagedFilePath(), '.ola-cc', 'skills')
     const projectSkillsDirs = getProjectDirsUpToHome('skills', cwd)
 
     logForDebugging(
@@ -665,7 +665,7 @@ export const getSkillDirCommands = memoize(
       const additionalSkillsNested = await Promise.all(
         additionalDirs.map(dir =>
           loadSkillsFromSkillsDir(
-            join(dir, '.claude', 'skills'),
+            join(dir, '.ola-cc', 'skills'),
             'projectSettings',
           ),
         ),
@@ -683,7 +683,7 @@ export const getSkillDirCommands = memoize(
       additionalSkillsNested,
       legacyCommands,
     ] = await Promise.all([
-      isEnvTruthy(process.env.CLAUDE_CODE_DISABLE_POLICY_SKILLS)
+      isEnvTruthy(process.env.OLA_CC_DISABLE_POLICY_SKILLS)
         ? Promise.resolve([])
         : loadSkillsFromSkillsDir(managedSkillsDir, 'policySettings'),
       isSettingSourceEnabled('userSettings') && !skillsLocked
@@ -700,7 +700,7 @@ export const getSkillDirCommands = memoize(
         ? Promise.all(
             additionalDirs.map(dir =>
               loadSkillsFromSkillsDir(
-                join(dir, '.claude', 'skills'),
+                join(dir, '.ola-cc', 'skills'),
                 'projectSettings',
               ),
             ),
@@ -799,15 +799,125 @@ export const getSkillDirCommands = memoize(
       `Loaded ${deduplicatedSkills.length} unique skills (${unconditionalSkills.length} unconditional, ${newConditionalSkills.length} conditional, managed: ${managedSkills.length}, user: ${userSkills.length}, project: ${projectSkillsNested.flat().length}, additional: ${additionalSkillsNested.flat().length}, legacy commands: ${legacyCommands.length})`,
     )
 
-    return unconditionalSkills
+    // Apply skillOverrides: filter disabled skills, apply description/model overrides
+    return applyOverridesToSkills(unconditionalSkills)
   },
 )
+
+/**
+ * Applies skillOverrides from settings to a list of skills.
+ * Filters out disabled skills and applies description/model overrides.
+ * Uses dynamic import to avoid circular dependencies.
+ */
+async function applyOverridesToSkills(skills: Command[]): Promise<Command[]> {
+  let overrides: Record<string, { disabled?: boolean; descriptionOverride?: string; modelOverride?: string }> | undefined
+  try {
+    const { getInitialSettings } = await import('../utils/settings/settings.js')
+    const settings = getInitialSettings()
+    overrides = (settings as Record<string, unknown>).skillOverrides as typeof overrides | undefined
+  } catch {
+    // If settings can't be loaded, return skills unchanged
+    return skills
+  }
+
+  if (!overrides || Object.keys(overrides).length === 0) {
+    return skills
+  }
+
+  return skills
+    .filter(skill => {
+      const override = overrides?.[skill.name]
+      return !(override?.disabled === true)
+    })
+    .map(skill => {
+      const override = overrides?.[skill.name]
+      if (!override || (!override.descriptionOverride && !override.modelOverride)) {
+        return skill
+      }
+
+      // Create a modified copy of the skill with overrides applied
+      const modified = { ...skill }
+      if (override.descriptionOverride) {
+        modified.description = override.descriptionOverride
+        modified.hasUserSpecifiedDescription = true
+      }
+      if (override.modelOverride && 'model' in modified) {
+        const parsed = parseUserSpecifiedModel(override.modelOverride)
+        ;(modified as PromptCommand).model = parsed ?? override.modelOverride
+      }
+      return modified
+    })
+}
+
+/**
+ * Applies skillOverrides to a single dynamic skill in-place.
+ * Returns true if the skill should be kept, false if it should be filtered out.
+ */
+function applyOverridesToDynamicSkill(skill: Command, overrides: Record<string, { disabled?: boolean; descriptionOverride?: string; modelOverride?: string }>): boolean {
+  const override = overrides[skill.name]
+  if (override?.disabled === true) {
+    return false
+  }
+  if (override && (override.descriptionOverride || override.modelOverride)) {
+    if (override.descriptionOverride) {
+      skill.description = override.descriptionOverride
+      skill.hasUserSpecifiedDescription = true
+    }
+    if (override.modelOverride && 'model' in skill) {
+      const parsed = parseUserSpecifiedModel(override.modelOverride)
+      ;(skill as PromptCommand).model = parsed ?? override.modelOverride
+    }
+  }
+  return true
+}
+
+/**
+ * Cached overrides for dynamic skill application (avoid re-reading settings on every file operation).
+ */
+let cachedSkillOverrides: Record<string, { disabled?: boolean; descriptionOverride?: string; modelOverride?: string }> | null = null
+
+async function getSkillOverridesFromSettings(): Promise<Record<string, { disabled?: boolean; descriptionOverride?: string; modelOverride?: string }>> {
+  if (cachedSkillOverrides !== null) {
+    return cachedSkillOverrides
+  }
+  try {
+    const { getInitialSettings } = await import('../utils/settings/settings.js')
+    const settings = getInitialSettings()
+    cachedSkillOverrides = (settings as Record<string, unknown>).skillOverrides as typeof cachedSkillOverrides | undefined
+    cachedSkillOverrides ??= {}
+  } catch {
+    cachedSkillOverrides = {}
+  }
+  return cachedSkillOverrides
+}
+
+/**
+ * Invalidate cached skill overrides (call when settings change).
+ */
+export function invalidateSkillOverridesCache(): void {
+  cachedSkillOverrides = null
+}
+
+/**
+ * Subscribe to settings changes to invalidate the skill overrides cache.
+ * Call once during app initialization.
+ */
+export function initializeSkillOverridesCacheInvalidation(): void {
+  import('../utils/settings/changeDetector.js').then(({ subscribe }) => {
+    subscribe(() => {
+      invalidateSkillOverridesCache()
+    })
+  }).catch(() => {
+    // changeDetector may not be available in all builds; fail silently
+  })
+}
 
 export function clearSkillCaches() {
   getSkillDirCommands.cache?.clear?.()
   loadMarkdownFilesForSubdir.cache?.clear?.()
   conditionalSkills.clear()
   activatedConditionalSkillNames.clear()
+  invalidateSkillOverridesCache()
 }
 
 // Backwards-compatible aliases for tests
@@ -874,7 +984,7 @@ export async function discoverSkillDirsForPaths(
     // CWD-level skills are already loaded at startup, so we only discover nested ones
     // Use prefix+separator check to avoid matching /project-backup when cwd is /project
     while (currentDir.startsWith(resolvedCwd + pathSep)) {
-      const skillDir = join(currentDir, '.claude', 'skills')
+      const skillDir = join(currentDir, '.ola-cc', 'skills')
 
       // Skip if we've already checked this path (hit or miss) — avoids
       // repeating the same failed stat on every Read/Write/Edit call when
@@ -884,7 +994,7 @@ export async function discoverSkillDirsForPaths(
         try {
           await fs.stat(skillDir)
           // Skills dir exists. Before loading, check if the containing dir
-          // is gitignored — blocks e.g. node_modules/pkg/.claude/skills from
+          // is gitignored — blocks e.g. node_modules/pkg/.ola-cc/skills from
           // loading silently. `git check-ignore` handles nested .gitignore,
           // .git/info/exclude, and global gitignore. Fails open outside a
           // git repo (exit 128 → false); the invocation-time trust dialog
@@ -941,11 +1051,16 @@ export async function addSkillDirectories(dirs: string[]): Promise<void> {
     dirs.map(dir => loadSkillsFromSkillsDir(dir, 'projectSettings')),
   )
 
+  // Get skillOverrides once for this batch
+  const overrides = await getSkillOverridesFromSettings()
+
   // Process in reverse order (shallower first) so deeper paths override
   for (let i = loadedSkills.length - 1; i >= 0; i--) {
     for (const { skill } of loadedSkills[i] ?? []) {
       if (skill.type === 'prompt') {
-        dynamicSkills.set(skill.name, skill)
+        if (applyOverridesToDynamicSkill(skill, overrides)) {
+          dynamicSkills.set(skill.name, skill)
+        }
       }
     }
   }
@@ -1027,6 +1142,14 @@ export function activateConditionalSkillsForPaths(
       }
 
       if (skillIgnore.ignores(relativePath)) {
+        // Apply skillOverrides before activating
+        // Use cached overrides (should be populated by prior getSkillOverridesFromSettings call)
+        const overrides = cachedSkillOverrides ?? {}
+        if (!applyOverridesToDynamicSkill(skill, overrides)) {
+          // Skill is disabled - remove from conditional without activating
+          conditionalSkills.delete(name)
+          break
+        }
         // Activate this skill by moving it to dynamic skills
         dynamicSkills.set(name, skill)
         conditionalSkills.delete(name)

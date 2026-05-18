@@ -114,9 +114,9 @@ const PROD_OAUTH_CONFIG = {
 
 删除 `src/constants/oauth.ts` 中的 `ALLOWED_OAUTH_BASE_URLS` 数组定义（约行 179-183）。
 
-- [ ] **Step 5: 删除 `CLAUDE_CODE_CUSTOM_OAUTH_URL` override 逻辑**
+- [ ] **Step 5: 删除 `OLA_CC_CUSTOM_OAUTH_URL` override 逻辑**
 
-删除 `getOauthConfig()` 函数中处理 `CLAUDE_CODE_CUSTOM_OAUTH_URL` 的代码块（约行 200-222）。
+删除 `getOauthConfig()` 函数中处理 `OLA_CC_CUSTOM_OAUTH_URL` 的代码块（约行 200-222）。
 
 - [ ] **Step 6: 简化 `getOauthConfig()` 函数**
 
@@ -290,16 +290,16 @@ import { getEnvOrThrow } from '../../constants/oauth.js'
 const defaultEndpoint = getEnvOrThrow('CLAUDE_METRICS_URL')
 ```
 
-同时需要处理 `ANT_CLAUDE_CODE_METRICS_ENDPOINT` 的拼接逻辑。完整替换 constructor:
+同时需要处理 `ANT_OLA_CC_METRICS_ENDPOINT` 的拼接逻辑。完整替换 constructor:
 
 ```typescript
   constructor(options: { timeout?: number } = {}) {
     if (
       process.env.USER_TYPE === 'ant' &&
-      process.env.ANT_CLAUDE_CODE_METRICS_ENDPOINT
+      process.env.ANT_OLA_CC_METRICS_ENDPOINT
     ) {
       this.endpoint =
-        process.env.ANT_CLAUDE_CODE_METRICS_ENDPOINT +
+        process.env.ANT_OLA_CC_METRICS_ENDPOINT +
         '/api/claude_code/metrics'
     } else {
       this.endpoint = getEnvOrThrow('CLAUDE_METRICS_URL')
