@@ -684,12 +684,10 @@ export class QueryEngine {
       maxTurns,
       taskBudget,
     })) {
-      // Check for goal retry trigger - this message signals that the query
+      // Check for goal retry trigger/aborted - these messages signal that the query
       // detected a CannotRetryError and entered fallback retry mode.
       // The actual retry (re-invoking query) is handled below after the loop.
-      if (message.type === 'system' && message.subtype === 'goal_retry_trigger') {
-        // No-op here: retry is handled after the for-await loop completes
-      }
+      // Note: both triggers are handled post-loop in the messages.some() check below.
 
       // Record assistant, user, and compact boundary messages
       if (
@@ -1055,15 +1053,23 @@ export class QueryEngine {
       }
     }
 
-    // Check for goal retry trigger - if present, re-invoke query
+    // Check for goal retry trigger/aborted messages from query.ts fallback retry loop
+    // NOTE: query.ts yields goal_retry_trigger AFTER sleep completes, so if the user
+    // cancels during sleep, this message is never written and no retry occurs.
     const hasGoalRetryTrigger = messages.some(
       m => m.type === 'system' && m.subtype === 'goal_retry_trigger'
     )
+    const hasGoalRetryAborted = messages.some(
+      m => m.type === 'system' && m.subtype === 'goal_retry_aborted'
+    )
 
-    if (hasGoalRetryTrigger) {
+    // Aborted takes priority: user cancelled, timed out, or goal was paused/cleared
+    if (hasGoalRetryAborted) {
+      // No retry — just let the result flow through to normal processing
+      // The warning messages are already in the messages array for UI display
+    } else if (hasGoalRetryTrigger) {
       const goal = getAppState().goal
       if (goal && goal.status === ThreadGoalStatus.Active && goal.retryConfig?.enabled) {
-        const retryConfig = goal.retryConfig
         const retryCount = goal.retryCount || 0
 
         // Yield retry status message

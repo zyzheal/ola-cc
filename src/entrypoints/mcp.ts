@@ -11,7 +11,7 @@ import { getDefaultAppState } from 'src/state/AppStateStore.js'
 import review from '../commands/review.js'
 import type { Command } from '../commands.js'
 import {
-  findToolByName,
+  createToolRegistry,
   getEmptyToolPermissionContext,
   type ToolUseContext,
 } from '../Tool.js'
@@ -102,7 +102,7 @@ export async function startMCPServer(
       const toolPermissionContext = getEmptyToolPermissionContext()
       // TODO: Also re-expose any MCP tools
       const tools = getTools(toolPermissionContext)
-      const tool = findToolByName(tools, name)
+      const tool = createToolRegistry(tools).find(name)
       if (!tool) {
         throw new Error(`Tool ${name} not found`)
       }

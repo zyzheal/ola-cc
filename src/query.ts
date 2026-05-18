@@ -1402,7 +1402,8 @@ async function* queryLoop(
 					const startTime = Date.now();
 					const maxRetryTimeMs = retryConfig.maxRetryHours * 3600000;
 					let retryNumber = (goal.retryCount || 0) + 1;
-					let lastErrorMessage = error.message || "Unknown error";
+					// Note: error message is shown only on first entry since each retry
+					// is a new query() call with its own error handling
 
 					// Output immediate notification when entering fallback mode
 					const nextRetryAt = new Date(Date.now() + retryConfig.intervalMs);
@@ -1421,7 +1422,12 @@ async function* queryLoop(
 								`❌ Goal 兜底重试超时：已超过最大重试时间 ${retryConfig.maxRetryHours} 小时`,
 								"error",
 							);
-							break;
+							yield {
+								type: "system" as const,
+								subtype: "goal_retry_aborted",
+								content: "兜底重试已终止",
+							} as const;
+							return;
 						}
 
 						// Check if goal still exists and is active
@@ -1431,7 +1437,12 @@ async function* queryLoop(
 								"⚠️ Goal 已暂停或取消，终止兜底重试",
 								"warning",
 							);
-							break;
+							yield {
+								type: "system" as const,
+								subtype: "goal_retry_aborted",
+								content: "兜底重试已终止",
+							} as const;
+							return;
 						}
 
 						// Check abort signal (user cancellation)
@@ -1440,12 +1451,16 @@ async function* queryLoop(
 								"⚠️ 用户取消操作，终止兜底重试",
 								"warning",
 							);
-							break;
+							yield {
+								type: "system" as const,
+								subtype: "goal_retry_aborted",
+								content: "兜底重试已终止",
+							} as const;
+							return;
 						}
 
 						const currentNextRetryAt = new Date(Date.now() + retryConfig.intervalMs);
 						const retryMessage = `🔄 Goal 兜底重试 (第 ${retryNumber} 次)
-   上次错误: ${lastErrorMessage}
    下次重试: ${currentNextRetryAt.toLocaleTimeString()} (${Math.round(retryConfig.intervalMs / 60000)} 分钟后)
    已耗时: ${Math.floor(elapsed / 60000)} 分钟 / 最大 ${retryConfig.maxRetryHours} 小时`;
 
@@ -1464,7 +1479,6 @@ async function* queryLoop(
 						const HEARTBEAT_INTERVAL = 30_000;
 						let sleepRemaining = retryConfig.intervalMs;
 						let sleepCancelled = false;
-						let heartbeatCount = 0;
 
 						while (sleepRemaining > 0) {
 							if (toolUseContext.abortController?.signal.aborted) {
@@ -1473,7 +1487,6 @@ async function* queryLoop(
 							}
 
 							const chunk = Math.min(sleepRemaining, HEARTBEAT_INTERVAL);
-							heartbeatCount++;
 
 							// Yield heartbeat progress every 30 seconds
 							const remainingMinutes = Math.ceil(sleepRemaining / 60000);
@@ -1505,11 +1518,17 @@ async function* queryLoop(
 								"⚠️ 用户取消操作，终止兜底重试",
 								"warning",
 							);
-							break;
+							yield {
+								type: "system" as const,
+								subtype: "goal_retry_aborted",
+								content: "兜底重试已终止",
+							} as const;
+							return;
 						}
 
-						// Execute retry - yield a system message to trigger re-query
-						// The QueryEngine will detect this and re-invoke submitMessage()
+						// Sleep completed without cancellation - now yield the trigger
+						// IMPORTANT: trigger is yielded AFTER sleep, so if user cancels
+						// during sleep, this message is never written to the messages array
 						yield {
 							type: "system" as const,
 							subtype: "goal_retry_trigger",
@@ -1517,10 +1536,12 @@ async function* queryLoop(
 							retryCount: retryNumber,
 						} as const;
 
+						// Capture error message for next iteration before returning
+						// (will be used in retryMessage on next loop)
 						// Update retry number for next iteration
 						retryNumber++;
 
-						// Break and let the QueryEngine handle the retry
+						// Return to trigger the retry in QueryEngine
 						return { reason: "goal_retry_triggered", retryCount: retryNumber - 1 };
 					}
 				}
