@@ -1,4 +1,3 @@
-import memoize from 'lodash-es/memoize.js'
 import { homedir } from 'os'
 import { dirname, isAbsolute, resolve } from 'path'
 import type { ToolPermissionContext } from '../../Tool.js'
@@ -96,7 +95,7 @@ export function expandTilde(path: string): string {
  * prompt for permission when /tmp/claude/ is already in the sandbox allowlist.
  *
  * Respects the deny-within-allow list: paths in denyWithinAllow (like
- * .claude/settings.json) are still blocked even if their parent is in allowOnly.
+ * .ola-cc/settings.json) are still blocked even if their parent is in allowOnly.
  */
 export function isPathInSandboxWriteAllowlist(resolvedPath: string): boolean {
   if (!SandboxManager.isSandboxingEnabled()) {
@@ -122,10 +121,30 @@ export function isPathInSandboxWriteAllowlist(resolvedPath: string): boolean {
   })
 }
 
-// Sandbox config paths are session-stable; memoize their resolved forms to
+// Sandbox config paths are session-stable; cache their resolved forms to
 // avoid repeated lstat/realpath syscalls on every write-target check.
-// Matches the getResolvedWorkingDirPaths pattern in filesystem.ts.
-const getResolvedSandboxConfigPath = memoize(getPathsForPermissionCheck)
+// Uses a size-limited cache to prevent unbounded memory growth.
+const MAX_SANDBOX_PATH_CACHE = 100
+const sandboxPathCache = new Map<string, string[]>()
+
+function getResolvedSandboxConfigPath(path: string): string[] {
+  const cached = sandboxPathCache.get(path)
+  if (cached !== undefined) {
+    return cached
+  }
+  if (sandboxPathCache.size >= MAX_SANDBOX_PATH_CACHE) {
+    const toRemove = Math.max(1, Math.floor(MAX_SANDBOX_PATH_CACHE / 4))
+    const iterator = sandboxPathCache.keys()
+    for (let i = 0; i < toRemove; i++) {
+      const key = iterator.next().value
+      if (key === undefined) break
+      sandboxPathCache.delete(key)
+    }
+  }
+  const result = getPathsForPermissionCheck(path)
+  sandboxPathCache.set(path, result)
+  return result
+}
 
 /**
  * Checks if a resolved path is allowed for the given operation type.
@@ -162,8 +181,8 @@ export function isPathAllowed(
   }
 
   // 2. For write/create operations, check internal editable paths (plan files, scratchpad, agent memory, job dirs)
-  // This MUST come before checkPathSafetyForAutoEdit since .claude is a dangerous directory
-  // and internal editable paths live under ~/.claude/ — matching the ordering in
+  // This MUST come before checkPathSafetyForAutoEdit since .ola-cc is a dangerous directory
+  // and internal editable paths live under ~/.ola-cc/ — matching the ordering in
   // checkWritePermissionForTool (filesystem.ts step 1.5)
   if (operationType !== 'read') {
     const internalEditResult = checkEditableInternalPath(resolvedPath, {})
