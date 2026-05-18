@@ -7,7 +7,7 @@ import {
 } from '../../services/analytics/index.js'
 import {
   buildTool,
-  findToolByName,
+  createToolRegistry,
   type Tool,
   type ToolDef,
   type Tools,
@@ -64,7 +64,8 @@ function getDeferredToolsCacheKey(deferredTools: Tools): string {
  */
 const getToolDescriptionMemoized = memoize(
   async (toolName: string, tools: Tools): Promise<string> => {
-    const tool = findToolByName(tools, toolName)
+    const registry = createToolRegistry(tools)
+    const tool = registry.find(toolName)
     if (!tool) {
       return ''
     }
@@ -368,10 +369,10 @@ export const ToolSearchTool = buildTool({
 
       const found: string[] = []
       const missing: string[] = []
+      const deferredRegistry = createToolRegistry(deferredTools)
+      const mainRegistry = createToolRegistry(tools)
       for (const toolName of requested) {
-        const tool =
-          findToolByName(deferredTools, toolName) ??
-          findToolByName(tools, toolName)
+        const tool = deferredRegistry.find(toolName) ?? mainRegistry.find(toolName)
         if (tool) {
           if (!found.includes(tool.name)) found.push(tool.name)
         } else {

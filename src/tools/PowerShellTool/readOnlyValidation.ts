@@ -702,7 +702,7 @@ export const CMDLET_ALLOWLIST: Record<string, CommandConfig> = Object.assign(
       // `ipconfig /all` (read-only display) allowed. Windows ipconfig only uses
       // /flags (display), macOS ipconfig uses subcommands (get/set/waitall).
       //
-      // NOTE: /displaydns removed from safeFlags (CLAUDE_CODE_NO_DNS_CACHE_AUTO_ALLOW)
+      // NOTE: /displaydns removed from safeFlags (OLA_CC_NO_DNS_CACHE_AUTO_ALLOW)
       // DNS cache disclosure can leak browsing history and sensitive domain information.
       safeFlags: ['/all', '/allcompartments'],
       additionalCommandIsDangerousCallback: (
