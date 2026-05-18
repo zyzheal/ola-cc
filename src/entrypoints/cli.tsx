@@ -45,7 +45,7 @@ if (process.platform === 'win32') {
 
 // Set max heap size for child processes in CCR environments (containers have 16GB)
 // eslint-disable-next-line custom-rules/no-top-level-side-effects, custom-rules/no-process-env-top-level, custom-rules/safe-env-boolean-check
-if (process.env.CLAUDE_CODE_REMOTE === 'true') {
+if (process.env.OLA_CC_REMOTE === 'true') {
   // eslint-disable-next-line custom-rules/no-top-level-side-effects, custom-rules/no-process-env-top-level
   const existing = process.env.NODE_OPTIONS || '';
   // eslint-disable-next-line custom-rules/no-top-level-side-effects, custom-rules/no-process-env-top-level
@@ -57,8 +57,8 @@ if (process.env.CLAUDE_CODE_REMOTE === 'true') {
 // module-level consts at import time — init() runs too late. feature() gate
 // DCEs this entire block from external builds.
 // eslint-disable-next-line custom-rules/no-top-level-side-effects, custom-rules/no-process-env-top-level
-if (feature('ABLATION_BASELINE') && process.env.CLAUDE_CODE_ABLATION_BASELINE) {
-  for (const k of ['CLAUDE_CODE_SIMPLE', 'CLAUDE_CODE_DISABLE_THINKING', 'DISABLE_INTERLEAVED_THINKING', 'DISABLE_COMPACT', 'DISABLE_AUTO_COMPACT', 'CLAUDE_CODE_DISABLE_AUTO_MEMORY', 'CLAUDE_CODE_DISABLE_BACKGROUND_TASKS']) {
+if (feature('ABLATION_BASELINE') && process.env.OLA_CC_ABLATION_BASELINE) {
+  for (const k of ['OLA_CC_SIMPLE', 'OLA_CC_DISABLE_THINKING', 'DISABLE_INTERLEAVED_THINKING', 'DISABLE_COMPACT', 'DISABLE_AUTO_COMPACT', 'OLA_CC_DISABLE_AUTO_MEMORY', 'OLA_CC_DISABLE_BACKGROUND_TASKS']) {
     // eslint-disable-next-line custom-rules/no-top-level-side-effects, custom-rules/no-process-env-top-level
     process.env[k] ??= '1';
   }
@@ -217,6 +217,19 @@ async function main(): Promise<void> {
     // args[1] = sessionId, args[2] = '--', args[3] = prompt
     const prompt = args[3] ?? args.slice(2).join(' ');
     await runBgWorker(args[1], prompt);
+    return;
+  }
+
+  // Fast-path for `--warm-worker=<id>` (internal — pre-spawned by warm pool).
+  if (feature('BG_SESSIONS') && args[0] === '--warm-worker') {
+    if (!args[1]) {
+      console.error('Error: --warm-worker requires a worker ID')
+      process.exit(1)
+    }
+    const { enableConfigs } = await import('../utils/config.js');
+    enableConfigs();
+    const { warmWorkerMain } = await import('../daemon/warmWorker.js');
+    await warmWorkerMain(args[1]);
     return;
   }
 
@@ -396,7 +409,7 @@ async function main(): Promise<void> {
   // --bare: set SIMPLE early so gates fire during module eval / commander
   // option building (not just inside the action handler).
   if (args.includes('--bare')) {
-    process.env.CLAUDE_CODE_SIMPLE = '1';
+    process.env.OLA_CC_SIMPLE = '1';
   }
 
   // No special flags detected, load and run the full CLI

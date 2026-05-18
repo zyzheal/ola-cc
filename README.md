@@ -411,22 +411,22 @@ dist/publish/
 | `OPENAI_CONTEXT_LIMIT` | 上下文窗口限制（默认 128000），用于小 context window 的 provider |
 | `CLAUDE_CODE_USE_OPENAI` | 启用 OpenAI 兼容模式（设为 1 开启） |
 | `API_BASE_URL` | API 代理地址 |
-| `CLAUDE_CODE_ENABLE_CFC` | 启用 Chrome 集成（1=启用，0=禁用） |
+| `OLA_CC_ENABLE_CFC` | 启用 Chrome 集成（1=启用，0=禁用） |
 | `CLAUDE_CHROME_HTTP` | Chrome HTTP 桥接模式（1=启用） |
 | `CLAUDE_CHROME_HTTP_PORT` | HTTP 端口（默认 12306） |
 | `ENABLE_TOOL_SEARCH` | 工具搜索模式：`tst`（默认）、`tst-auto`、`standard` |
-| `CLAUDE_CODE_EXTRA_BODY` | API 请求的额外 body 参数 |
+| `OLA_CC_EXTRA_BODY` | API 请求的额外 body 参数 |
 | `ANTHROPIC_MODEL` | 模型覆盖 |
-| `CLAUDE_CODE_MAX_OUTPUT_TOKENS` | 最大输出 token |
-| `CLAUDE_CODE_DISABLE_THINKING` | 禁用思考 |
-| `CLAUDE_CODE_PROACTIVE` | 主动模式 |
-| `CLAUDE_CODE_COORDINATOR_MODE` | 协调器模式 |
-| `CLAUDE_CODE_BRIEF` | 简报模式 |
+| `OLA_CC_MAX_OUTPUT_TOKENS` | 最大输出 token |
+| `OLA_CC_DISABLE_THINKING` | 禁用思考 |
+| `OLA_CC_PROACTIVE` | 主动模式 |
+| `OLA_CC_COORDINATOR_MODE` | 协调器模式 |
+| `OLA_CC_BRIEF` | 简报模式 |
 | `CLAUDE_CODE_USE_BEDROCK` | 使用 AWS Bedrock |
 | `CLAUDE_CODE_USE_VERTEX` | 使用 Google Vertex |
-| `CLAUDE_CODE_DISABLE_AUTO_MEMORY` | 禁用自动记忆 |
-| `CLAUDE_CODE_SYNTAX_HIGHLIGHT` | 语法高亮主题 |
-| `CLAUDE_CODE_IDLE_THRESHOLD_MINUTES` | 空闲阈值（默认 75 分钟） |
+| `OLA_CC_DISABLE_AUTO_MEMORY` | 禁用自动记忆 |
+| `OLA_CC_SYNTAX_HIGHLIGHT` | 语法高亮主题 |
+| `OLA_CC_IDLE_THRESHOLD_MINUTES` | 空闲阈值（默认 75 分钟） |
 | `SPROCKET_DUDOT_ENABLED` | 启用宠物伴随 |
 
 ---

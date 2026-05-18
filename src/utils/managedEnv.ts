@@ -17,7 +17,7 @@ import {
 /**
  * `claude ssh` remote: ANTHROPIC_UNIX_SOCKET routes auth through a -R forwarded
  * socket to a local proxy, and the launcher sets a handful of placeholder auth
- * env vars that the remote's ~/.claude settings.env MUST NOT clobber (see
+ * env vars that the remote's ~/.ola-cc settings.env MUST NOT clobber (see
  * isAnthropicAuthEnabled). Strip them from any settings-sourced env object.
  */
 function withoutSSHTunnelVars(
@@ -29,7 +29,7 @@ function withoutSSHTunnelVars(
     ANTHROPIC_BASE_URL: _2,
     ANTHROPIC_API_KEY: _3,
     ANTHROPIC_AUTH_TOKEN: _4,
-    CLAUDE_CODE_OAUTH_TOKEN: _5,
+    OLA_CC_OAUTH_TOKEN: _5,
     ...rest
   } = env
   return rest
@@ -37,16 +37,16 @@ function withoutSSHTunnelVars(
 
 /**
  * When the host owns inference routing (sets
- * CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST in spawn env), strip
+ * OLA_CC_PROVIDER_MANAGED_BY_HOST in spawn env), strip
  * provider-selection / model-default vars from settings-sourced env so a
- * user's ~/.claude/settings.json can't redirect requests away from the
+ * user's ~/.ola-cc/settings.json can't redirect requests away from the
  * host-configured provider.
  */
 function withoutHostManagedProviderVars(
   env: Record<string, string> | undefined,
 ): Record<string, string> {
   if (!env) return {}
-  if (!isEnvTruthy(process.env.CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST)) {
+  if (!isEnvTruthy(process.env.OLA_CC_PROVIDER_MANAGED_BY_HOST)) {
     return env
   }
   const out: Record<string, string> = {}
@@ -93,7 +93,7 @@ function filterSettingsEnv(
 /**
  * Trusted setting sources whose env vars can be applied before the trust dialog.
  *
- * - userSettings (~/.claude/settings.json): controlled by the user, not project-specific
+ * - userSettings (~/.ola-cc/settings.json): controlled by the user, not project-specific
  * - flagSettings (--settings CLI flag or SDK inline settings): explicitly passed by the user
  * - policySettings (managed settings from enterprise API or local managed-settings.json):
  *   controlled by IT/admin (highest priority, cannot be overridden)
@@ -125,19 +125,19 @@ export function applySafeConfigEnvironmentVariables(): void {
   // Capture CCD spawn-env keys before any settings.env is applied (once).
   if (ccdSpawnEnvKeys === undefined) {
     ccdSpawnEnvKeys =
-      process.env.CLAUDE_CODE_ENTRYPOINT === 'claude-desktop'
+      process.env.OLA_CC_ENTRYPOINT === 'claude-desktop'
         ? new Set(Object.keys(process.env))
         : null
   }
 
-  // Global config (~/.claude.json) is user-controlled. In CCD mode,
+  // Global config (~/.ola-cc.json) is user-controlled. In CCD mode,
   // filterSettingsEnv strips keys that were in the spawn env snapshot so
   // the desktop host's operational vars (OTEL, etc.) are not overridden.
   Object.assign(process.env, filterSettingsEnv(getGlobalConfig().env))
 
   // Apply ALL env vars from trusted setting sources, policySettings last.
   // Gate on isSettingSourceEnabled so SDK settingSources: [] (isolation mode)
-  // doesn't get clobbered by ~/.claude/settings.json env (gh#217). policy/flag
+  // doesn't get clobbered by ~/.ola-cc/settings.json env (gh#217). policy/flag
   // sources are always enabled, so this only ever filters userSettings.
   for (const source of TRUSTED_SETTING_SOURCES) {
     if (source === 'policySettings') continue
@@ -168,7 +168,7 @@ export function applySafeConfigEnvironmentVariables(): void {
   // in the safe allowlist. Only policySettings values are guaranteed to survive
   // unchanged (it has the highest merge priority in both loops) — except
   // provider-routing vars, which filterSettingsEnv strips from every source
-  // when CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST is set.
+  // when OLA_CC_PROVIDER_MANAGED_BY_HOST is set.
   const settingsEnv = filterSettingsEnv(getSettings_DEPRECATED()?.env)
   for (const [key, value] of Object.entries(settingsEnv)) {
     if (SAFE_ENV_VARS.has(key.toUpperCase())) {
@@ -374,7 +374,7 @@ export function applyActiveProviderProfile(): void {
 /**
  * Apply environment variables from settings to process.env.
  * This applies ALL environment variables (except provider-routing vars when
- * CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST is set — see filterSettingsEnv) and
+ * OLA_CC_PROVIDER_MANAGED_BY_HOST is set — see filterSettingsEnv) and
  * should only be called after trust is established. This applies potentially
  * dangerous environment variables such as LD_PRELOAD, PATH, etc.
  */

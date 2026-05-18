@@ -2,7 +2,7 @@
 
 > 源码位置：`src/coordinator/`
 > 编译开关：`feature('COORDINATOR_MODE')`
-> 环境变量：`CLAUDE_CODE_COORDINATOR_MODE`
+> 环境变量：`OLA_CC_COORDINATOR_MODE`
 
 主 Claude 变成纯指挥官，Worker 并行执行任务。
 
@@ -32,7 +32,7 @@ Coordinator **不直接操作代码**，只负责：
 // src/coordinator/coordinatorMode.ts
 export function isCoordinatorMode(): boolean {
   if (feature('COORDINATOR_MODE')) {
-    return isEnvTruthy(process.env.CLAUDE_CODE_COORDINATOR_MODE)
+    return isEnvTruthy(process.env.OLA_CC_COORDINATOR_MODE)
   }
   return false
 }
@@ -40,7 +40,7 @@ export function isCoordinatorMode(): boolean {
 
 需要同时满足：
 1. 编译时 `COORDINATOR_MODE` flag 启用
-2. 运行时 `CLAUDE_CODE_COORDINATOR_MODE` 环境变量为真
+2. 运行时 `OLA_CC_COORDINATOR_MODE` 环境变量为真
 
 ---
 
@@ -122,7 +122,7 @@ Coordinator 根据上下文重叠度决定继续已有 Worker 还是创建新 Wo
 
 `matchSessionMode()` 函数处理模式冲突：
 
-如果当前进程处于 coordinator 模式但被恢复的会话是 normal 模式（或反之），会自动翻转 `CLAUDE_CODE_COORDINATOR_MODE` 环境变量以匹配会话的原始模式。
+如果当前进程处于 coordinator 模式但被恢复的会话是 normal 模式（或反之），会自动翻转 `OLA_CC_COORDINATOR_MODE` 环境变量以匹配会话的原始模式。
 
 ---
 

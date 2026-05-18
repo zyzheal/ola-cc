@@ -23,7 +23,12 @@ export type OauthConfig = {
 }
 
 export const OLA_CC_AI_INFERENCE_SCOPE = 'user:inference' as const
+// Backward compatibility alias (deprecated)
+export const CLAUDE_AI_INFERENCE_SCOPE = OLA_CC_AI_INFERENCE_SCOPE
+
 export const OLA_CC_AI_PROFILE_SCOPE = 'user:profile' as const
+// Backward compatibility alias (deprecated)
+export const CLAUDE_AI_PROFILE_SCOPE = OLA_CC_AI_PROFILE_SCOPE
 const CONSOLE_SCOPE = 'org:create_api_key' as const
 export const OAUTH_BETA_HEADER = 'oauth-2025-04-20' as const
 
@@ -39,6 +44,9 @@ export const OLA_CC_AI_OAUTH_SCOPES = [
   'user:mcp_servers',
   'user:file_upload',
 ] as const
+
+// Backward compatibility alias (deprecated)
+export const CLAUDE_AI_OAUTH_SCOPES = OLA_CC_AI_OAUTH_SCOPES
 
 export const ALL_OAUTH_SCOPES = Array.from(
   new Set([...CONSOLE_OAUTH_SCOPES, ...OLA_CC_AI_OAUTH_SCOPES]),
