@@ -50,6 +50,7 @@ export interface Goal {
 	pauseReason?: string; // Reason for pause (auto-pause or manual)
 	// Analysis counters moved to GoalRuntimeState (runtime-only, not persisted)
 	retryConfig?: RetryConfig; // Fallback retry configuration
+	retryCount?: number; // Current retry count for fallback retry
 }
 
 export interface RetryConfig {
