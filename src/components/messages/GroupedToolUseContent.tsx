@@ -1,6 +1,6 @@
 import type { ToolResultBlockParam, ToolUseBlockParam } from '@anthropic-ai/sdk/resources/messages/messages.mjs';
 import * as React from 'react';
-import { filterToolProgressMessages, findToolByName, type Tools } from '../../Tool.js';
+import { createToolRegistry, filterToolProgressMessages, type Tools } from '../../Tool.js';
 import type { GroupedToolUseMessage } from '../../types/message.js';
 import type { buildMessageLookups } from '../../utils/messages.js';
 type Props = {
@@ -17,7 +17,7 @@ export function GroupedToolUseContent({
   inProgressToolUseIDs,
   shouldAnimate
 }: Props): React.ReactNode {
-  const tool = findToolByName(tools, message.toolName);
+  const tool = createToolRegistry(tools).find(message.toolName);
   if (!tool?.renderGroupedToolUse) {
     return null;
   }
