@@ -168,7 +168,7 @@ bun run ./scripts/build-publish.ts  # npm 发布构建
 | `STATUSLINE_SETUP_AGENT` | 状态行设置 |
 | `EXPLORE_AGENT` | 代码库探索 |
 | `PLAN_AGENT` | 规划 |
-| `CLAUDE_CODE_GUIDE_AGENT` | Claude Code 指南 |
+| `OLA_CC_GUIDE_AGENT` | Claude Code 指南 |
 | `VERIFICATION_AGENT` | 验证（ant-only A/B） |
 
 ### 协调器模式

@@ -1,13 +1,13 @@
 {
-  "name": "@anthropic-ai/claude-code",
+  "name": "@zyzheal/ola-cc",
   "version": "0.4.10",
   "private": true,
-  "description": "Claude Code - AI coding assistant in your terminal",
+  "description": "ola-cc - AI coding assistant in your terminal",
   "license": "SEE LICENSE IN LICENSE.md",
   "type": "module",
   "packageManager": "bun@1.3.5",
   "bin": {
-    "claude": "cli"
+    "ola-cc": "cli"
   },
   "repository": {
     "type": "git",
@@ -58,7 +58,6 @@
     "@opentelemetry/sdk-metrics": "*",
     "@opentelemetry/sdk-trace-base": "*",
     "@opentelemetry/semantic-conventions": "*",
-    "@zyzheal/ola-cc": "^0.2.1",
     "ajv": "*",
     "asciichart": "*",
     "auto-bind": "*",

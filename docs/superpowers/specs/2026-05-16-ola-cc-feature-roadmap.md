@@ -358,9 +358,14 @@ interface AgentViewConfig {
 |------|------|----------|
 | Phase 1: 快速见效 | ✅ 完成 | 2026-05-16 |
 | Phase 2: 压缩系统 | ✅ 完成 | 2026-05-16 |
-| Phase 3: 插件增强 | ✅ 部分完成 (P3.3 Token Cost) | 2026-05-16 |
+| Phase 3: 插件增强 | ✅ 完成 (P3.1 懒加载, P3.2 Skill Overrides) | 2026-05-17 |
 | Phase 4: Daemon/Worker | ✅ 完成 | 2026-05-17 |
 | Phase 5: Agent View | ✅ 完成 | 2026-05-17 |
+| 附加: Warm Spare Pool | ✅ 完成 | 2026-05-17 |
+
+### Phase 3 详细实现 (启动优化 + 插件增强)
+- [x] P3.1 启动懒加载 - 转换 telemetry/context metrics/tips 为动态导入
+- [x] P3.2 Skill Overrides - settings.json 中 per-skill 禁用/描述覆盖/模型覆盖
 
 ### Phase 4 详细实现
 - [x] 文件注册表 (`src/daemon/sessionRegistry.ts`)
@@ -372,6 +377,12 @@ interface AgentViewConfig {
 - [x] 客户端通信 (`src/services/daemon/client.ts`)
 - [x] 功能标志集成 (`scripts/build.ts`)
 - [x] CLI 入口集成 (`src/entrypoints/cli.tsx`)
+
+### 附加: Warm Spare Pool
+- [x] 预热备用 Worker 池管理 (`src/daemon/warmPool.ts`)
+- [x] Warm Worker 进程 (`src/daemon/warmWorker.ts`)
+- [x] 协议扩展 - get_warm_pool_status, set_warm_pool_size
+- [x] CLI 入口 --warm-worker (`src/entrypoints/cli.tsx`)
 
 ### Phase 5 详细实现
 - [x] 会话查看 TUI (`src/components/agents/BgSessionView.tsx`)
