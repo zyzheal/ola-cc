@@ -3,7 +3,11 @@ import type { UUID } from 'crypto'
 import { randomUUID } from 'crypto'
 import uniqBy from 'lodash-es/uniqBy.js'
 import { logForDebugging } from 'src/utils/debug.js'
-import { getProjectRoot, getSessionId } from '../../bootstrap/state.js'
+import {
+  getProjectRoot,
+  getSessionId,
+  getTotalCostUSD,
+} from '../../bootstrap/state.js'
 import { getCommand, getSkillToolCommands, hasCommand } from '../../commands.js'
 import {
   DEFAULT_AGENT_PROMPT,
@@ -269,6 +273,10 @@ export async function* runAgent({
   description,
   transcriptSubdir,
   onQueryProgress,
+  maxBudgetUsd,
+  maxTokens,
+  timeoutSeconds,
+  quotaManager,
 }: {
   agentDefinition: AgentDefinition
   promptMessages: Message[]
@@ -328,6 +336,17 @@ export async function* runAgent({
    * during long single-block streams (e.g. thinking) where no assistant
    * message is yielded for >60s. */
   onQueryProgress?: () => void
+  /** Maximum USD cost this agent may incur (0 or omitted = unlimited) */
+  maxBudgetUsd?: number
+  /** Maximum output tokens this agent may produce (0 or omitted = unlimited) */
+  maxTokens?: number
+  /** Maximum wall-clock time in seconds (0 or omitted = unlimited) */
+  timeoutSeconds?: number
+  /** Optional session-level quota manager for cross-agent budget tracking.
+   * When provided, quota checks go through the manager's checkQuota() which
+   * supports both per-agent and global session budgets. Falls back to raw
+   * parameter checks if omitted. */
+  quotaManager?: import('../../utils/quota/ResourceQuotaManager.js').ResourceQuotaManager
 }): AsyncGenerator<Message, void> {
   // Track subagent usage for feature discovery
 
@@ -746,6 +765,26 @@ export async function* runAgent({
   // Track the last recorded message UUID for parent chain continuity
   let lastRecordedUuid: UUID | null = initialMessages.at(-1)?.uuid ?? null
 
+  // Resource quota: set up timeout circuit breaker if specified
+  const agentStartTime = Date.now()
+  let timeoutTimer: ReturnType<typeof setTimeout> | null = null
+  if (timeoutSeconds && timeoutSeconds > 0) {
+    timeoutTimer = setTimeout(() => {
+      logForDebugging(
+        `[Agent ${agentDefinition.agentType}] Timeout after ${timeoutSeconds}s, aborting`,
+      )
+      agentAbortController.abort()
+    }, timeoutSeconds * 1000)
+  }
+
+  // Capture baseline cost for per-agent budget tracking
+  const agentBaselineCost = getTotalCostUSD()
+  let agentBudgetExceeded = false
+
+  // Track per-agent output tokens (taskBudget in query() is for API auto-compact,
+  // NOT a hard limit — we need our own counter for enforcement)
+  let agentOutputTokens = 0
+
   try {
     for await (const message of query({
       messages: initialMessages,
@@ -758,6 +797,70 @@ export async function* runAgent({
       maxTurns: maxTurns ?? agentDefinition.maxTurns,
     })) {
       onQueryProgress?.()
+
+      // Accumulate output tokens from stream events
+      if (
+        message.type === 'stream_event' &&
+        message.event.type === 'message_delta' &&
+        message.event.delta?.usage?.output_tokens
+      ) {
+        agentOutputTokens += message.event.delta.usage.output_tokens
+      }
+
+      // Resource quota check via manager (if provided) or raw parameters (fallback)
+      if (quotaManager) {
+        const elapsed = Date.now() - agentStartTime
+        const currentCost = getTotalCostUSD()
+        const check = quotaManager.checkQuota(agentId, {
+          costUsd: currentCost - agentBaselineCost,
+          outputTokens: agentOutputTokens,
+          elapsedMs: elapsed,
+        })
+        if (!check.allowed) {
+          logForDebugging(
+            `[Agent ${agentDefinition.agentType}] Quota exceeded: ${check.reason}`,
+          )
+          agentBudgetExceeded = true
+          agentAbortController.abort()
+          break
+        }
+      } else {
+        // Fallback: raw parameter checks (no session-level global budget)
+        if (maxBudgetUsd && maxBudgetUsd > 0) {
+          const currentCost = getTotalCostUSD()
+          const agentCostDelta = currentCost - agentBaselineCost
+          if (agentCostDelta >= maxBudgetUsd) {
+            logForDebugging(
+              `[Agent ${agentDefinition.agentType}] Quota exceeded: budget ($${agentCostDelta.toFixed(4)} >= $${maxBudgetUsd})`,
+            )
+            agentBudgetExceeded = true
+            agentAbortController.abort()
+            break
+          }
+        }
+
+        // Hard output token limit (not taskBudget which only triggers compaction)
+        if (maxTokens && maxTokens > 0 && agentOutputTokens >= maxTokens) {
+          logForDebugging(
+            `[Agent ${agentDefinition.agentType}] Quota exceeded: tokens (${agentOutputTokens} >= ${maxTokens})`,
+          )
+          agentBudgetExceeded = true
+          agentAbortController.abort()
+          break
+        }
+      }
+
+      // Check timeout circuit breaker
+      if (timeoutSeconds && timeoutSeconds > 0) {
+        const elapsed = Date.now() - agentStartTime
+        if (elapsed >= timeoutSeconds * 1000) {
+          logForDebugging(
+            `[Agent ${agentDefinition.agentType}] Quota exceeded: timeout (${(elapsed / 1000).toFixed(0)}s >= ${timeoutSeconds}s)`,
+          )
+          break
+        }
+      }
+
       // Forward subagent API request starts to parent's metrics display
       // so TTFT/OTPS update during subagent execution.
       if (
@@ -807,7 +910,13 @@ export async function* runAgent({
       }
     }
 
-    if (agentAbortController.signal.aborted) {
+    if (agentBudgetExceeded) {
+      logForDebugging(
+        `[Agent ${agentDefinition.agentType}] Terminated: exceeded resource quota`,
+      )
+      // Don't throw AbortError — budget exceeded is a normal termination,
+      // not a user cancellation. The agent's transcript is already recorded.
+    } else if (agentAbortController.signal.aborted) {
       throw new AbortError()
     }
 
@@ -816,6 +925,10 @@ export async function* runAgent({
       agentDefinition.callback()
     }
   } finally {
+    // Clean up timeout timer if still running
+    if (timeoutTimer) {
+      clearTimeout(timeoutTimer)
+    }
     // Clean up agent-specific MCP servers (runs on normal completion, abort, or error)
     await mcpCleanup()
     // Clean up agent's session hooks

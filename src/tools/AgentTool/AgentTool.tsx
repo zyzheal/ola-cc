@@ -3,6 +3,7 @@ import * as React from 'react';
 import { buildTool, type ToolDef, toolMatchesName } from 'src/Tool.js';
 import type { Message as MessageType, NormalizedUserMessage } from 'src/types/message.js';
 import { getQuerySourceForAgent } from 'src/utils/promptCategory.js';
+import { ResourceQuotaManager, getSessionQuotaManager } from '../../utils/quota/ResourceQuotaManager.js';
 import { z } from 'zod/v4';
 import { clearInvokedSkillsForAgent, getSdkAgentProgressSummariesEnabled } from '../../bootstrap/state.js';
 import { enhanceSystemPromptWithEnvDetails, getSystemPrompt, getLanguageSection } from '../../constants/prompts.js';
@@ -66,7 +67,7 @@ const PROGRESS_THRESHOLD_MS = 2000; // Show background hint after 2 seconds
 // Check if background tasks are disabled at module load time
 const isBackgroundTasksDisabled =
 // eslint-disable-next-line custom-rules/no-process-env-top-level -- Intentional: schema must be defined at module load
-isEnvTruthy(process.env.CLAUDE_CODE_DISABLE_BACKGROUND_TASKS);
+isEnvTruthy(process.env.OLA_CC_DISABLE_BACKGROUND_TASKS);
 
 // Auto-background agent tasks after this many ms (0 = disabled)
 // Enabled by env var OR GrowthBook gate (checked lazily since GB may not be ready at module load)
@@ -98,7 +99,11 @@ const fullInputSchema = lazySchema(() => {
   });
   return baseInputSchema().merge(multiAgentInputSchema).extend({
     isolation: ("external" === 'ant' ? z.enum(['worktree', 'remote']) : z.enum(['worktree'])).optional().describe("external" === 'ant' ? 'Isolation mode. "worktree" creates a temporary git worktree so the agent works on an isolated copy of the repo. "remote" launches the agent in a remote CCR environment (always runs in background).' : 'Isolation mode. "worktree" creates a temporary git worktree so the agent works on an isolated copy of the repo.'),
-    cwd: z.string().optional().describe('Absolute path to run the agent in. Overrides the working directory for all filesystem and shell operations within this agent. Mutually exclusive with isolation: "worktree".')
+    cwd: z.string().optional().describe('Absolute path to run the agent in. Overrides the working directory for all filesystem and shell operations within this agent. Mutually exclusive with isolation: "worktree".'),
+    // Resource quota parameters
+    max_budget_usd: z.number().positive().optional().describe('Maximum USD cost this agent may incur. Overrides the session-level budget for this agent. 0 or omitted means no per-agent limit (still subject to session budget).'),
+    max_tokens: z.number().positive().optional().describe('Maximum output tokens this agent may produce. 0 or omitted means no per-agent limit.'),
+    timeout_seconds: z.number().positive().optional().describe('Maximum wall-clock time in seconds for this agent. When exceeded, the agent is aborted. 0 or omitted means no timeout.'),
   });
 });
 
@@ -136,6 +141,9 @@ type AgentToolInput = z.infer<ReturnType<typeof baseInputSchema>> & {
   mode?: z.infer<ReturnType<typeof permissionModeSchema>>;
   isolation?: 'worktree' | 'remote';
   cwd?: string;
+  max_budget_usd?: number;
+  max_tokens?: number;
+  timeout_seconds?: number;
 };
 
 // Output schema - multi-agent spawned schema added dynamically at runtime when enabled
@@ -221,7 +229,7 @@ export const AgentTool = buildTool({
 
     // Use inline env check instead of coordinatorModule to avoid circular
     // dependency issues during test module loading.
-    const isCoordinator = feature('COORDINATOR_MODE') ? isEnvTruthy(process.env.CLAUDE_CODE_COORDINATOR_MODE) : false;
+    const isCoordinator = feature('COORDINATOR_MODE') ? isEnvTruthy(process.env.OLA_CC_COORDINATOR_MODE) : false;
     return await getPrompt(filteredAgents, isCoordinator, allowedAgentTypes);
   },
   name: AGENT_TOOL_NAME,
@@ -247,7 +255,10 @@ export const AgentTool = buildTool({
     team_name,
     mode: spawnMode,
     isolation,
-    cwd
+    cwd,
+    max_budget_usd,
+    max_tokens,
+    timeout_seconds
   }: AgentToolInput, toolUseContext, canUseTool, assistantMessage, onProgress?) {
     const startTime = Date.now();
     const model = isCoordinatorMode() ? undefined : modelParam;
@@ -552,7 +563,7 @@ export const AgentTool = buildTool({
 
     // Use inline env check instead of coordinatorModule to avoid circular
     // dependency issues during test module loading.
-    const isCoordinator = feature('COORDINATOR_MODE') ? isEnvTruthy(process.env.CLAUDE_CODE_COORDINATOR_MODE) : false;
+    const isCoordinator = feature('COORDINATOR_MODE') ? isEnvTruthy(process.env.OLA_CC_COORDINATOR_MODE) : false;
 
     // Fork subagent experiment: force ALL spawns async for a unified
     // <task-notification> interaction model (not just fork spawns — all of them).
@@ -634,7 +645,12 @@ export const AgentTool = buildTool({
         useExactTools: true
       }),
       worktreePath: worktreeInfo?.worktreePath,
-      description
+      description,
+      // Resource quota parameters
+      maxBudgetUsd: max_budget_usd,
+      maxTokens: max_tokens,
+      timeoutSeconds: timeout_seconds,
+      quotaManager: (max_budget_usd || max_tokens || timeout_seconds) ? getSessionQuotaManager() : undefined,
     };
 
     // Helper to wrap execution with a cwd override: explicit cwd arg (KAIROS)
