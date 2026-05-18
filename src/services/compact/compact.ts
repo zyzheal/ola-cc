@@ -48,6 +48,7 @@ import {
 import { logForDebugging } from '../../utils/debug.js'
 import { hasExactErrorMessage } from '../../utils/errors.js'
 import { cacheToObject } from '../../utils/fileStateCache.js'
+import { resolveCompactModel } from './compactModelRouter.js'
 import {
   type CacheSafeParams,
   runForkedAgent,
@@ -1347,6 +1348,10 @@ async function streamCompactSummary({
     }
 
     // Regular streaming path (fallback when cache sharing fails or is disabled)
+    // Route compaction to a cheaper/faster model (Sonnet) unless kill-switch enabled
+    const mainLoopModel = context.options.mainLoopModel
+    const compactModelInfo = resolveCompactModel(mainLoopModel)
+
     const retryEnabled = getFeatureValue_CACHED_MAY_BE_STALE(
       'tengu_compact_streaming_retry',
       false,
@@ -1417,7 +1422,7 @@ async function streamCompactSummary({
             const appState = context.getAppState()
             return appState.toolPermissionContext
           },
-          model: context.options.mainLoopModel,
+          model: compactModelInfo.model,
           toolChoice: undefined,
           isNonInteractiveSession: context.options.isNonInteractiveSession,
           hasAppendSystemPrompt: !!context.options.appendSystemPrompt,
@@ -1429,7 +1434,7 @@ async function streamCompactSummary({
               : 8_000
             return Math.min(
               isThirdParty ? thirdPartyCompactTokens : COMPACT_MAX_OUTPUT_TOKENS,
-              getMaxOutputTokensForModel(context.options.mainLoopModel),
+              getMaxOutputTokensForModel(compactModelInfo.model),
             )
           })(),
           querySource: 'compact',

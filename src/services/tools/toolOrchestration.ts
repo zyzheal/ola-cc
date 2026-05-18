@@ -1,13 +1,13 @@
 import type { ToolUseBlock } from '@anthropic-ai/sdk/resources/index.mjs'
 import type { CanUseToolFn } from '../../hooks/useCanUseTool.js'
-import { findToolByName, type ToolUseContext } from '../../Tool.js'
+import { createToolRegistry, type ToolUseContext } from '../../Tool.js'
 import type { AssistantMessage, Message } from '../../types/message.js'
 import { all } from '../../utils/generators.js'
 import { type MessageUpdateLazy, runToolUse } from './toolExecution.js'
 
 function getMaxToolUseConcurrency(): number {
   return (
-    parseInt(process.env.CLAUDE_CODE_MAX_TOOL_USE_CONCURRENCY || '', 10) || 10
+    parseInt(process.env.OLA_CC_MAX_TOOL_USE_CONCURRENCY || '', 10) || 10
   )
 }
 
@@ -92,8 +92,9 @@ function partitionToolCalls(
   toolUseMessages: ToolUseBlock[],
   toolUseContext: ToolUseContext,
 ): Batch[] {
+  const registry = createToolRegistry(toolUseContext.options.tools)
   return toolUseMessages.reduce((acc: Batch[], toolUse) => {
-    const tool = findToolByName(toolUseContext.options.tools, toolUse.name)
+    const tool = registry.find(toolUse.name)
     const parsedInput = tool?.inputSchema.safeParse(toolUse.input)
     const isConcurrencySafe = parsedInput?.success
       ? (() => {

@@ -30,7 +30,6 @@ import {
 import type { CanUseToolFn } from '../../hooks/useCanUseTool.js'
 import {
   ToolRegistry,
-  findToolByName,
   type Tool,
   type ToolProgress,
   type ToolProgressData,
@@ -50,6 +49,7 @@ import {
   TOOL_SEARCH_TOOL_NAME,
 } from '../../tools/ToolSearchTool/prompt.js'
 import { getAllBaseTools } from '../../tools.js'
+import { isCacheableTool, tryGetCachedToolResult, cacheToolResult } from '../../utils/toolCache/toolCacheIntegration.js'
 import type { HookProgress } from '../../types/hooks.js'
 import type {
   AssistantMessage,
@@ -1255,6 +1255,30 @@ async function checkPermissionsAndCallTool(
   } else if (processedInput !== backfilledClone) {
     callInput = processedInput
   }
+
+  // Check tool result cache for read-only tools
+  const cacheable = isCacheableTool(tool.name, callInput)
+  if (cacheable) {
+    const cached = tryGetCachedToolResult(tool.name, callInput)
+    if (cached !== null) {
+      const durationMs = Date.now() - startTime
+      addToToolDuration(durationMs)
+      return [{
+        message: createUserMessage({
+          content: [
+            {
+              type: 'tool_result',
+              content: cached,
+              tool_use_id: toolUseID,
+            },
+          ],
+          toolUseResult: cached,
+          sourceToolAssistantUUID: assistantMessage.uuid,
+        }),
+      }]
+    }
+  }
+
   try {
     const result = await tool.call(
       callInput,
@@ -1274,6 +1298,15 @@ async function checkPermissionsAndCallTool(
     )
     const durationMs = Date.now() - startTime
     addToToolDuration(durationMs)
+
+    // Cache successful tool result for read-only tools
+    if (cacheable && result.data) {
+      const mappedBlock = tool.mapToolResultToToolResultBlockParam?.(result.data, toolUseID)
+      const cacheContent = typeof mappedBlock?.content === 'string' ? mappedBlock.content : undefined
+      if (cacheContent) {
+        cacheToolResult(tool.name, callInput, cacheContent)
+      }
+    }
 
     // Log tool content/output as span event if enabled
     if (result.data && typeof result.data === 'object') {
