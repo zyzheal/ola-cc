@@ -16,7 +16,7 @@ import { Box, Text } from '../ink.js';
 import { useShortcutDisplay } from '../keybindings/useShortcutDisplay.js';
 import type { Screen } from '../screens/REPL.js';
 import type { Tools } from '../Tool.js';
-import { findToolByName } from '../Tool.js';
+import { createToolRegistry, type Tools } from '../Tool.js';
 import type { AgentDefinitionsResult } from '../tools/AgentTool/loadAgentsDir.js';
 import type { Message as MessageType, NormalizedMessage, ProgressMessage as ProgressMessageType, RenderableMessage } from '../types/message.js';
 import { type AdvisorBlock, isAdvisorBlock } from '../utils/advisor.js';
@@ -458,7 +458,7 @@ const MessagesImpl = ({
   }), [streamingToolUsesWithoutInProgress]);
   const isTranscriptMode = screen === 'transcript';
   // Hoisted to mount-time — this component re-renders on every scroll.
-  const disableVirtualScroll = useMemo(() => isEnvTruthy(process.env.CLAUDE_CODE_DISABLE_VIRTUAL_SCROLL), []);
+  const disableVirtualScroll = useMemo(() => isEnvTruthy(process.env.OLA_CC_DISABLE_VIRTUAL_SCROLL), []);
   // Virtual scroll replaces the transcript cap: everything is scrollable and
   // memory is bounded by the mounted-item count, not the total. scrollRef is
   // only passed when isFullscreenEnvEnabled() is true (REPL.tsx gates it),
@@ -589,7 +589,7 @@ const MessagesImpl = ({
     const b_0 = msg_6.message.content[0];
     if (b_0?.type !== 'tool_result' || b_0.is_error || !msg_6.toolUseResult) return false;
     const name = lookupsRef.current.toolUseByToolUseID.get(b_0.tool_use_id)?.name;
-    const tool = name ? findToolByName(tools, name) : undefined;
+    const tool = name ? createToolRegistry(tools).find(name) : undefined;
     return tool?.isResultTruncated?.(msg_6.toolUseResult as never) ?? false;
   }, [tools]);
   const canAnimate = (!toolJSX || !!toolJSX.shouldContinueAnimation) && !toolUseConfirmQueue.length && !isMessageSelectorVisible;
@@ -658,7 +658,7 @@ const MessagesImpl = ({
       const tr = msg_9.message.content.find(b_1 => b_1.type === 'tool_result');
       if (tr && 'tool_use_id' in tr) {
         const tu = lookups_0.toolUseByToolUseID.get(tr.tool_use_id);
-        const tool_0 = tu && findToolByName(tools, tu.name);
+        const tool_0 = tu && createToolRegistry(tools).find(tu.name);
         const extracted = tool_0?.extractSearchText?.(msg_9.toolUseResult as never);
         // undefined = tool didn't implement → keep heuristic. Empty
         // string = tool says "nothing to index" → respect that.
@@ -677,6 +677,11 @@ const MessagesImpl = ({
   return <>
       {/* Logo */}
       {!hideLogo && !(renderRange && renderRange[0] > 0) && <LogoHeader agentDefinitions={agentDefinitions} />}
+
+      {/* Empty state hint */}
+      {!hideLogo && !(renderRange && renderRange[0] > 0) && renderableMessages.length === 0 && <Box marginTop={1} marginBottom={1}>
+        <Text color="dim">Type a message or command to get started...</Text>
+      </Box>}
 
       {/* Truncation indicator */}
       {hasTruncatedMessages_0 && <Divider title={`${toggleShowAllShortcut} to show ${chalk.bold(hiddenMessageCount_0)} previous messages`} width={columns} />}

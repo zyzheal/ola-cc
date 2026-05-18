@@ -17,8 +17,7 @@ import {
 } from '../remote/sdkMessageAdapter.js'
 import { useSetAppState } from '../state/AppState.js'
 import type { AppState } from '../state/AppStateStore.js'
-import type { Tool } from '../Tool.js'
-import { findToolByName } from '../Tool.js'
+import { createToolRegistry, type Tool } from '../Tool.js'
 import type { Message as MessageType } from '../types/message.js'
 import type { PermissionAskDecision } from '../types/permissions.js'
 import { logForDebugging } from '../utils/debug.js'
@@ -334,7 +333,7 @@ export function useRemoteSession({
 
         // Look up the Tool object by name, or create a stub for unknown tools
         const tool =
-          findToolByName(toolsRef.current, request.tool_name) ??
+          createToolRegistry(toolsRef.current).find(request.tool_name) ??
           createToolStub(request.tool_name)
 
         const syntheticMessage = createSyntheticAssistantMessage(

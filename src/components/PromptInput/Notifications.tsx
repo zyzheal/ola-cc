@@ -303,7 +303,7 @@ function NotificationContent({
             ({apiKeyHelperSlow})
           </Text>
         </Box>}
-      {(apiKeyStatus === 'invalid' || apiKeyStatus === 'missing') && !isEnvTruthy(process.env.CLAUDE_CODE_REMOTE) && <Box>
+      {(apiKeyStatus === 'invalid' || apiKeyStatus === 'missing') && !isEnvTruthy(process.env.OLA_CC_REMOTE) && <Box>
           <Text color="error" wrap="truncate">
             {'' /* 'Not logged in · Run /login' — removed per user request */}
           </Text>
