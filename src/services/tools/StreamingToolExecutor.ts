@@ -5,7 +5,7 @@ import {
   withMemoryCorrectionHint,
 } from 'src/utils/messages.js'
 import type { CanUseToolFn } from '../../hooks/useCanUseTool.js'
-import { findToolByName, type Tools, type ToolUseContext } from '../../Tool.js'
+import { createToolRegistry, type ToolRegistry, type Tools, type ToolUseContext } from '../../Tool.js'
 import { BASH_TOOL_NAME } from '../../tools/BashTool/toolName.js'
 import type { AssistantMessage, Message } from '../../types/message.js'
 import { createChildAbortController } from '../../utils/abortController.js'
@@ -40,6 +40,7 @@ type TrackedTool = {
 export class StreamingToolExecutor {
   private tools: TrackedTool[] = []
   private toolUseContext: ToolUseContext
+  private readonly toolRegistry: ToolRegistry
   private hasErrored = false
   private erroredToolDescription = ''
   // Child of toolUseContext.abortController. Fires when a Bash tool errors
@@ -51,11 +52,12 @@ export class StreamingToolExecutor {
   private progressAvailableResolve?: () => void
 
   constructor(
-    private readonly toolDefinitions: Tools,
+    toolDefinitions: Tools,
     private readonly canUseTool: CanUseToolFn,
     toolUseContext: ToolUseContext,
   ) {
     this.toolUseContext = toolUseContext
+    this.toolRegistry = createToolRegistry(toolDefinitions)
     this.siblingAbortController = createChildAbortController(
       toolUseContext.abortController,
     )
@@ -74,7 +76,7 @@ export class StreamingToolExecutor {
    * Add a tool to the execution queue. Will start executing immediately if conditions allow.
    */
   addTool(block: ToolUseBlock, assistantMessage: AssistantMessage): void {
-    const toolDefinition = findToolByName(this.toolDefinitions, block.name)
+    const toolDefinition = this.toolRegistry.find(block.name)
     if (!toolDefinition) {
       this.tools.push({
         id: block.id,
@@ -231,7 +233,7 @@ export class StreamingToolExecutor {
   }
 
   private getToolInterruptBehavior(tool: TrackedTool): 'cancel' | 'block' {
-    const definition = findToolByName(this.toolDefinitions, tool.block.name)
+    const definition = this.toolRegistry.find(tool.block.name)
     if (!definition?.interruptBehavior) return 'block'
     try {
       return definition.interruptBehavior()
