@@ -1,5 +1,5 @@
-import type { Goal, GoalMode } from '../../commands/goal/types.js'
-import { getRemainingBudget } from './goalAccounting.js'
+import type { Goal, GoalMode } from "../../commands/goal/types.js";
+import { getRemainingBudget } from "./goalAccounting.js";
 
 // 内联模板内容（避免在 publish build 中依赖文件系统）
 const CONTINUATION_TEMPLATE = `You are working toward a goal in your current thread.
@@ -54,30 +54,18 @@ use the Agent tool to run automatic multi-perspective review:
 → Compare findings → Resolve conflicts → Make decision → Execute
 
 If blocked and cannot proceed autonomously:
-- Call \`update_goal(status: "paused")\` and explain the blocker to the user
+- Call \`update_goal(status: "paused", summary: "reason")\` to pause and explain the blocker
 
-## ⚠️ CRITICAL: Goal Completion MUST Call update_goal
-**YOU MUST call the update_goal tool to formally complete this goal.**
+## ⚠️ CRITICAL: Goal Completion
+**When the objective is achieved, you MUST call update_goal to complete the goal.**
 
-When you believe the objective is achieved:
-1. **VERIFY** - Confirm the objective is fully met with concrete evidence
-2. **CALL update_goal** - Use: \`update_goal(status: "complete", summary: "brief summary")\`
-3. **STOP** - After update_goal, the goal is closed and no further work needed
+To complete: \`update_goal(status: "complete", summary: "brief summary")\`
 
-**IMPORTANT**:
-- WITHOUT calling update_goal, the goal remains "active" and consumes resources
-- The system will keep auto-continuing until update_goal is called
-- Do NOT just say "完成" in text - you MUST call the tool
+**Without this call, the system assumes work is still needed and will continue prompting you.**
 
-## Completion Verification Checklist
-Before calling update_goal, verify:
-1. Objective restated as concrete deliverables ✓
-2. Each requirement mapped to evidence ✓
-3. Artifacts inspected (files, output, tests) ✓
-4. No gaps or uncertainty ✓
-5. ALL requirements satisfied ✓
+To pause (if stuck or blocked): \`update_goal(status: "paused", summary: "reason")\`
 
-If ANY item is uncertain, continue working instead of calling update_goal.`
+If ANY item is uncertain, continue working instead of calling update_goal.`;
 
 const BUDGET_LIMIT_TEMPLATE = `The active thread goal has reached its token budget.
 
@@ -94,92 +82,103 @@ Budget:
 
 The system has marked the goal as budget_limited, so do not start new substantive work for this goal. Wrap up this turn soon: summarize useful progress, identify remaining work or blockers, and leave the user with a clear next step.
 
-Do not call update_goal unless the goal is actually complete.`
+Do not call update_goal unless the goal is actually complete.`;
 
-const SIMPLE_CONTINUATION_TEMPLATE = `Continue working toward: {{objective}}. Next action?`
+const SIMPLE_CONTINUATION_TEMPLATE = `Continue working toward: {{objective}}. Next action?`;
 
-const COMPLEX_CONTINUATION_TEMPLATE = CONTINUATION_TEMPLATE + `
+const COMPLEX_CONTINUATION_TEMPLATE = `${CONTINUATION_TEMPLATE}
 
 ## Self-Review
 Before proceeding, briefly assess:
 1. Is the current approach working? If no, switch strategy.
 2. Am I making progress toward the objective? If no, reconsider the plan.
-3. Are there simpler alternatives? If yes, prefer them.`
+3. Are there simpler alternatives? If yes, prefer them.`;
 
 function getContinuationTemplate(mode: GoalMode): string {
-  switch (mode) {
-    case 'simple':
-      return SIMPLE_CONTINUATION_TEMPLATE
-    case 'standard':
-      return CONTINUATION_TEMPLATE
-    case 'complex':
-      return COMPLEX_CONTINUATION_TEMPLATE
-  }
+	switch (mode) {
+		case "simple":
+			return SIMPLE_CONTINUATION_TEMPLATE;
+		case "standard":
+			return CONTINUATION_TEMPLATE;
+		case "complex":
+			return COMPLEX_CONTINUATION_TEMPLATE;
+	}
 }
 
-function renderTemplate(template: string, vars: Record<string, string>): string {
-  let result = template
-  for (const [key, value] of Object.entries(vars)) {
-    // Escape regex special characters in key to prevent injection
-    const safeKey = key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-    result = result.replace(new RegExp(`{{${safeKey}}}`, 'g'), value)
-  }
-  return result
+function renderTemplate(
+	template: string,
+	vars: Record<string, string>,
+): string {
+	let result = template;
+	for (const [key, value] of Object.entries(vars)) {
+		// Escape regex special characters in key to prevent injection
+		const safeKey = key.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+		result = result.replace(new RegExp(`{{${safeKey}}}`, "g"), value);
+	}
+	return result;
 }
 
 export function buildContinuationPrompt(goal: Goal): string {
-  const template = getContinuationTemplate(goal.mode ?? 'standard')
-  const tokenBudget = goal.tokenBudget?.toString() ?? 'unbounded'
-  const remainingVal = getRemainingBudget(goal)
-  const remaining = remainingVal === 'unbounded' ? 'unbounded' : remainingVal.toString()
+	const template = getContinuationTemplate(goal.mode ?? "standard");
+	const tokenBudget = goal.tokenBudget?.toString() ?? "unbounded";
+	const remainingVal = getRemainingBudget(goal);
+	const remaining =
+		remainingVal === "unbounded" ? "unbounded" : remainingVal.toString();
 
-  return renderTemplate(template, {
-    objective: escapeXml(goal.objective),
-    tokens_used: (goal.totalApiTokens ?? goal.tokensUsed).toString(),
-    time_used_seconds: Math.floor((goal.totalApiWallMs ?? goal.timeUsedSeconds * 1000) / 1000).toString(),
-    token_budget: tokenBudget,
-    remaining_tokens: remaining,
-  })
+	return renderTemplate(template, {
+		objective: escapeXml(goal.objective),
+		tokens_used: (goal.totalApiTokens ?? goal.tokensUsed).toString(),
+		time_used_seconds: Math.floor(
+			(goal.totalApiWallMs ?? goal.timeUsedSeconds * 1000) / 1000,
+		).toString(),
+		token_budget: tokenBudget,
+		remaining_tokens: remaining,
+	});
 }
 
 export function buildBudgetLimitPrompt(goal: Goal): string {
-  const tokenBudget = goal.tokenBudget?.toString() ?? 'none'
+	const tokenBudget = goal.tokenBudget?.toString() ?? "none";
 
-  return renderTemplate(BUDGET_LIMIT_TEMPLATE, {
-    objective: escapeXml(goal.objective),
-    tokens_used: (goal.totalApiTokens ?? goal.tokensUsed).toString(),
-    time_used_seconds: Math.floor((goal.totalApiWallMs ?? goal.timeUsedSeconds * 1000) / 1000).toString(),
-    token_budget: tokenBudget,
-  })
+	return renderTemplate(BUDGET_LIMIT_TEMPLATE, {
+		objective: escapeXml(goal.objective),
+		tokens_used: (goal.totalApiTokens ?? goal.tokensUsed).toString(),
+		time_used_seconds: Math.floor(
+			(goal.totalApiWallMs ?? goal.timeUsedSeconds * 1000) / 1000,
+		).toString(),
+		token_budget: tokenBudget,
+	});
 }
 
 interface PendingAnalysis {
-  reason: string
-  severity: 'warning' | 'critical'
-  triggerTurnId: string
+	reason: string;
+	severity: "warning" | "critical";
+	triggerTurnId: string;
 }
 
 interface AnalysisContext {
-  outputSummary?: string
-  toolCallsSummary?: string[]
+	outputSummary?: string;
+	toolCallsSummary?: string[];
 }
 
-export function buildAnalysisPrompt(pending: PendingAnalysis, context?: AnalysisContext): string {
-  const severity = pending.severity.toUpperCase()
-  let prompt = `<analysis_context>\n[${severity}] Previous turn flagged: ${pending.reason}\nTriggered at turn: ${pending.triggerTurnId}\n`
-  if (context?.toolCallsSummary?.length) {
-    prompt += `Tools called: ${context.toolCallsSummary.join(', ')}\n`
-  }
-  if (context?.outputSummary) {
-    prompt += `Output preview: ${context.outputSummary}\n`
-  }
-  prompt += `</analysis_context>\n\nBefore continuing, address the above issue.\nConsider: adjust strategy, try different approach, or /goal pause if blocked.\n`
-  return prompt
+export function buildAnalysisPrompt(
+	pending: PendingAnalysis,
+	context?: AnalysisContext,
+): string {
+	const severity = pending.severity.toUpperCase();
+	let prompt = `<analysis_context>\n[${severity}] Previous turn flagged: ${pending.reason}\nTriggered at turn: ${pending.triggerTurnId}\n`;
+	if (context?.toolCallsSummary?.length) {
+		prompt += `Tools called: ${context.toolCallsSummary.join(", ")}\n`;
+	}
+	if (context?.outputSummary) {
+		prompt += `Output preview: ${context.outputSummary}\n`;
+	}
+	prompt += `</analysis_context>\n\nBefore continuing, address the above issue.\nConsider: adjust strategy, try different approach, or /goal pause if blocked.\n`;
+	return prompt;
 }
 
 function escapeXml(input: string): string {
-  return input
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
+	return input
+		.replace(/&/g, "&amp;")
+		.replace(/</g, "&lt;")
+		.replace(/>/g, "&gt;");
 }

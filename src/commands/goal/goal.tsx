@@ -68,7 +68,8 @@ function parseGoalArgs(args: string[]): GoalCommandArgs {
   if (retryIntervalIndex !== -1 && args[retryIntervalIndex + 1]) {
     const intervalValue = args[retryIntervalIndex + 1]
     // 验证格式：数字 + 单位 (s/m/h)，如 10s, 5m, 1h
-    if (/^\d+[smh]$/.test(intervalValue)) {
+    // Regex 与 types.ts getRetryConfig 中的解析保持一致
+    if (/^(\d+)([smh])$/.test(intervalValue)) {
       retryInterval = intervalValue
     }
     args = args.filter((_, i) => i !== retryIntervalIndex && i !== retryIntervalIndex + 1)
