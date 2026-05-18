@@ -121,7 +121,7 @@ function saveProfiles(data: ProfilesData): { error: Error | null } {
 // -- API Key Approval
 
 /**
- * Add an anthropic provider's API key to the approved list in ~/.claude.json
+ * Add an anthropic provider's API key to the approved list in ~/.ola-cc.json
  * so getAnthropicApiKeyWithSource() (src/utils/auth.ts:299-309) will recognize it.
  * Without this, keys added via /auth add are not in the approved list
  * (which /login normally populates), causing "Not logged in" errors.
@@ -198,7 +198,7 @@ async function verifyProviderProfile(
       if (profile.apiUrl) process.env.ANTHROPIC_BASE_URL = profile.apiUrl
 
       try {
-        const client = await getAnthropicClient({ maxRetries: 0 })
+        const client = await getAnthropicClient({ apiKey: profile.apiKey, maxRetries: 0 })
         const result = await (client.beta.messages.create({
           model: modelToTest || 'claude-sonnet-4-20250514',
           messages: [{ role: 'user', content: 'Hi' }],
@@ -313,7 +313,7 @@ function AuthActionView({
 
         case 'add': {
           if (!parsed.name || !parsed.apiUrl || !parsed.apiKey || !parsed.model) {
-            setMessage('用法: /auth add <name> --api-url <url> --api-key <key> --model <model>')
+            setMessage('用法: /auth add <name> --api-url <url> --api-key <key> --model <model> [--provider openai|anthropic]')
             setDone(true)
             break
           }
@@ -327,7 +327,9 @@ function AuthActionView({
             setDone(true)
             break
           }
-          const prov = parsed.provider || 'openai'
+          // Auto-detect provider from URL if not explicitly specified
+          const isAnthropicUrl = parsed.apiUrl.includes('/anthropic')
+          const prov = parsed.provider || (isAnthropicUrl ? 'anthropic' : 'openai')
           const existing = data.profiles.findIndex(p => p.name === parsed.name)
           const profile: ProviderProfile = {
             name: parsed.name,
@@ -481,7 +483,7 @@ function AuthActionView({
         case 'help': {
           setMessage(
             `${chalk.bold('Provider 配置管理')}\n\n` +
-            `${chalk.cyan('/auth add')} <name> --api-url <url> --api-key <key> --model <model>\n  添加 provider 配置\n\n` +
+            `${chalk.cyan('/auth add')} <name> --api-url <url> --api-key <key> --model <model> [--provider openai|anthropic]\n  添加 provider 配置 (--provider 可选，默认根据 URL 自动检测)\n\n` +
             `${chalk.cyan('/auth list')}                     列出所有已保存的配置\n\n` +
             `${chalk.cyan('/auth use')} <name>               切换到指定 provider\n\n` +
             `${chalk.cyan('/auth delete')} <name>            删除 provider\n\n` +
@@ -490,6 +492,7 @@ function AuthActionView({
             `${chalk.cyan('/auth remove-model')} <name> <model> 从 provider 移除 model\n\n` +
             `${chalk.dim('示例:')}\n` +
             `  /auth add dashscope --api-url https://dashscope.aliyuncs.com/compatible-mode/v1 --api-key sk-xxx --model qwen3.6-plus\n` +
+            `  /auth add qwen --api-url https://coding.dashscope.aliyuncs.com/apps/anthropic --api-key sk-xxx --model qwen3.6-plus  # 自动检测为 Anthropic 协议\n` +
             `  /auth list\n` +
             `  /auth use dashscope\n` +
             `  /auth add-model dashscope qwen-max`,
