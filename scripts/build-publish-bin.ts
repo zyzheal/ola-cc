@@ -442,14 +442,16 @@ function buildBinPackages() {
   const platformDir = join(binOutDir, currentKey)
   mkdirSync(platformDir, { recursive: true })
 
-  // macOS x64: use JS bundle (cross-compilation not supported by bun --compile)
+  // JS bundle platforms: macOS x64 (cross-compile not supported) and Windows
+  // (bun --compile standalone executables crash on Windows)
   // All other platforms: compile native binary
   const isMacOSX64 = currentPlatform === 'darwin' && currentArch === 'x64'
+  const isWindows = currentPlatform === 'win32'
 
-  if (isMacOSX64) {
+  if (isMacOSX64 || isWindows) {
     buildJsPackage(platformDir, currentKey, currentArch, currentPlatform)
   } else {
-    // macOS arm64/Linux/Windows: compile native binary
+    // macOS arm64/Linux: compile native binary
     const compiledBinary = compileBinary()
     if (!compiledBinary) {
       console.error('[publish-bin] Failed to compile binary, skipping platform packages')

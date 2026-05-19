@@ -327,7 +327,7 @@ getTools(permissionContext)
 | STATUSLINE_SETUP_AGENT | `built-in/statuslineSetup.ts` | 状态行配置 | |
 | EXPLORE_AGENT | `built-in/exploreAgent.ts` | 代码探索 | BUILTIN_EXPLORE_PLAN_AGENTS |
 | PLAN_AGENT | `built-in/planAgent.ts` | 计划制定 | BUILTIN_EXPLORE_PLAN_AGENTS |
-| CLAUDE_CODE_GUIDE_AGENT | `built-in/claudeCodeGuideAgent.ts` | Claude Code 指南 | |
+| OLA_CC_GUIDE_AGENT | `built-in/claudeCodeGuideAgent.ts` | Claude Code 指南 | |
 | VERIFICATION_AGENT | `built-in/verificationAgent.ts` | 验证 | VERIFICATION_AGENT |
 
 #### Agent 架构

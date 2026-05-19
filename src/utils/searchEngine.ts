@@ -172,7 +172,7 @@ export async function ugrepBinary(
 
   return new Promise((resolve, reject) => {
     const defaultTimeout = getPlatform() === 'wsl' ? 60_000 : 20_000
-    const parsedSeconds = parseInt(process.env.CLAUDE_CODE_GLOB_TIMEOUT_SECONDS || '', 10) || 0
+    const parsedSeconds = parseInt(process.env.OLA_CC_GLOB_TIMEOUT_SECONDS || '', 10) || 0
     const timeout = parsedSeconds > 0 ? parsedSeconds * 1000 : defaultTimeout
 
     const child = spawn(ugrepPath, [...ugrepArgs, target], {

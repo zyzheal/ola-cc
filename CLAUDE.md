@@ -151,7 +151,7 @@ The API client factory (`src/services/api/client.ts`) selects providers based on
 | `CLAUDE_CODE_USE_FOUNDRY` | Azure Foundry |
 | (default) | Direct Anthropic API |
 
-**Note:** DashScope, LiteLLM, and similar proxy endpoints route through the default (firstParty) provider when `CLAUDE_CODE_USE_OPENAI` is not set. Model names must be configured via `CLAUDE_CODE_MODEL_*` env vars or `ANTHROPIC_MODEL`.
+**Note:** DashScope, LiteLLM, and similar proxy endpoints route through the default (firstParty) provider when `CLAUDE_CODE_USE_OPENAI` is not set. Model names must be configured via `OLA_CC_MODEL_*` env vars or `ANTHROPIC_MODEL`.
 
 ### Feature Flags
 
@@ -194,12 +194,12 @@ This saves ~22% of tool-related tokens when ToolSearchTool is not enabled, reduc
 ### Model Configuration System
 
 Model configuration is multi-layered (`src/utils/model/`):
-- `configs.ts` — per-model configs (token limits, pricing) keyed by provider, all model names via `CLAUDE_CODE_MODEL_*` env vars
+- `configs.ts` — per-model configs (token limits, pricing) keyed by provider, all model names via `OLA_CC_MODEL_*` env vars
 - `model.ts` — model resolution logic, aliases (`sonnet`, `opus`, `haiku`, `best`, `sonnet[1m]`, `opus[1m]`, `opusplan`), `parseUserSpecifiedModel()`
 - `modelStrings.ts` — provider-specific model ID strings, supports Bedrock inference profile overrides and `modelOverrides` from settings
 - `agent.ts` — subagent model selection, **non-Claude parent model protection** (subagents inherit parent when parent is not a Claude model)
 - `providers.ts` — API provider detection
-- Key env vars: `ANTHROPIC_MODEL`, `OPENAI_MODEL`, `CLAUDE_CODE_SUBAGENT_MODEL`, `ANTHROPIC_DEFAULT_SONNET_MODEL`, `ANTHROPIC_DEFAULT_OPUS_MODEL`, `ANTHROPIC_DEFAULT_HAIKU_MODEL`, `CLAUDE_CODE_FRONTIER_MODEL_NAME`
+- Key env vars: `ANTHROPIC_MODEL`, `OPENAI_MODEL`, `OLA_CC_SUBAGENT_MODEL`, `ANTHROPIC_DEFAULT_SONNET_MODEL`, `ANTHROPIC_DEFAULT_OPUS_MODEL`, `ANTHROPIC_DEFAULT_HAIKU_MODEL`, `OLA_CC_FRONTIER_MODEL_NAME`
 
 ### Message Types & Safety
 
@@ -290,3 +290,36 @@ Safety checks (`checkPathSafetyForAutoEdit` in `src/utils/permissions/filesystem
 
 writing-plans 技能的开始提示必须使用：
 > "我正在使用 writing-plans 技能来创建实现计划。"
+
+---
+
+# Behavioral Rules
+
+These rules apply to every task unless explicitly overridden.
+
+## Read Before You Write
+Before adding code, read exports, immediate callers, and shared utilities.
+If unsure why code is structured a certain way, ask rather than guess.
+
+## Surgical Changes
+Touch only what you must. Don't "improve" adjacent code or formatting.
+Don't refactor what isn't broken. Match existing style.
+
+## Simplicity First
+Minimum code that solves the problem. No features beyond what was asked.
+No abstractions for single-use code. If a senior engineer would call it overcomplicated, simplify.
+
+## Surface Conflicts
+If two patterns contradict, pick one (more recent / more tested) and explain why.
+Flag the other for cleanup. Don't blend conflicting patterns.
+
+## Fail Loud
+"Completed" is wrong if anything was skipped silently.
+Default to surfacing uncertainty, not hiding it.
+
+## Checkpoint After Each Step
+Summarize what was done, what's verified, what's left.
+Don't continue from a state you can't describe back.
+
+## Match Conventions
+Conformance > taste. If a convention seems harmful, surface it — don't fork silently.

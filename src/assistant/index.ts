@@ -1,7 +1,7 @@
 function readAssistantModeFlag(): boolean {
   return (
-    process.env.CLAUDE_CODE_ASSISTANT_MODE === '1' ||
-    process.env.CLAUDE_CODE_ASSISTANT_MODE === 'true'
+    process.env.OLA_CC_ASSISTANT_MODE === '1' ||
+    process.env.OLA_CC_ASSISTANT_MODE === 'true'
   )
 }
 

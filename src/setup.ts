@@ -90,7 +90,7 @@ export async function setup(
     // Start UDS messaging server (Mac/Linux only).
     // Enabled by default for ants — creates a socket in tmpdir if no
     // --messaging-socket-path is passed. Awaited so the server is bound
-    // and $CLAUDE_CODE_MESSAGING_SOCKET is exported before any hook
+    // and $OLA_CC_MESSAGING_SOCKET is exported before any hook
     // (SessionStart in particular) can spawn and snapshot process.env.
     if (feature('UDS_INBOX')) {
       const m = await import('./utils/udsMessaging.js')
@@ -280,7 +280,7 @@ export async function setup(
     clearMemoryFileCaches()
     // Settings cache was populated in init() (via applySafeConfigEnvironmentVariables)
     // and again at captureHooksConfigSnapshot() above, both from the original dir's
-    // .claude/settings.json. Re-read from the worktree and re-capture hooks.
+    // .ola-cc/settings.json. Re-read from the worktree and re-capture hooks.
     updateHooksConfigSnapshot()
   }
 
@@ -306,7 +306,7 @@ export async function setup(
   profileCheckpoint('setup_before_prefetch')
   // Pre-fetch promises - only items needed before render
   logForDiagnosticsNoPII('info', 'setup_prefetch_starting')
-  // When CLAUDE_CODE_SYNC_PLUGIN_INSTALL is set, skip all plugin prefetch.
+  // When OLA_CC_SYNC_PLUGIN_INSTALL is set, skip all plugin prefetch.
   // The sync install path in print.ts calls refreshPluginState() after
   // installing, which reloads commands, hooks, and agents. Prefetching here
   // races with the install (concurrent copyPluginToVersionedCache / cachePlugin
@@ -314,7 +314,7 @@ export async function setup(
   // mid-install when policySettings arrives.
   const skipPluginPrefetch =
     (getIsNonInteractiveSession() &&
-      isEnvTruthy(process.env.CLAUDE_CODE_SYNC_PLUGIN_INSTALL)) ||
+      isEnvTruthy(process.env.OLA_CC_SYNC_PLUGIN_INSTALL)) ||
     // --bare: loadPluginHooks → loadAllPlugins is filesystem work that's
     // wasted when executeHooks early-returns under --bare anyway.
     isBareMode()
@@ -404,7 +404,7 @@ export async function setup(
       typeof process.getuid === 'function' &&
       process.getuid() === 0 &&
       process.env.IS_SANDBOX !== '1' &&
-      !isEnvTruthy(process.env.CLAUDE_CODE_BUBBLEWRAP)
+      !isEnvTruthy(process.env.OLA_CC_BUBBLEWRAP)
     ) {
       // biome-ignore lint/suspicious/noConsole:: intentional console output
       console.error(
@@ -418,10 +418,10 @@ export async function setup(
       // Skip for Desktop's local agent mode — same trust model as CCR/BYOC
       // (trusted Anthropic-managed launcher intentionally pre-approving everything).
       // Precedent: permissionSetup.ts:861, applySettingsChange.ts:55 (PR #19116)
-      process.env.CLAUDE_CODE_ENTRYPOINT !== 'local-agent' &&
+      process.env.OLA_CC_ENTRYPOINT !== 'local-agent' &&
       // Same for CCD (ola-cc in Desktop) — apps#29127 passes the flag
       // unconditionally to unlock mid-session bypass switching
-      process.env.CLAUDE_CODE_ENTRYPOINT !== 'claude-desktop'
+      process.env.OLA_CC_ENTRYPOINT !== 'claude-desktop'
     ) {
       // Only await if permission mode is set to bypass
       const [isDocker, hasInternet] = await Promise.all([

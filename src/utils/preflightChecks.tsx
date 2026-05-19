@@ -18,7 +18,7 @@ async function checkEndpoints(): Promise<PreflightCheckResult> {
   try {
     const oauthConfig = getOauthConfig();
     // Use ANTHROPIC_BASE_URL if set (for proxy/custom endpoints), otherwise use OAuth config
-    const apiBaseUrl = process.env.ANTHROPIC_BASE_URL || oauthConfig.BASE_API_URL;
+    const apiBaseUrl = process.env.ANTHROPIC_BASE_URL || (oauthConfig?.BASE_API_URL);
 
     // When using a custom/proxy endpoint, skip endpoint checks
     // Third-party proxies may not support standard Anthropic health check endpoints
@@ -30,14 +30,21 @@ async function checkEndpoints(): Promise<PreflightCheckResult> {
         new URL(apiBaseUrl);
         return { success: true };
       } catch {
-        return { 
-          success: false, 
-          error: `Invalid ANTHROPIC_BASE_URL: ${apiBaseUrl}` 
+        return {
+          success: false,
+          error: `Invalid ANTHROPIC_BASE_URL: ${apiBaseUrl}`
         };
       }
     }
-    
-    const endpoints = [`${apiBaseUrl}/api/hello`, `${new URL(oauthConfig.TOKEN_URL).origin}/v1/oauth/hello`];
+
+    // Without ANTHROPIC_BASE_URL or OAuth config, skip preflight check
+    // The actual API call will handle connectivity
+    if (!apiBaseUrl) {
+      return { success: true };
+    }
+
+    const tokenUrl = oauthConfig?.TOKEN_URL;
+    const endpoints = [`${apiBaseUrl}/api/hello`, tokenUrl ? `${new URL(tokenUrl).origin}/v1/oauth/hello` : null].filter(Boolean) as string[];
 
     const checkEndpoint = async (url: string): Promise<PreflightCheckResult> => {
       try {

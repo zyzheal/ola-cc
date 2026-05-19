@@ -703,12 +703,12 @@ export function REPL({
 
   // Env-var gates hoisted to mount-time — isEnvTruthy does toLowerCase+trim+
   // includes, and these were on the render path (hot during PageUp spam).
-  const titleDisabled = useMemo(() => isEnvTruthy(process.env.CLAUDE_CODE_DISABLE_TERMINAL_TITLE), []);
+  const titleDisabled = useMemo(() => isEnvTruthy(process.env.OLA_CC_DISABLE_TERMINAL_TITLE), []);
   const moreRightEnabled = useMemo(() => "external" === 'ant' && isEnvTruthy(process.env.CLAUDE_MORERIGHT), []);
-  const disableVirtualScroll = useMemo(() => isEnvTruthy(process.env.CLAUDE_CODE_DISABLE_VIRTUAL_SCROLL), []);
+  const disableVirtualScroll = useMemo(() => isEnvTruthy(process.env.OLA_CC_DISABLE_VIRTUAL_SCROLL), []);
   const disableMessageActions = feature('MESSAGE_ACTIONS') ?
   // biome-ignore lint/correctness/useHookAtTopLevel: feature() is a compile-time constant
-  useMemo(() => isEnvTruthy(process.env.CLAUDE_CODE_DISABLE_MESSAGE_ACTIONS), []) : false;
+  useMemo(() => isEnvTruthy(process.env.OLA_CC_DISABLE_MESSAGE_ACTIONS), []) : false;
 
   // Log REPL mount/unmount lifecycle
   useEffect(() => {
@@ -807,7 +807,7 @@ export function REPL({
   const [screen, setScreen] = useState<Screen>('prompt');
   const [showAllInTranscript, setShowAllInTranscript] = useState(false);
   // [ forces the dump-to-scrollback path inside transcript mode. Separate
-  // from CLAUDE_CODE_NO_FLICKER=0 (which is process-lifetime) — this is
+  // from OLA_CC_NO_FLICKER=0 (which is process-lifetime) — this is
   // ephemeral, reset on transcript exit. Diagnostic escape hatch so
   // terminal/tmux native cmd-F can search the full flat render.
   const [dumpMode, setDumpMode] = useState(false);
@@ -1602,6 +1602,7 @@ export function REPL({
   const [spinnerMessage, setSpinnerMessage] = useState<string | null>(null);
   const [spinnerColor, setSpinnerColor] = useState<keyof Theme | null>(null);
   const [spinnerShimmerColor, setSpinnerShimmerColor] = useState<keyof Theme | null>(null);
+  const [spinnerProgress, setSpinnerProgress] = useState<number | null>(null);
   const [isMessageSelectorVisible, setIsMessageSelectorVisible] = useState(false);
   const [messageSelectorPreselect, setMessageSelectorPreselect] = useState<UserMessage | undefined>(undefined);
   const [showCostDialog, setShowCostDialog] = useState(false);
@@ -1775,7 +1776,7 @@ export function REPL({
     if (wt.creationDurationMs < 15_000) return;
     worktreeTipShownRef.current = true;
     const secs = Math.round(wt.creationDurationMs / 1000);
-    setMessages(prev => [...prev, createSystemMessage(`Worktree creation took ${secs}s. For large repos, set \`worktree.sparsePaths\` in .claude/settings.json to check out only the directories you need — e.g. \`{"worktree": {"sparsePaths": ["src", "packages/foo"]}}\`.`, 'info')]);
+    setMessages(prev => [...prev, createSystemMessage(`Worktree creation took ${secs}s. For large repos, set \`worktree.sparsePaths\` in .ola-cc/settings.json to check out only the directories you need — e.g. \`{"worktree": {"sparsePaths": ["src", "packages/foo"]}}\`.`, 'info')]);
   }, [setMessages]);
 
   // Hide spinner when the only in-progress tool is Sleep
@@ -2634,14 +2635,21 @@ export function REPL({
             setSpinnerColor('claudeBlue_FOR_SYSTEM_SPINNER');
             setSpinnerShimmerColor('claudeBlueShimmer_FOR_SYSTEM_SPINNER');
             setSpinnerMessage(event.hookType === 'pre_compact' ? 'Running PreCompact hooks\u2026' : event.hookType === 'post_compact' ? 'Running PostCompact hooks\u2026' : 'Running SessionStart hooks\u2026');
+            setSpinnerProgress(null);
             break;
           case 'compact_start':
-            setSpinnerMessage('Compacting conversation');
+            setSpinnerMessage('正在压缩对话...');
+            setSpinnerProgress(0);
+            break;
+          case 'compact_progress':
+            setSpinnerMessage(event.message || '压缩中...');
+            setSpinnerProgress(event.progress);
             break;
           case 'compact_end':
             setSpinnerMessage(null);
             setSpinnerColor(null);
             setSpinnerShimmerColor(null);
+            setSpinnerProgress(null);
             break;
         }
       },
@@ -3441,8 +3449,8 @@ export function REPL({
     // controls treatment: "dialog" (blocking), "hint" (notification), "off".
     {
       const willowMode = getFeatureValue_CACHED_MAY_BE_STALE('tengu_willow_mode', 'off');
-      const idleThresholdMin = Number(process.env.CLAUDE_CODE_IDLE_THRESHOLD_MINUTES ?? 75);
-      const tokenThreshold = Number(process.env.CLAUDE_CODE_IDLE_TOKEN_THRESHOLD ?? 100_000);
+      const idleThresholdMin = Number(process.env.OLA_CC_IDLE_THRESHOLD_MINUTES ?? 75);
+      const tokenThreshold = Number(process.env.OLA_CC_IDLE_TOKEN_THRESHOLD ?? 100_000);
       if (willowMode !== 'off' && !getGlobalConfig().idleReturnDismissed && !skipIdleCheckRef.current && !speculationAccept && !input.trim().startsWith('/') && lastQueryCompletionTimeRef.current > 0 && getTotalInputTokens() >= tokenThreshold) {
         const idleMs = Date.now() - lastQueryCompletionTimeRef.current;
         const idleMinutes = idleMs / 60_000;
@@ -4008,7 +4016,7 @@ export function REPL({
   // empty to non-empty, not on every length change -- otherwise a render loop
   // (concurrent onQuery thrashing, etc.) spams saveGlobalConfig, which hits
   // ELOCKED under concurrent sessions and falls back to unlocked writes.
-  // That write storm is the primary trigger for ~/.claude.json corruption
+  // That write storm is the primary trigger for ~/.ola-cc.json corruption
   // (GH #3117).
   const hasCountedQueueUseRef = useRef(false);
   useEffect(() => {
@@ -4117,9 +4125,9 @@ export function REPL({
     const willowMode: string = getFeatureValue_CACHED_MAY_BE_STALE('tengu_willow_mode', 'off');
     if (willowMode !== 'hint' && willowMode !== 'hint_v2') return;
     if (getGlobalConfig().idleReturnDismissed) return;
-    const tokenThreshold = Number(process.env.CLAUDE_CODE_IDLE_TOKEN_THRESHOLD ?? 100_000);
+    const tokenThreshold = Number(process.env.OLA_CC_IDLE_TOKEN_THRESHOLD ?? 100_000);
     if (getTotalInputTokens() < tokenThreshold) return;
-    const idleThresholdMs = Number(process.env.CLAUDE_CODE_IDLE_THRESHOLD_MINUTES ?? 75) * 60_000;
+    const idleThresholdMs = Number(process.env.OLA_CC_IDLE_THRESHOLD_MINUTES ?? 75) * 60_000;
     const elapsed = Date.now() - lastQueryCompletionTime;
     const remaining = idleThresholdMs - elapsed;
     const timer = setTimeout((lqct, addNotif, msgsRef, mode, hintRef) => {
@@ -4210,7 +4218,7 @@ export function REPL({
     onSubmitMessage: handleIncomingPrompt
   });
 
-  // Scheduled tasks from .claude/scheduled_tasks.json (CronCreate/Delete/List)
+  // Scheduled tasks from .ola-cc/scheduled_tasks.json (CronCreate/Delete/List)
   if (feature('AGENT_TRIGGERS')) {
     // Assistant mode bypasses the isLoading gate (the proactive tick →
     // Sleep → tick loop would otherwise starve the scheduler).
@@ -4758,7 +4766,7 @@ export function REPL({
               {"external" === 'ant' && <TungstenLiveMonitor />}
               {feature('WEB_BROWSER_TOOL') ? WebBrowserPanelModule && <WebBrowserPanelModule.WebBrowserPanel /> : null}
               <Box flexGrow={1} />
-              {showSpinner && <SpinnerWithVerb mode={streamMode} spinnerTip={spinnerTip} responseLengthRef={responseLengthRef} apiMetricsRef={apiMetricsRef} overrideMessage={spinnerMessage} spinnerSuffix={stopHookSpinnerSuffix} verbose={verbose} loadingStartTimeRef={loadingStartTimeRef} totalPausedMsRef={totalPausedMsRef} pauseStartTimeRef={pauseStartTimeRef} overrideColor={spinnerColor} overrideShimmerColor={spinnerShimmerColor} hasActiveTools={inProgressToolUseIDs.size > 0} leaderIsIdle={!isLoading} />}
+              {showSpinner && <SpinnerWithVerb mode={streamMode} spinnerTip={spinnerTip} responseLengthRef={responseLengthRef} apiMetricsRef={apiMetricsRef} overrideMessage={spinnerMessage} spinnerSuffix={stopHookSpinnerSuffix} verbose={verbose} loadingStartTimeRef={loadingStartTimeRef} totalPausedMsRef={totalPausedMsRef} pauseStartTimeRef={pauseStartTimeRef} overrideColor={spinnerColor} overrideShimmerColor={spinnerShimmerColor} hasActiveTools={inProgressToolUseIDs.size > 0} leaderIsIdle={!isLoading} progress={spinnerProgress} />}
               {!showSpinner && !isLoading && !userInputOnProcessing && !hasRunningTeammates && isBriefOnly && !viewedAgentTask && <BriefIdleStatus />}
               {isFullscreenEnvEnabled() && <PromptInputQueuedCommands />}
             </>} bottom={<Box flexDirection={feature('BUDDY') && companionNarrow ? 'column' : 'row'} width="100%" alignItems={feature('BUDDY') && companionNarrow ? undefined : 'flex-end'}>
@@ -4780,10 +4788,9 @@ export function REPL({
                 {!showSpinner && !toolJSX?.isLocalJSXCommand && showExpandedTodos && tasksV2 && tasksV2.length > 0 && <Box width="100%" flexDirection="column">
                       <TaskListV2 tasks={tasksV2} isStandalone={true} />
                     </Box>}
-                {/* Goal progress temporarily disabled for debugging */}
-                {/* {goal?.id && goal?.status && <Box width="100%" flexDirection="column">
+                {goal?.id && goal?.status && <Box width="100%" flexDirection="column">
                       <GoalProgressWithBoundary />
-                    </Box>} */}
+                    </Box>}
                 {focusedInputDialog === 'sandbox-permission' && <SandboxPermissionRequest key={sandboxPermissionRequestQueue[0]!.hostPattern.host} hostPattern={sandboxPermissionRequestQueue[0]!.hostPattern} onUserResponse={(response: {
             allow: boolean;
             persistToSettings: boolean;

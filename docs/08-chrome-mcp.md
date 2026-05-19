@@ -330,7 +330,7 @@ curl -X POST http://127.0.0.1:12306/api/browser_screenshot \
 
 | 变量 | 说明 | 值 |
 |------|------|-----|
-| `CLAUDE_CODE_ENABLE_CFC` | 强制启用/禁用 | `1` 或 `0` |
+| `OLA_CC_ENABLE_CFC` | 强制启用/禁用 | `1` 或 `0` |
 | `CLAUDE_CHROME_PERMISSION_MODE` | 权限模式 | `ask`, `skip_all_permission_checks`, `follow_a_plan` |
 
 ### 配置文件
@@ -357,7 +357,7 @@ bun install
 claude --chrome
 
 # 或设置环境变量
-CLAUDE_CODE_ENABLE_CFC=1 claude
+OLA_CC_ENABLE_CFC=1 claude
 
 # Native Host 自动启动，HTTP Server 自动监听 12306
 # Extension 自动连接

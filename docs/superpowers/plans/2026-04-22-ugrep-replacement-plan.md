@@ -243,7 +243,7 @@ export async function ugrepBinary(
 
   return new Promise((resolve, reject) => {
     const defaultTimeout = getPlatform() === 'wsl' ? 60_000 : 20_000
-    const parsedSeconds = parseInt(process.env.CLAUDE_CODE_GLOB_TIMEOUT_SECONDS || '', 10) || 0
+    const parsedSeconds = parseInt(process.env.OLA_CC_GLOB_TIMEOUT_SECONDS || '', 10) || 0
     const timeout = parsedSeconds > 0 ? parsedSeconds * 1000 : defaultTimeout
 
     const child = spawn(ugrepPath, [...ugrepArgs, target], {
@@ -498,7 +498,7 @@ In `.github/workflows/publish.yml`, add a test step in the `win32-x64` job after
   shell: pwsh
   run: |
     # Test that unifiedSearch uses ugrep on Windows
-    $env:CLAUDE_CODE_API_KEY = "test-key"
+    $env:OLA_CC_API_KEY = "test-key"
     $output = npx @zyzheal/ola-cc@latest --version 2>&1
     Write-Output "Version: $output"
     # Verify ugrep binary exists

@@ -2,14 +2,14 @@
  * OAuth 配置模块
  *
  * OAuth 功能默认禁用。不配置任何 OAuth 环境变量时，getOauthConfig() 返回 undefined。
- * 如需启用 OAuth，在 ~/.claude/settings.json env 字段或 process.env 中设置对应变量。
+ * 如需启用 OAuth，在 ~/.ola-cc/settings.json env 字段或 process.env 中设置对应变量。
  */
 
 export type OauthConfig = {
   BASE_API_URL: string
   CONSOLE_AUTHORIZE_URL: string
-  CLAUDE_AI_AUTHORIZE_URL: string
-  CLAUDE_AI_ORIGIN: string
+  OLA_CC_AI_AUTHORIZE_URL: string
+  OLA_CC_AI_ORIGIN: string
   TOKEN_URL: string
   API_KEY_URL: string
   ROLES_URL: string
@@ -22,41 +22,49 @@ export type OauthConfig = {
   MCP_PROXY_PATH: string
 }
 
-export const CLAUDE_AI_INFERENCE_SCOPE = 'user:inference' as const
-export const CLAUDE_AI_PROFILE_SCOPE = 'user:profile' as const
+export const OLA_CC_AI_INFERENCE_SCOPE = 'user:inference' as const
+// Backward compatibility alias (deprecated)
+export const CLAUDE_AI_INFERENCE_SCOPE = OLA_CC_AI_INFERENCE_SCOPE
+
+export const OLA_CC_AI_PROFILE_SCOPE = 'user:profile' as const
+// Backward compatibility alias (deprecated)
+export const CLAUDE_AI_PROFILE_SCOPE = OLA_CC_AI_PROFILE_SCOPE
 const CONSOLE_SCOPE = 'org:create_api_key' as const
 export const OAUTH_BETA_HEADER = 'oauth-2025-04-20' as const
 
 export const CONSOLE_OAUTH_SCOPES = [
   CONSOLE_SCOPE,
-  CLAUDE_AI_PROFILE_SCOPE,
+  OLA_CC_AI_PROFILE_SCOPE,
 ] as const
 
-export const CLAUDE_AI_OAUTH_SCOPES = [
-  CLAUDE_AI_PROFILE_SCOPE,
-  CLAUDE_AI_INFERENCE_SCOPE,
+export const OLA_CC_AI_OAUTH_SCOPES = [
+  OLA_CC_AI_PROFILE_SCOPE,
+  OLA_CC_AI_INFERENCE_SCOPE,
   'user:sessions:claude_code',
   'user:mcp_servers',
   'user:file_upload',
 ] as const
 
+// Backward compatibility alias (deprecated)
+export const CLAUDE_AI_OAUTH_SCOPES = OLA_CC_AI_OAUTH_SCOPES
+
 export const ALL_OAUTH_SCOPES = Array.from(
-  new Set([...CONSOLE_OAUTH_SCOPES, ...CLAUDE_AI_OAUTH_SCOPES]),
+  new Set([...CONSOLE_OAUTH_SCOPES, ...OLA_CC_AI_OAUTH_SCOPES]),
 )
 
 const OAUTH_ENV_KEYS = [
-  'CLAUDE_API_BASE_URL',
-  'CLAUDE_OAUTH_CONSOLE_AUTHORIZE_URL',
-  'CLAUDE_OAUTH_CLAUDE_AI_AUTHORIZE_URL',
-  'CLAUDE_OAUTH_CLAUDE_AI_ORIGIN',
-  'CLAUDE_OAUTH_TOKEN_URL',
-  'CLAUDE_OAUTH_API_KEY_URL',
-  'CLAUDE_OAUTH_ROLES_URL',
-  'CLAUDE_OAUTH_CONSOLE_SUCCESS_URL',
-  'CLAUDE_OAUTH_CLAUDEAI_SUCCESS_URL',
-  'CLAUDE_OAUTH_MANUAL_REDIRECT_URL',
-  'CLAUDE_OAUTH_CLIENT_ID',
-  'CLAUDE_MCP_PROXY_URL',
+  'OLA_CC_AI_BASE_URL',
+  'OLA_CC_OAUTH_CONSOLE_AUTHORIZE_URL',
+  'OLA_CC_OAUTH_OLA_CC_AI_AUTHORIZE_URL',
+  'OLA_CC_OAUTH_OLA_CC_AI_ORIGIN',
+  'OLA_CC_OAUTH_TOKEN_URL',
+  'OLA_CC_OAUTH_API_KEY_URL',
+  'OLA_CC_OAUTH_ROLES_URL',
+  'OLA_CC_OAUTH_CONSOLE_SUCCESS_URL',
+  'OLA_CC_OAUTH_CLAUDEAI_SUCCESS_URL',
+  'OLA_CC_OAUTH_MANUAL_REDIRECT_URL',
+  'OLA_CC_OAUTH_CLIENT_ID',
+  'OLA_CC_MCP_PROXY_URL',
 ] as const
 
 let _oauthConfig: OauthConfig | undefined
@@ -73,7 +81,7 @@ function getEnv(name: string): string | undefined {
       const { join } = require('path')
       const home = process.env.HOME || process.env.USERPROFILE || ''
       if (home) {
-        const settingsPath = join(home, '.claude', 'settings.json')
+        const settingsPath = join(home, '.ola-cc', 'settings.json')
         const raw = readFileSync(settingsPath, 'utf-8')
         const parsed = JSON.parse(raw)
         value = parsed?.env?.[name]
@@ -97,7 +105,7 @@ export function isOAuthConfigured(): boolean {
     const { join } = require('path')
     const home = process.env.HOME || process.env.USERPROFILE || ''
     if (home) {
-      const settingsPath = join(home, '.claude', 'settings.json')
+      const settingsPath = join(home, '.ola-cc', 'settings.json')
       const raw = readFileSync(settingsPath, 'utf-8')
       const parsed = JSON.parse(raw)
       if (parsed?.env) {
@@ -120,19 +128,19 @@ function buildOauthConfig(): OauthConfig | undefined {
     values[key] = v
   }
   return {
-    BASE_API_URL: values['CLAUDE_API_BASE_URL'],
-    CONSOLE_AUTHORIZE_URL: values['CLAUDE_OAUTH_CONSOLE_AUTHORIZE_URL'],
-    CLAUDE_AI_AUTHORIZE_URL: values['CLAUDE_OAUTH_CLAUDE_AI_AUTHORIZE_URL'],
-    CLAUDE_AI_ORIGIN: values['CLAUDE_OAUTH_CLAUDE_AI_ORIGIN'],
-    TOKEN_URL: values['CLAUDE_OAUTH_TOKEN_URL'],
-    API_KEY_URL: values['CLAUDE_OAUTH_API_KEY_URL'],
-    ROLES_URL: values['CLAUDE_OAUTH_ROLES_URL'],
-    CONSOLE_SUCCESS_URL: values['CLAUDE_OAUTH_CONSOLE_SUCCESS_URL'],
-    CLAUDEAI_SUCCESS_URL: values['CLAUDE_OAUTH_CLAUDEAI_SUCCESS_URL'],
-    MANUAL_REDIRECT_URL: values['CLAUDE_OAUTH_MANUAL_REDIRECT_URL'],
-    CLIENT_ID: values['CLAUDE_OAUTH_CLIENT_ID'],
+    BASE_API_URL: values['OLA_CC_AI_BASE_URL'],
+    CONSOLE_AUTHORIZE_URL: values['OLA_CC_OAUTH_CONSOLE_AUTHORIZE_URL'],
+    OLA_CC_AI_AUTHORIZE_URL: values['OLA_CC_OAUTH_OLA_CC_AI_AUTHORIZE_URL'],
+    OLA_CC_AI_ORIGIN: values['OLA_CC_OAUTH_OLA_CC_AI_ORIGIN'],
+    TOKEN_URL: values['OLA_CC_OAUTH_TOKEN_URL'],
+    API_KEY_URL: values['OLA_CC_OAUTH_API_KEY_URL'],
+    ROLES_URL: values['OLA_CC_OAUTH_ROLES_URL'],
+    CONSOLE_SUCCESS_URL: values['OLA_CC_OAUTH_CONSOLE_SUCCESS_URL'],
+    CLAUDEAI_SUCCESS_URL: values['OLA_CC_OAUTH_CLAUDEAI_SUCCESS_URL'],
+    MANUAL_REDIRECT_URL: values['OLA_CC_OAUTH_MANUAL_REDIRECT_URL'],
+    CLIENT_ID: values['OLA_CC_OAUTH_CLIENT_ID'],
     OAUTH_FILE_SUFFIX: '',
-    MCP_PROXY_URL: values['CLAUDE_MCP_PROXY_URL'],
+    MCP_PROXY_URL: values['OLA_CC_MCP_PROXY_URL'],
     MCP_PROXY_PATH: '/v1/mcp/{server_id}',
   }
 }
@@ -149,7 +157,7 @@ export const MCP_CLIENT_METADATA_URL =
 
 /**
  * Get OAuth config. Returns undefined if OAuth is not configured.
- * Enable by setting OAuth env vars in process.env or ~/.claude/settings.json env field.
+ * Enable by setting OAuth env vars in process.env or ~/.ola-cc/settings.json env field.
  */
 export function getOauthConfig(): OauthConfig | undefined {
   if (!_oauthChecked) {
@@ -159,7 +167,7 @@ export function getOauthConfig(): OauthConfig | undefined {
 
   if (!_oauthConfig) return undefined
 
-  const clientIdOverride = process.env.CLAUDE_CODE_OAUTH_CLIENT_ID
+  const clientIdOverride = process.env.OLA_CC_OAUTH_CLIENT_ID
   if (clientIdOverride) {
     return {
       ..._oauthConfig,

@@ -454,8 +454,8 @@ export class QueryEngine {
       } else {
         await transcriptPromise
         if (
-          isEnvTruthy(process.env.CLAUDE_CODE_EAGER_FLUSH) ||
-          isEnvTruthy(process.env.CLAUDE_CODE_IS_COWORK)
+          isEnvTruthy(process.env.OLA_CC_EAGER_FLUSH) ||
+          isEnvTruthy(process.env.OLA_CC_IS_COWORK)
         ) {
           await flushSessionStorage()
         }
@@ -528,8 +528,8 @@ export class QueryEngine {
 
     headlessProfilerCheckpoint('before_skills_plugins')
     // Cache-only: headless/SDK/CCR startup must not block on network for
-    // ref-tracked plugins. CCR populates the cache via CLAUDE_CODE_SYNC_PLUGIN_INSTALL
-    // (headlessPluginInstall) or CLAUDE_CODE_PLUGIN_SEED_DIR before this runs;
+    // ref-tracked plugins. CCR populates the cache via OLA_CC_SYNC_PLUGIN_INSTALL
+    // (headlessPluginInstall) or OLA_CC_PLUGIN_SEED_DIR before this runs;
     // SDK callers that need fresh source can call /reload-plugins.
     const [skills, { enabled: enabledPlugins }] = await Promise.all([
       getSlashCommandToolSkills(getCwd()),
@@ -608,8 +608,8 @@ export class QueryEngine {
       if (persistSession) {
         await recordTranscript(messages)
         if (
-          isEnvTruthy(process.env.CLAUDE_CODE_EAGER_FLUSH) ||
-          isEnvTruthy(process.env.CLAUDE_CODE_IS_COWORK)
+          isEnvTruthy(process.env.OLA_CC_EAGER_FLUSH) ||
+          isEnvTruthy(process.env.OLA_CC_IS_COWORK)
         ) {
           await flushSessionStorage()
         }
@@ -684,6 +684,11 @@ export class QueryEngine {
       maxTurns,
       taskBudget,
     })) {
+      // Check for goal retry trigger/aborted - these messages signal that the query
+      // detected a CannotRetryError and entered fallback retry mode.
+      // The actual retry (re-invoking query) is handled below after the loop.
+      // Note: both triggers are handled post-loop in the messages.some() check below.
+
       // Record assistant, user, and compact boundary messages
       if (
         message.type === 'assistant' ||
@@ -842,8 +847,8 @@ export class QueryEngine {
           else if (message.attachment.type === 'max_turns_reached') {
             if (persistSession) {
               if (
-                isEnvTruthy(process.env.CLAUDE_CODE_EAGER_FLUSH) ||
-                isEnvTruthy(process.env.CLAUDE_CODE_IS_COWORK)
+                isEnvTruthy(process.env.OLA_CC_EAGER_FLUSH) ||
+                isEnvTruthy(process.env.OLA_CC_IS_COWORK)
               ) {
                 await flushSessionStorage()
               }
@@ -972,8 +977,8 @@ export class QueryEngine {
       if (maxBudgetUsd !== undefined && getTotalCost() >= maxBudgetUsd) {
         if (persistSession) {
           if (
-            isEnvTruthy(process.env.CLAUDE_CODE_EAGER_FLUSH) ||
-            isEnvTruthy(process.env.CLAUDE_CODE_IS_COWORK)
+            isEnvTruthy(process.env.OLA_CC_EAGER_FLUSH) ||
+            isEnvTruthy(process.env.OLA_CC_IS_COWORK)
           ) {
             await flushSessionStorage()
           }
@@ -1015,8 +1020,8 @@ export class QueryEngine {
         if (callsThisQuery >= maxRetries) {
           if (persistSession) {
             if (
-              isEnvTruthy(process.env.CLAUDE_CODE_EAGER_FLUSH) ||
-              isEnvTruthy(process.env.CLAUDE_CODE_IS_COWORK)
+              isEnvTruthy(process.env.OLA_CC_EAGER_FLUSH) ||
+              isEnvTruthy(process.env.OLA_CC_IS_COWORK)
             ) {
               await flushSessionStorage()
             }
@@ -1048,6 +1053,38 @@ export class QueryEngine {
       }
     }
 
+    // Check for goal retry trigger/aborted messages from query.ts fallback retry loop
+    // NOTE: query.ts yields goal_retry_trigger AFTER sleep completes, so if the user
+    // cancels during sleep, this message is never written and no retry occurs.
+    const hasGoalRetryTrigger = messages.some(
+      m => m.type === 'system' && m.subtype === 'goal_retry_trigger'
+    )
+    const hasGoalRetryAborted = messages.some(
+      m => m.type === 'system' && m.subtype === 'goal_retry_aborted'
+    )
+
+    // Aborted takes priority: user cancelled, timed out, or goal was paused/cleared
+    if (hasGoalRetryAborted) {
+      // No retry — just let the result flow through to normal processing
+      // The warning messages are already in the messages array for UI display
+    } else if (hasGoalRetryTrigger) {
+      const goal = getAppState().goal
+      if (goal && goal.status === ThreadGoalStatus.Active && goal.retryConfig?.enabled) {
+        const retryCount = goal.retryCount || 0
+
+        // Yield retry status message
+        yield {
+          type: 'system' as const,
+          subtype: 'goal_retry_status',
+          content: `Goal 兜底重试中... (第 ${retryCount} 次)`,
+        }
+
+        // Re-invoke query for retry
+        yield* this.submitMessage(prompt, options)
+        return
+      }
+    }
+
     // Stop hooks yield progress/attachment messages AFTER the assistant
     // response (via yield* handleStopHooks in query.ts). Since #23537 pushes
     // those to `messages` inline, last(messages) can be a progress/attachment
@@ -1072,8 +1109,8 @@ export class QueryEngine {
     // result message, so any unflushed writes would be lost.
     if (persistSession) {
       if (
-        isEnvTruthy(process.env.CLAUDE_CODE_EAGER_FLUSH) ||
-        isEnvTruthy(process.env.CLAUDE_CODE_IS_COWORK)
+        isEnvTruthy(process.env.OLA_CC_EAGER_FLUSH) ||
+        isEnvTruthy(process.env.OLA_CC_IS_COWORK)
       ) {
         await flushSessionStorage()
       }
@@ -1098,11 +1135,6 @@ export class QueryEngine {
           initialAppState.fastMode,
         ),
         uuid: randomUUID(),
-        // Diagnostic prefix: these are what isResultSuccessful() checks — if
-        // the result type isn't assistant-with-text/thinking or user-with-
-        // tool_result, and stop_reason isn't end_turn, that's why this fired.
-        // errors[] is turn-scoped via the watermark; previously it dumped the
-        // entire process's logError buffer (ripgrep timeouts, ENOENT, etc).
         errors: (() => {
           const all = getInMemoryErrors()
           const start = errorLogWatermark

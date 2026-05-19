@@ -25,8 +25,24 @@ import {
   type PermissionMode,
   permissionModeFromString,
 } from './PermissionMode.js'
-import { applyPermissionRulesToPermissionContext } from './permissions.js'
+import { applyPermissionRulesToPermissionContext, PermissionIndex } from './permissions.js'
 import { loadAllPermissionRulesFromDisk } from './permissionsLoader.js'
+
+// Module-level cache for permission index
+let permissionIndexCache: { index: PermissionIndex; rulesLength: number } | null = null
+
+/**
+ * Get a cached PermissionIndex for O(1) tool rule lookups.
+ * Reuses the index if rules length hasn't changed.
+ */
+export function getPermissionIndex(rules: PermissionRule[]): PermissionIndex {
+  if (permissionIndexCache && permissionIndexCache.rulesLength === rules.length) {
+    return permissionIndexCache.index
+  }
+  const index = new PermissionIndex(rules)
+  permissionIndexCache = { index, rulesLength: rules.length }
+  return index
+}
 
 /* eslint-disable @typescript-eslint/no-require-imports */
 const autoModeStateModule = feature('TRANSCRIPT_CLASSIFIER')
@@ -746,11 +762,11 @@ export function initialPermissionModeFromCLI({
     // settings (e.g. bypassPermissions would otherwise silently grant full
     // access in a remote environment).
     if (
-      isEnvTruthy(process.env.CLAUDE_CODE_REMOTE) &&
+      isEnvTruthy(process.env.OLA_CC_REMOTE) &&
       !['acceptEdits', 'plan', 'default'].includes(settingsMode)
     ) {
       logForDebugging(
-        `settings defaultMode "${settingsMode}" is not supported in CLAUDE_CODE_REMOTE — only acceptEdits and plan are allowed`,
+        `settings defaultMode "${settingsMode}" is not supported in OLA_CC_REMOTE — only acceptEdits and plan are allowed`,
         { level: 'warn' },
       )
       logEvent('tengu_ccr_unsupported_default_mode_ignored', {
@@ -927,8 +943,8 @@ export async function initializeToolPermissionContext({
     })
   }
 
-  // Check if bypassPermissions mode is available (not disabled by Statsig gate or settings)
-  // Use cached values to avoid blocking on startup
+  // bypassPermissions mode is always available in the Shift+Tab cycle
+  // unless explicitly disabled by Statsig gate or settings.
   const growthBookDisableBypassPermissionsMode =
     checkStatsigFeatureGate_CACHED_MAY_BE_STALE(
       'tengu_disable_bypass_permissions_mode',
@@ -937,8 +953,6 @@ export async function initializeToolPermissionContext({
   const settingsDisableBypassPermissionsMode =
     settings.permissions?.disableBypassPermissionsMode === 'disable'
   const isBypassPermissionsModeAvailable =
-    (permissionMode === 'bypassPermissions' ||
-      allowDangerouslySkipPermissions) &&
     !growthBookDisableBypassPermissionsMode &&
     !settingsDisableBypassPermissionsMode
 
@@ -952,8 +966,8 @@ export async function initializeToolPermissionContext({
   let overlyBroadBashPermissions: DangerousPermissionInfo[] = []
   if (
     process.env.USER_TYPE === 'ant' &&
-    !isEnvTruthy(process.env.CLAUDE_CODE_REMOTE) &&
-    process.env.CLAUDE_CODE_ENTRYPOINT !== 'local-agent'
+    !isEnvTruthy(process.env.OLA_CC_REMOTE) &&
+    process.env.OLA_CC_ENTRYPOINT !== 'local-agent'
   ) {
     overlyBroadBashPermissions = [
       ...findOverlyBroadBashPermissions(rulesFromDisk, parsedAllowedToolsCli),

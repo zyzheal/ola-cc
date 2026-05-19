@@ -320,3 +320,14 @@ node install.cjs
 ## 许可证
 
 详见 LICENSE.md。
+
+## 更新日志
+
+### v0.4.7
+
+**Windows 稳定性修复**
+
+- **彻底解决 Windows 平台 Bun 崩溃问题**：Windows 改用 JS bundle + Node.js 运行，不再使用 `bun --compile` 生成 `.exe`（已知 Bun 内部 bug 导致段错误）
+- **构建优化**：`nats` 和 `node-pty` 添加到 externals，减少打包体积
+- **原生模块兼容**：Windows 自动跳过 `image-processor-napi`（仅 macOS ARM64），使用 `sharp` 回退
+- **CI 增强**：Windows 新增 `-p` 全模块加载测试（30s 超时），确保初始化稳定性

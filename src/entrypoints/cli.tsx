@@ -28,9 +28,24 @@ if (!('MACRO' in globalThis)) {
 // eslint-disable-next-line custom-rules/no-top-level-side-effects
 process.env.COREPACK_ENABLE_AUTO_PIN = '0';
 
+// Windows: set console output code page to UTF-8 (65001) so Chinese and other
+// multi-byte characters render correctly. Without this, Windows defaults to
+// the system locale code page (e.g., CP936 for Chinese Windows), causing
+// UTF-8 text from Bun/Node to appear garbled in both input and output.
+// Must run before any stdin/stdout interaction.
+if (process.platform === 'win32') {
+  try {
+    // Use createRequire for ESM compatibility (works in both Bun and Node.js)
+    const { execSync } = await import('child_process')
+    execSync('chcp 65001', { stdio: 'ignore' })
+  } catch {
+    // Ignore failures (e.g., non-interactive sessions, missing chcp)
+  }
+}
+
 // Set max heap size for child processes in CCR environments (containers have 16GB)
 // eslint-disable-next-line custom-rules/no-top-level-side-effects, custom-rules/no-process-env-top-level, custom-rules/safe-env-boolean-check
-if (process.env.CLAUDE_CODE_REMOTE === 'true') {
+if (process.env.OLA_CC_REMOTE === 'true') {
   // eslint-disable-next-line custom-rules/no-top-level-side-effects, custom-rules/no-process-env-top-level
   const existing = process.env.NODE_OPTIONS || '';
   // eslint-disable-next-line custom-rules/no-top-level-side-effects, custom-rules/no-process-env-top-level
@@ -42,8 +57,8 @@ if (process.env.CLAUDE_CODE_REMOTE === 'true') {
 // module-level consts at import time — init() runs too late. feature() gate
 // DCEs this entire block from external builds.
 // eslint-disable-next-line custom-rules/no-top-level-side-effects, custom-rules/no-process-env-top-level
-if (feature('ABLATION_BASELINE') && process.env.CLAUDE_CODE_ABLATION_BASELINE) {
-  for (const k of ['CLAUDE_CODE_SIMPLE', 'CLAUDE_CODE_DISABLE_THINKING', 'DISABLE_INTERLEAVED_THINKING', 'DISABLE_COMPACT', 'DISABLE_AUTO_COMPACT', 'CLAUDE_CODE_DISABLE_AUTO_MEMORY', 'CLAUDE_CODE_DISABLE_BACKGROUND_TASKS']) {
+if (feature('ABLATION_BASELINE') && process.env.OLA_CC_ABLATION_BASELINE) {
+  for (const k of ['OLA_CC_SIMPLE', 'OLA_CC_DISABLE_THINKING', 'DISABLE_INTERLEAVED_THINKING', 'DISABLE_COMPACT', 'DISABLE_AUTO_COMPACT', 'OLA_CC_DISABLE_AUTO_MEMORY', 'OLA_CC_DISABLE_BACKGROUND_TASKS']) {
     // eslint-disable-next-line custom-rules/no-top-level-side-effects, custom-rules/no-process-env-top-level
     process.env[k] ??= '1';
   }
@@ -194,6 +209,30 @@ async function main(): Promise<void> {
     return;
   }
 
+  // Fast-path for `--bg-worker=<id>` (internal — spawned by --bg flag).
+  if (feature('BG_SESSIONS') && args[0] === '--bg-worker') {
+    const { enableConfigs } = await import('../utils/config.js');
+    enableConfigs();
+    const { runBgWorker } = await import('../daemon/bgWorker.js');
+    // args[1] = sessionId, args[2] = '--', args[3] = prompt
+    const prompt = args[3] ?? args.slice(2).join(' ');
+    await runBgWorker(args[1], prompt);
+    return;
+  }
+
+  // Fast-path for `--warm-worker=<id>` (internal — pre-spawned by warm pool).
+  if (feature('BG_SESSIONS') && args[0] === '--warm-worker') {
+    if (!args[1]) {
+      console.error('Error: --warm-worker requires a worker ID')
+      process.exit(1)
+    }
+    const { enableConfigs } = await import('../utils/config.js');
+    enableConfigs();
+    const { warmWorkerMain } = await import('../daemon/warmWorker.js');
+    await warmWorkerMain(args[1]);
+    return;
+  }
+
   // Fast-path for `claude remote-control` (also accepts legacy `claude remote` / `claude sync` / `claude bridge`):
   // serve local machine as bridge environment.
   // feature() must stay inline for build-time dead code elimination;
@@ -269,7 +308,7 @@ async function main(): Promise<void> {
   }
 
   // Fast-path for `claude ps|logs|attach|kill` and `--bg`/`--background`.
-  // Session management against the ~/.claude/sessions/ registry. Flag
+  // Session management against the ~/.ola-cc/sessions/ registry. Flag
   // literals are inlined so bg.js only loads when actually dispatching.
   if (feature('BG_SESSIONS') && (args[0] === 'ps' || args[0] === 'logs' || args[0] === 'attach' || args[0] === 'kill' || args.includes('--bg') || args.includes('--background'))) {
     profileCheckpoint('cli_bg_path');
@@ -370,7 +409,7 @@ async function main(): Promise<void> {
   // --bare: set SIMPLE early so gates fire during module eval / commander
   // option building (not just inside the action handler).
   if (args.includes('--bare')) {
-    process.env.CLAUDE_CODE_SIMPLE = '1';
+    process.env.OLA_CC_SIMPLE = '1';
   }
 
   // No special flags detected, load and run the full CLI

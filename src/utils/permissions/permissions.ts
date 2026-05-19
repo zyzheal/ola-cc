@@ -282,22 +282,82 @@ export function toolAlwaysAllowedRule(
 }
 
 /**
- * Check if the tool is listed in the always deny rules
+ * Module-level caches for O(1) permission rule lookups by tool name.
+ * Invalidated when rule counts change (new cache entry created).
+ */
+let cachedDenyIndex: { key: string; index: Map<string, PermissionRule[]> } | null = null
+let cachedAskIndex: { key: string; index: Map<string, PermissionRule[]> } | null = null
+
+function getOrCreateDenyIndex(context: ToolPermissionContext): Map<string, PermissionRule[]> {
+  const key = Object.entries(context.alwaysDenyRules).map(([s, a]) => `${s}:${a.length}`).join(',')
+  if (cachedDenyIndex && cachedDenyIndex.key === key) return cachedDenyIndex.index
+  const index = new Map<string, PermissionRule[]>()
+  for (const [source, rules] of Object.entries(context.alwaysDenyRules)) {
+    for (const ruleString of rules) {
+      const ruleValue = permissionRuleValueFromString(ruleString)
+      const rule: PermissionRule = { source: source as PermissionRuleSource, ruleBehavior: 'deny', ruleValue }
+      const toolName = rule.ruleValue.toolName
+      if (!index.has(toolName)) index.set(toolName, [])
+      index.get(toolName)!.push(rule)
+    }
+  }
+  cachedDenyIndex = { key, index }
+  return index
+}
+
+function getOrCreateAskIndex(context: ToolPermissionContext): Map<string, PermissionRule[]> {
+  const key = Object.entries(context.alwaysAskRules).map(([s, a]) => `${s}:${a.length}`).join(',')
+  if (cachedAskIndex && cachedAskIndex.key === key) return cachedAskIndex.index
+  const index = new Map<string, PermissionRule[]>()
+  for (const [source, rules] of Object.entries(context.alwaysAskRules)) {
+    for (const ruleString of rules) {
+      const ruleValue = permissionRuleValueFromString(ruleString)
+      const rule: PermissionRule = { source: source as PermissionRuleSource, ruleBehavior: 'ask', ruleValue }
+      const toolName = rule.ruleValue.toolName
+      if (!index.has(toolName)) index.set(toolName, [])
+      index.get(toolName)!.push(rule)
+    }
+  }
+  cachedAskIndex = { key, index }
+  return index
+}
+
+/**
+ * Check if the tool is listed in the always deny rules (O(1) indexed).
+ * Falls back to linear scan for MCP server-level rules.
  */
 export function getDenyRuleForTool(
   context: ToolPermissionContext,
   tool: Pick<Tool, 'name' | 'mcpInfo'>,
 ): PermissionRule | null {
+  const nameForRuleMatch = getToolNameForPermissionCheck(tool)
+  const index = getOrCreateDenyIndex(context)
+  const rules = index.get(nameForRuleMatch)
+  if (rules) {
+    const match = rules.find(rule => toolMatchesRule(tool, rule))
+    if (match) return match
+  }
+  // Fallback: MCP server-level rules (rule "mcp__server1" matches "mcp__server1__tool1")
+  // not captured by exact-name index
   return getDenyRules(context).find(rule => toolMatchesRule(tool, rule)) || null
 }
 
 /**
- * Check if the tool is listed in the always ask rules
+ * Check if the tool is listed in the always ask rules (O(1) indexed).
+ * Falls back to linear scan for MCP server-level rules.
  */
 export function getAskRuleForTool(
   context: ToolPermissionContext,
   tool: Pick<Tool, 'name' | 'mcpInfo'>,
 ): PermissionRule | null {
+  const nameForRuleMatch = getToolNameForPermissionCheck(tool)
+  const index = getOrCreateAskIndex(context)
+  const rules = index.get(nameForRuleMatch)
+  if (rules) {
+    const match = rules.find(rule => toolMatchesRule(tool, rule))
+    if (match) return match
+  }
+  // Fallback: MCP server-level rules
   return getAskRules(context).find(rule => toolMatchesRule(tool, rule)) || null
 }
 
@@ -1141,7 +1201,7 @@ export async function checkRuleBasedPermissions(
     return toolPermissionResult
   }
 
-  // 1g. Safety checks (e.g. .git/, .claude/, .vscode/, shell configs) are
+  // 1g. Safety checks (e.g. .git/, .ola-cc/, .vscode/, shell configs) are
   // bypass-immune — they must prompt even when a PreToolUse hook returned
   // allow. checkPathSafetyForAutoEdit returns {type:'safetyCheck'} for these.
   // However, classifierApprovable safety checks can be bypassed in bypassPermissions
@@ -1258,7 +1318,7 @@ async function hasPermissionsToUseToolInner(
     return toolPermissionResult
   }
 
-  // 1g. Safety checks (e.g. .git/, .claude/, .vscode/, shell configs) are
+  // 1g. Safety checks (e.g. .git/, .ola-cc/, .vscode/, shell configs) are
   // bypass-immune by default — they must prompt even in bypassPermissions mode.
   // However, classifierApprovable safety checks can be bypassed in bypassPermissions
   // mode since they are considered less risky (can be approved by classifier in auto mode).
@@ -1268,7 +1328,7 @@ async function hasPermissionsToUseToolInner(
     toolPermissionResult.decisionReason?.type === 'safetyCheck'
   ) {
     // classifierApprovable safety checks can be bypassed in bypassPermissions mode
-    // These are typically less risky (e.g., .claude/ files, shell configs) that can
+    // These are typically less risky (e.g., .ola-cc/ files, shell configs) that can
     // be auto-approved by the classifier in auto mode.
     if (toolPermissionResult.decisionReason.classifierApprovable) {
       // Fall through to check bypassPermissions mode below
@@ -1504,4 +1564,40 @@ function getUpdatedInputOrFallback(
       ? permissionResult.updatedInput
       : undefined) ?? fallback
   )
+}
+
+/**
+ * Permission rules index for O(1) lookup by tool name.
+ * Pre-processes rules to avoid O(n) traversal on every tool call.
+ * Hot paths migrated: getDenyRuleForTool, getAskRuleForTool now use
+ * module-level cached indices (getOrCreateDenyIndex/getOrCreateAskIndex).
+ */
+export class PermissionIndex {
+  private byToolName: Map<string, PermissionRule[]>
+  private allRules: PermissionRule[]
+
+  constructor(rules: PermissionRule[]) {
+    this.allRules = rules
+    this.byToolName = new Map()
+
+    for (const rule of rules) {
+      const toolName = rule.ruleValue.toolName
+      if (!this.byToolName.has(toolName)) {
+        this.byToolName.set(toolName, [])
+      }
+      this.byToolName.get(toolName)!.push(rule)
+    }
+  }
+
+  getRulesForTool(toolName: string): PermissionRule[] {
+    return this.byToolName.get(toolName) ?? []
+  }
+
+  getAllRules(): PermissionRule[] {
+    return this.allRules
+  }
+
+  isEmpty(): boolean {
+    return this.allRules.length === 0
+  }
 }

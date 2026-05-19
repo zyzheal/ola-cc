@@ -59,6 +59,27 @@ import { getTokenCountFromUsage } from '../../utils/tokens.js'
 import { EXIT_PLAN_MODE_V2_TOOL_NAME } from '../ExitPlanModeTool/constants.js'
 import { AGENT_TOOL_NAME, LEGACY_AGENT_TOOL_NAME } from './constants.js'
 import type { AgentDefinition } from './loadAgentsDir.js'
+
+/**
+ * Normalize an agent type string for case- and separator-insensitive comparison.
+ * Converts to lowercase and replaces all common separators (spaces, underscores,
+ * dots) with hyphens so that "Code Reviewer", "code_reviewer", "code-reviewer"
+ * all resolve to "code-reviewer".
+ */
+function normalizeAgentType(type: string): string {
+  return type.toLowerCase().replace(/[\s_.]+/g, '-').replace(/^-|-$/g, '')
+}
+
+/**
+ * Find an agent by type using case- and separator-insensitive matching.
+ */
+export function findAgentByType(
+  agents: AgentDefinition[],
+  agentType: string,
+): AgentDefinition | undefined {
+  const normalized = normalizeAgentType(agentType)
+  return agents.find(a => normalizeAgentType(a.agentType) === normalized)
+}
 export type ResolvedAgentTools = {
   hasWildcard: boolean
   validTools: string[]

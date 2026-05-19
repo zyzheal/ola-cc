@@ -130,7 +130,7 @@ import {
 } from '../constants/xml.js'
 import { DiagnosticTrackingService } from '../services/diagnosticTracking.js'
 import {
-  findToolByName,
+  createToolRegistry,
   type Tool,
   type Tools,
   toolMatchesName,
@@ -2733,7 +2733,7 @@ export function normalizeContentFromAPI(
 
         // Then apply tool-specific corrections
         if (typeof normalizedInput === 'object' && normalizedInput !== null) {
-          const tool = findToolByName(tools, contentBlock.name)
+          const tool = createToolRegistry(tools).find(contentBlock.name)
           if (tool) {
             try {
               normalizedInput = normalizeToolInput(
@@ -4317,10 +4317,10 @@ You have exited auto mode. The user may now want to interact more directly. You 
       ])
     }
     case 'verify_plan_reminder': {
-      // Dead code elimination: CLAUDE_CODE_VERIFY_PLAN='false' in external builds, so === 'true' check allows Bun to eliminate the string
+      // Dead code elimination: OLA_CC_VERIFY_PLAN='false' in external builds, so === 'true' check allows Bun to eliminate the string
       /* eslint-disable-next-line custom-rules/no-process-env-top-level */
       const toolName =
-        process.env.CLAUDE_CODE_VERIFY_PLAN === 'true'
+        process.env.OLA_CC_VERIFY_PLAN === 'true'
           ? 'VerifyPlanExecution'
           : ''
       const content = `You have completed implementing the plan. Please call the "${toolName}" tool directly (NOT the ${AGENT_TOOL_NAME} tool or an agent) to verify that all plan items were completed correctly.`

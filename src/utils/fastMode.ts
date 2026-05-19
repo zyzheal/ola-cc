@@ -36,7 +36,7 @@ import {
 import { createSignal } from './signal.js'
 
 export function isFastModeEnabled(): boolean {
-  return !isEnvTruthy(process.env.CLAUDE_CODE_DISABLE_FAST_MODE)
+  return !isEnvTruthy(process.env.OLA_CC_DISABLE_FAST_MODE)
 }
 
 export function isFastModeAvailable(): boolean {

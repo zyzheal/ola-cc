@@ -208,7 +208,7 @@ src/tools/
 | `STATUSLINE_SETUP_AGENT` | 状态行设置 | - |
 | `EXPLORE_AGENT` | 探索 Agent | `BUILTIN_EXPLORE_PLAN_AGENTS` |
 | `PLAN_AGENT` | 规划 Agent | `BUILTIN_EXPLORE_PLAN_AGENTS` |
-| `CLAUDE_CODE_GUIDE_AGENT` | Claude Code 指南 | - |
+| `OLA_CC_GUIDE_AGENT` | Claude Code 指南 | - |
 | `VERIFICATION_AGENT` | 验证 Agent | `VERIFICATION_AGENT` |
 
 #### 核心模块

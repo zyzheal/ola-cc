@@ -226,7 +226,7 @@ export function ConsoleOAuthFlow({
       });
       if (mode === 'setup-token') {
         // For setup-token mode, return the OAuth access token directly (it can be used as an API key)
-        // Don't save to keychain - the token is displayed for manual use with CLAUDE_CODE_OAUTH_TOKEN
+        // Don't save to keychain - the token is displayed for manual use with OLA_CC_OAUTH_TOKEN
         setOAuthStatus({
           state: 'success',
           token: result.accessToken
@@ -320,7 +320,7 @@ export function ConsoleOAuthFlow({
               </Text>
               <Text dimColor>
                 Use this token by setting: export
-                CLAUDE_CODE_OAUTH_TOKEN=&lt;token&gt;
+                OLA_CC_OAUTH_TOKEN=&lt;token&gt;
               </Text>
             </Box>
           </Box>}
@@ -430,7 +430,7 @@ function OAuthStatusMessage(t0) {
                   setLoginWithClaudeAi(false);
                 }
               }
-            }} /></Box>;
+            }} onCancel={onDone} /></Box>;
           $[6] = setLoginWithClaudeAi;
           $[7] = setOAuthStatus;
           $[8] = t7;

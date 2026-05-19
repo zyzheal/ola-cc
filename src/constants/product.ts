@@ -3,7 +3,7 @@ import { join } from 'path'
 
 // Lazy evaluation: env vars are only read when first accessed,
 // preventing crashes at module load time.
-// Falls back to ~/.claude/settings.json env field, then default value.
+// Falls back to ~/.ola-cc/settings.json env field, then default value.
 
 let _settingsEnv: Record<string, string> | undefined
 function getSettingsEnv(): Record<string, string> {
@@ -14,7 +14,7 @@ function getSettingsEnv(): Record<string, string> {
       _settingsEnv = {}
       return _settingsEnv
     }
-    const settingsPath = join(home, '.claude', 'settings.json')
+    const settingsPath = join(home, '.ola-cc', 'settings.json')
     const raw = readFileSync(settingsPath, 'utf-8')
     const parsed = JSON.parse(raw)
     _settingsEnv = parsed?.env || {}
@@ -34,7 +34,7 @@ function lazyEnv(name: string, defaultValue?: string): string {
         if (!value) {
           throw new Error(
             `Missing required environment variable: ${name}. ` +
-            `Please configure it in process.env or ~/.claude/settings.json env field.`,
+            `Please configure it in process.env or ~/.ola-cc/settings.json env field.`,
           )
         }
       }
@@ -49,7 +49,7 @@ function lazyEnv(name: string, defaultValue?: string): string {
         if (!value) {
           throw new Error(
             `Missing required environment variable: ${name}. ` +
-            `Please configure it in process.env or ~/.claude/settings.json env field.`,
+            `Please configure it in process.env or ~/.ola-cc/settings.json env field.`,
           )
         }
       }
@@ -58,12 +58,12 @@ function lazyEnv(name: string, defaultValue?: string): string {
   }) as unknown as string
 }
 
-export const PRODUCT_URL = lazyEnv('CLAUDE_PRODUCT_URL', 'https://claude.ai')
+export const PRODUCT_URL = lazyEnv('OLA_CC_PRODUCT_URL', 'https://claude.ai')
 
 // ola-cc Remote session URLs — default to Anthropic official URLs
-export const CLAUDE_AI_BASE_URL = lazyEnv('CLAUDE_AI_BASE_URL', 'https://claude.ai')
-export const CLAUDE_AI_STAGING_BASE_URL = lazyEnv('CLAUDE_AI_STAGING_BASE_URL', 'https://staging.claude.ai')
-export const CLAUDE_AI_LOCAL_BASE_URL = lazyEnv('CLAUDE_AI_LOCAL_BASE_URL', 'http://localhost:3000')
+export const OLA_CC_AI_BASE_URL = lazyEnv('OLA_CC_AI_BASE_URL', 'https://claude.ai')
+export const OLA_CC_AI_STAGING_BASE_URL = lazyEnv('OLA_CC_AI_STAGING_BASE_URL', 'https://staging.claude.ai')
+export const OLA_CC_AI_LOCAL_BASE_URL = lazyEnv('OLA_CC_AI_LOCAL_BASE_URL', 'http://localhost:3000')
 
 /**
  * Determine if we're in a staging environment for remote sessions.
@@ -92,23 +92,26 @@ export function isRemoteSessionLocal(
 }
 
 /**
- * Get the base URL for Claude AI based on environment.
+ * Get the base URL for Ola-cc AI based on environment.
  */
-export function getClaudeAiBaseUrl(
+export function getOlaCcAiBaseUrl(
   sessionId?: string,
   ingressUrl?: string,
 ): string {
   if (isRemoteSessionLocal(sessionId, ingressUrl)) {
-    return CLAUDE_AI_LOCAL_BASE_URL
+    return OLA_CC_AI_LOCAL_BASE_URL
   }
   if (isRemoteSessionStaging(sessionId, ingressUrl)) {
-    return CLAUDE_AI_STAGING_BASE_URL
+    return OLA_CC_AI_STAGING_BASE_URL
   }
-  return CLAUDE_AI_BASE_URL
+  return OLA_CC_AI_BASE_URL
 }
 
+// Backward compatibility alias (deprecated)
+export const getClaudeAiBaseUrl = getOlaCcAiBaseUrl
+
 /**
- * Get the full session URL for a remote session.
+ * Get the full session URL for a remote ola-cc session.
  */
 export function getRemoteSessionUrl(
   sessionId: string,
@@ -119,6 +122,6 @@ export function getRemoteSessionUrl(
     require('../bridge/sessionIdCompat.js') as typeof import('../bridge/sessionIdCompat.js')
   /* eslint-enable @typescript-eslint/no-require-imports */
   const compatId = toCompatSessionId(sessionId)
-  const baseUrl = getClaudeAiBaseUrl(compatId, ingressUrl)
+  const baseUrl = getOlaCcAiBaseUrl(compatId, ingressUrl)
   return `${baseUrl}/code/${compatId}`
 }

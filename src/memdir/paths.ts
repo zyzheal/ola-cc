@@ -21,14 +21,14 @@ import {
 /**
  * Whether auto-memory features are enabled (memdir, agent memory, past session search).
  * Enabled by default. Priority chain (first defined wins):
- *   1. CLAUDE_CODE_DISABLE_AUTO_MEMORY env var (1/true → OFF, 0/false → ON)
- *   2. CLAUDE_CODE_SIMPLE (--bare) → OFF
- *   3. CCR without persistent storage → OFF (no CLAUDE_CODE_REMOTE_MEMORY_DIR)
+ *   1. OLA_CC_DISABLE_AUTO_MEMORY env var (1/true → OFF, 0/false → ON)
+ *   2. OLA_CC_SIMPLE (--bare) → OFF
+ *   3. CCR without persistent storage → OFF (no OLA_CC_REMOTE_MEMORY_DIR)
  *   4. autoMemoryEnabled in settings.json (supports project-level opt-out)
  *   5. Default: enabled
  */
 export function isAutoMemoryEnabled(): boolean {
-  const envVal = process.env.CLAUDE_CODE_DISABLE_AUTO_MEMORY
+  const envVal = process.env.OLA_CC_DISABLE_AUTO_MEMORY
   if (isEnvTruthy(envVal)) {
     return false
   }
@@ -38,12 +38,12 @@ export function isAutoMemoryEnabled(): boolean {
   // --bare / SIMPLE: prompts.ts already drops the memory section from the
   // system prompt via its SIMPLE early-return; this gate stops the other half
   // (extractMemories turn-end fork, autoDream, /remember, /dream, team sync).
-  if (isEnvTruthy(process.env.CLAUDE_CODE_SIMPLE)) {
+  if (isEnvTruthy(process.env.OLA_CC_SIMPLE)) {
     return false
   }
   if (
-    isEnvTruthy(process.env.CLAUDE_CODE_REMOTE) &&
-    !process.env.CLAUDE_CODE_REMOTE_MEMORY_DIR
+    isEnvTruthy(process.env.OLA_CC_REMOTE) &&
+    !process.env.OLA_CC_REMOTE_MEMORY_DIR
   ) {
     return false
   }
@@ -79,12 +79,12 @@ export function isExtractModeActive(): boolean {
 /**
  * Returns the base directory for persistent memory storage.
  * Resolution order:
- *   1. CLAUDE_CODE_REMOTE_MEMORY_DIR env var (explicit override, set in CCR)
- *   2. ~/.claude (default config home)
+ *   1. OLA_CC_REMOTE_MEMORY_DIR env var (explicit override, set in CCR)
+ *   2. ~/.ola-cc (default config home)
  */
 export function getMemoryBaseDir(): string {
-  if (process.env.CLAUDE_CODE_REMOTE_MEMORY_DIR) {
-    return process.env.CLAUDE_CODE_REMOTE_MEMORY_DIR
+  if (process.env.OLA_CC_REMOTE_MEMORY_DIR) {
+    return process.env.OLA_CC_REMOTE_MEMORY_DIR
   }
   return getClaudeConfigHomeDir()
 }
@@ -169,7 +169,7 @@ function getAutoMemPathOverride(): string | undefined {
  * Settings.json override for the full auto-memory directory path.
  * Supports ~/ expansion for user convenience.
  *
- * SECURITY: projectSettings (.claude/settings.json committed to the repo) is
+ * SECURITY: projectSettings (.ola-cc/settings.json committed to the repo) is
  * intentionally excluded — a malicious repo could otherwise set
  * autoMemoryDirectory: "~/.ssh" and gain silent write access to sensitive
  * directories via the filesystem.ts write carve-out (which fires when

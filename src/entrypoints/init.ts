@@ -36,6 +36,7 @@ import {
   applyActiveProviderProfile,
   applyConfigEnvironmentVariables,
   applySafeConfigEnvironmentVariables,
+  loadOlaProvidersFromDisk,
 } from '../utils/managedEnv.js'
 import { configureGlobalMTLS } from '../utils/mtls.js'
 import {
@@ -74,7 +75,11 @@ export const init = memoize(async (): Promise<void> => {
     const envVarsStart = Date.now()
     applySafeConfigEnvironmentVariables()
 
-    // Restore the active provider profile from __olaProviders__ settings.
+    // Load provider profiles into process-scoped memory store.
+    // Each process gets its own copy that can be switched independently.
+    loadOlaProvidersFromDisk()
+
+    // Restore the active provider profile from process-scoped memory.
     // This must come after applySafeConfigEnvironmentVariables so the
     // provider's env vars (API key, base URL, model) take effect.
     applyActiveProviderProfile()
@@ -166,11 +171,11 @@ export const init = memoize(async (): Promise<void> => {
 
     // CCR upstreamproxy: start the local CONNECT relay so agent subprocesses
     // can reach org-configured upstreams with credential injection. Gated on
-    // CLAUDE_CODE_REMOTE + GrowthBook; fail-open on any error. Lazy import so
+    // OLA_CC_REMOTE + GrowthBook; fail-open on any error. Lazy import so
     // non-CCR startups don't pay the module load. The getUpstreamProxyEnv
     // function is registered with subprocessEnv.ts so subprocess spawning can
     // inject proxy vars without a static import of the upstreamproxy module.
-    if (isEnvTruthy(process.env.CLAUDE_CODE_REMOTE)) {
+    if (isEnvTruthy(process.env.OLA_CC_REMOTE)) {
       try {
         const { initUpstreamProxy, getUpstreamProxyEnv } = await import(
           '../upstreamproxy/upstreamproxy.js'

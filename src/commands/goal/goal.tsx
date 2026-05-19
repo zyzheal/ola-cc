@@ -1,9 +1,10 @@
 import { getSessionId } from '../../bootstrap/state.js'
 import type { LocalJSXCommandCall } from '../../types/command.js'
-import { type Goal, ThreadGoalStatus, IDLE_GOAL } from './types.js'
+import { type Goal, ThreadGoalStatus, IDLE_GOAL, type GoalMode, type GoalTask, migrateGoal, getRetryConfig } from './types.js'
 import type { TodoItem } from '../../utils/todo/types.js'
 import { buildContinuationPrompt } from '../../utils/goal/goalSteering.js'
 import { notifyPermissionModeChanged } from '../../utils/sessionState.js'
+import { GoalTaskOrchestrator } from './taskOrchestrator/index.js'
 
 const randomUUID = () => crypto.randomUUID()
 
@@ -17,11 +18,29 @@ function createDefaultTodoItems(objective: string): TodoItem[] {
   ]
 }
 
+function createDefaultGoalTasks(objective: string): GoalTask[] {
+  return [
+    { id: randomUUID(), content: `分析目标: ${objective}`, status: 'pending', order: 0 },
+    { id: randomUUID(), content: '规划执行步骤', status: 'pending', order: 1 },
+    { id: randomUUID(), content: '执行任务', status: 'pending', order: 2 },
+    { id: randomUUID(), content: '验证完成结果', status: 'pending', order: 3 },
+  ]
+}
+
 interface GoalCommandArgs {
   objective?: string
-  action?: 'status' | 'pause' | 'resume' | 'clear'
+  action?: 'status' | 'pause' | 'resume' | 'clear' | 'edit' | 'budget' | 'mode'
   tokenBudget?: number
   autoAccept?: boolean
+  autoEdit?: boolean
+  mode?: GoalMode
+  editObjective?: string
+  newBudget?: number
+  // 新增
+  retryInterval?: string  // e.g., "5m", "10m", "30s"
+  maxRetryHours?: number
+  autoSplit?: boolean     // 自动拆分任务
+  maxParallel?: number    // 最大并行数
 }
 
 function parseGoalArgs(args: string[]): GoalCommandArgs {
@@ -29,55 +48,104 @@ function parseGoalArgs(args: string[]): GoalCommandArgs {
     return { action: 'status' }
   }
 
-  // Check for --auto-accept flag
   const autoAcceptIndex = args.indexOf('--auto-accept')
   const autoAccept = autoAcceptIndex !== -1
   if (autoAccept) {
     args = args.filter(a => a !== '--auto-accept')
   }
 
+  const autoEdit = args.includes('--auto-edit')
+  if (autoEdit) {
+    args = args.filter(a => a !== '--auto-edit')
+  }
+
+  const modeMatch = args.find(a => ['simple', 'standard', 'complex'].includes(a.toLowerCase()))
+  const mode = modeMatch ? modeMatch.toLowerCase() as GoalMode : undefined
+  if (mode) {
+    args = args.filter(a => a.toLowerCase() !== mode)
+  }
+
+  // 解析 --retry-interval / -r
+  const retryIntervalIndex = args.findIndex(a => a === '--retry-interval' || a === '-r')
+  let retryInterval: string | undefined
+  if (retryIntervalIndex !== -1 && args[retryIntervalIndex + 1]) {
+    const intervalValue = args[retryIntervalIndex + 1]
+    // 验证格式：数字 + 单位 (s/m/h)，如 10s, 5m, 1h
+    // Regex 与 types.ts getRetryConfig 中的解析保持一致
+    if (/^(\d+)([smh])$/.test(intervalValue)) {
+      retryInterval = intervalValue
+    }
+    args = args.filter((_, i) => i !== retryIntervalIndex && i !== retryIntervalIndex + 1)
+  }
+
+  // 解析 --max-hours / -t
+  const maxHoursIndex = args.findIndex(a => a === '--max-hours' || a === '-t')
+  let maxRetryHours: number | undefined
+  if (maxHoursIndex !== -1 && args[maxHoursIndex + 1]) {
+    const parsed = parseInt(args[maxHoursIndex + 1], 10)
+    // 验证：正整数且在合理范围内 (1-720 小时 = 30天)
+    if (!isNaN(parsed) && parsed > 0 && parsed <= 720) {
+      maxRetryHours = parsed
+    }
+    args = args.filter((_, i) => i !== maxHoursIndex && i !== maxHoursIndex + 1)
+  }
+
   const budgetIndex = args.indexOf('--budget')
   let tokenBudget: number | undefined
   if (budgetIndex !== -1 && args[budgetIndex + 1]) {
     tokenBudget = parseInt(args[budgetIndex + 1], 10)
-    args = args.slice(0, budgetIndex)
+    args = args.filter((_, i) => i !== budgetIndex && i !== budgetIndex + 1)
+  }
+
+  // 默认启用任务编排（autoSplit）
+  // 用户可通过 --no-auto-split 显式禁用
+  const noAutoSplitIndex = args.indexOf('--no-auto-split')
+  const autoSplit = noAutoSplitIndex === -1
+  if (noAutoSplitIndex !== -1) {
+    args = args.filter((_, i) => i !== noAutoSplitIndex)
+  }
+
+  const maxParallelMatch = args.find(a => a.startsWith('--max-parallel='))
+  let maxParallel: number | undefined
+  if (maxParallelMatch) {
+    const parsed = parseInt(maxParallelMatch.split('=')[1], 10)
+    // 验证：正整数且在合理范围内 (1-10)
+    if (!isNaN(parsed) && parsed > 0 && parsed <= 10) {
+      maxParallel = parsed
+    }
+    args = args.filter(a => a !== maxParallelMatch)
   }
 
   const firstArg = args[0]?.toLowerCase()
 
-  if (firstArg === 'status') {
-    return { action: 'status' }
-  }
-  if (firstArg === 'pause') {
-    return { action: 'pause' }
-  }
-  if (firstArg === 'resume') {
-    return { action: 'resume' }
-  }
-  if (firstArg === 'clear') {
-    return { action: 'clear' }
-  }
+  if (firstArg === 'status') return { action: 'status' }
+  if (firstArg === 'pause') return { action: 'pause' }
+  if (firstArg === 'resume') return { action: 'resume' }
+  if (firstArg === 'clear' || firstArg === 'stop') return { action: 'clear' }
+  if (firstArg === 'edit') return { action: 'edit', editObjective: args.slice(1).join(' ') }
+  if (firstArg === 'budget' && args[1]) return { action: 'budget', newBudget: parseInt(args[1], 10) }
+  if (firstArg === 'mode' && mode) return { action: 'mode', mode }
 
-  return { objective: args.join(' '), tokenBudget, autoAccept }
+  return { objective: args.join(' '), tokenBudget, autoAccept, autoEdit, mode, retryInterval, maxRetryHours, autoSplit, maxParallel }
 }
 
 function formatGoalStatus(goal: Goal | undefined, todos: TodoItem[] | undefined): string {
   if (!goal || !goal.id || !goal.status || goal.status === ThreadGoalStatus.Complete) {
-    return 'No active goal. Use /goal <objective> [--budget <tokens>] to set one.'
+    return '当前未设置活跃目标。使用 /goal <目标描述> [--budget <tokens>] 创建一个。'
   }
   const remaining = goal.tokenBudget
-    ? `${goal.tokenBudget - goal.tokensUsed} remaining`
-    : 'unbounded'
+    ? `剩余 ${goal.tokenBudget - goal.tokensUsed} tokens`
+    : '无上限'
 
-  let statusMessage = `Goal: ${goal.objective}\nStatus: ${goal.status}\nTokens: ${goal.tokensUsed} / ${goal.tokenBudget ?? 'unbounded'} (${remaining})\nTime: ${goal.timeUsedSeconds}s`
+  let statusMessage = `目标：${goal.objective}\n状态：${goal.status}\nTokens：${goal.tokensUsed} / ${goal.tokenBudget ?? '无上限'} (${remaining})\n用时：${goal.timeUsedSeconds}s`
 
   // Add task progress if available
   if (todos && todos.length > 0) {
     const completedCount = todos.filter(t => t.status === 'completed').length
     const inProgress = todos.find(t => t.status === 'in_progress')
-    statusMessage += `\nTasks: ${completedCount}/${todos.length} completed`
+    statusMessage += `\n任务：${completedCount}/${todos.length} 已完成`
     if (inProgress) {
-      statusMessage += `\nCurrent: ${inProgress.content}`
+      statusMessage += `\n当前：${inProgress.content}`
     }
   }
 
@@ -86,9 +154,14 @@ function formatGoalStatus(goal: Goal | undefined, todos: TodoItem[] | undefined)
 
 export const call: LocalJSXCommandCall = async (onDone, context, args) => {
   const argsArray = args ? args.trim().split(/\s+/).filter(Boolean) : []
-  const { objective, action, tokenBudget, autoAccept } = parseGoalArgs(argsArray)
+  const { objective, action, tokenBudget, autoAccept, autoEdit, mode, editObjective, newBudget, retryInterval, maxRetryHours, autoSplit, maxParallel } = parseGoalArgs(argsArray)
   const appState = context.getAppState()
-  const goal = appState.goal
+  let goal = appState.goal
+  // Migrate existing goal if it has old schema
+  if (goal && goal.id) {
+    goal = migrateGoal(goal)
+    context.setAppState(s => ({ ...s, goal }))
+  }
   const todos = goal?.todoListId ? appState.todos[goal.todoListId] : undefined
 
   // status
@@ -101,14 +174,14 @@ export const call: LocalJSXCommandCall = async (onDone, context, args) => {
   // clear
   if (action === 'clear') {
     context.setAppState(s => ({ ...s, goal: { ...IDLE_GOAL } }))
-    onDone('Goal cleared.', { display: 'system' })
+    onDone('目标已清除。', { display: 'system' })
     return null
   }
 
   // pause/resume
   if (action === 'pause' || action === 'resume') {
     if (!goal || !goal.id) {
-      const message = 'No active goal to pause/resume. Use /goal <objective> first.'
+      const message = '当前未设置活跃目标，无法暂停/恢复。请先使用 /goal <目标描述>。'
       onDone(message, { display: 'system' })
       return null
     }
@@ -117,14 +190,85 @@ export const call: LocalJSXCommandCall = async (onDone, context, args) => {
       ...s,
       goal: { ...s.goal, status: newStatus, updatedAt: Date.now() }
     }))
-    const message = `Goal ${action}d.`
+    const message = `目标已${action === 'pause' ? '暂停' : '恢复'}。`
     onDone(message, { display: 'system' })
     return null
   }
 
+  // edit: modify goal objective
+  if (action === 'edit') {
+    if (!goal || !goal.id) {
+      onDone('当前未设置活跃目标，无法编辑。', { display: 'system' })
+      return null
+    }
+    if (!editObjective) {
+      onDone('用法：/goal edit <新目标描述>', { display: 'system' })
+      return null
+    }
+    context.setAppState(s => ({
+      ...s,
+      goal: { ...s.goal, objective: editObjective, updatedAt: Date.now() },
+    }))
+    onDone('目标描述已更新。', { display: 'system' })
+    return null
+  }
+
+  // budget: dynamically adjust token budget
+  if (action === 'budget') {
+    if (!goal || !goal.id) {
+      onDone('当前未设置活跃目标，无法调整预算。', { display: 'system' })
+      return null
+    }
+    if (newBudget == null || isNaN(newBudget)) {
+      onDone('用法：/goal budget <token数量>', { display: 'system' })
+      return null
+    }
+    context.setAppState(s => ({
+      ...s,
+      goal: { ...s.goal, tokenBudget: newBudget, updatedAt: Date.now() },
+    }))
+    onDone(`目标预算已设为 ${newBudget} tokens。`, { display: 'system' })
+    return null
+  }
+
+  // mode: change prompt tier
+  if (action === 'mode') {
+    if (!goal || !goal.id) {
+      onDone('当前未设置活跃目标，无法切换模式。', { display: 'system' })
+      return null
+    }
+    context.setAppState(s => ({
+      ...s,
+      goal: { ...s.goal, mode: mode ?? 'standard', updatedAt: Date.now() },
+    }))
+    onDone(`目标模式已设为 ${mode ?? 'standard'}。`, { display: 'system' })
+    return null
+  }
+
+  // 新增：autoSplit 模式
+  if (autoSplit && objective) {
+    try {
+      const orchestrator = new GoalTaskOrchestrator(context, { maxParallel })
+      const result = await orchestrator.execute(objective, (event) => {
+        context.appendSystemMessage?.({
+          type: 'system',
+          subtype: 'task_progress',
+          content: event.message,
+          isMeta: true,
+        })
+      })
+      onDone(result.summary, { display: 'system' })
+      return null
+    } catch (error) {
+      const errorMsg = error instanceof Error ? error.message : String(error)
+      onDone(`任务编排失败: ${errorMsg}`, { display: 'system' })
+      return null
+    }
+  }
+
   // Create new goal
   if (!objective) {
-    onDone('Error: No objective provided. Use /goal <objective>', { display: 'system' })
+    onDone('错误：未提供目标描述。用法：/goal <目标描述>', { display: 'system' })
     return null
   }
 
@@ -140,12 +284,21 @@ export const call: LocalJSXCommandCall = async (onDone, context, args) => {
     createdAt: Date.now(),
     updatedAt: Date.now(),
     todoListId: sessionId,
+    retryConfig: getRetryConfig({ retryInterval, maxRetryHours }),
   }
 
   const defaultTodos = createDefaultTodoItems(objective || '')
   // Auto-start first task as in_progress
   if (defaultTodos.length > 0) {
     defaultTodos[0] = { ...defaultTodos[0], status: 'in_progress' }
+  }
+
+  // Create dedicated goalTask list (decoupled from TodoWrite)
+  const goalTaskListId = `goal_${newGoal.id}`
+  const defaultGoalTasks: GoalTask[] = createDefaultGoalTasks(objective || '')
+  // Auto-start first task as in_progress (matching defaultTodos behavior)
+  if (defaultGoalTasks.length > 0) {
+    defaultGoalTasks[0] = { ...defaultGoalTasks[0], status: 'in_progress' }
   }
   const continuationPrompt = buildContinuationPrompt(newGoal)
 
@@ -158,12 +311,23 @@ export const call: LocalJSXCommandCall = async (onDone, context, args) => {
       },
       budgetLimitReportedGoalId: null,
       continuationTurnId: null,
+      turnBuffer: [],
+      totalApiTokens: 0,
+      totalApiWallMs: 0,
+      consecutiveErrors: 0,
+      turnsWithNoChanges: 0,
+      _currentTurnWallStartMs: 0,
     }
 
-    // If autoAccept is true, set permission mode to bypassPermissions for full auto-accept
-    // bypassPermissions mode bypasses all permission prompts including file edits
-    const newMode = autoAccept ? 'bypassPermissions' : s.toolPermissionContext.mode
-    const newToolPermissionContext = autoAccept
+    // If autoEdit is true, use autoEdit mode (file edits auto-approved, bash still prompts)
+    // If autoAccept is true, use bypassPermissions (full bypass)
+    const newMode = autoAccept
+      ? 'bypassPermissions'
+      : autoEdit
+        ? 'autoEdit'
+        : s.toolPermissionContext.mode
+
+    const newToolPermissionContext = (autoAccept || autoEdit)
       ? {
           ...s.toolPermissionContext,
           mode: newMode as const,
@@ -173,7 +337,12 @@ export const call: LocalJSXCommandCall = async (onDone, context, args) => {
 
     return {
       ...s,
-      goal: newGoal,
+      goal: {
+        ...newGoal,
+        goalTaskListId,
+        mode: mode ?? 'standard',
+        autoEdit: autoEdit ?? false,
+      },
       goalRuntime: {
         ...currentRuntime,
         accounting: {
@@ -189,6 +358,10 @@ export const call: LocalJSXCommandCall = async (onDone, context, args) => {
         ...s.todos,
         [sessionId]: defaultTodos,
       },
+      goalTasks: {
+        ...s.goalTasks,
+        [goalTaskListId]: defaultGoalTasks,
+      },
       toolPermissionContext: newToolPermissionContext,
     }
   })
@@ -198,7 +371,7 @@ export const call: LocalJSXCommandCall = async (onDone, context, args) => {
     notifyPermissionModeChanged('bypassPermissions')
   }
 
-  const message = `Goal set: ${objective}${tokenBudget ? `\nToken budget: ${tokenBudget}` : ''}${autoAccept ? `\nAuto-accept: enabled (bypassing all permission prompts)` : ''}\nLinked to TodoWrite: /todos\nUse /goal to check status, /goal pause to pause, /goal clear to cancel.`
+  const message = `目标已创建：${objective}${tokenBudget ? `\nToken 预算：${tokenBudget}` : ''}${autoEdit ? `\n自动编辑：已启用（文件修改自动批准）` : ''}${autoAccept ? `\n自动接受：已启用（跳过所有权限提示）` : ''}\n已关联 TodoWrite：/todos\n使用 /goal 查看状态，/goal pause 暂停，/goal clear 清除。`
   // Trigger auto-execute via metaMessages and shouldQuery
   onDone(message, { display: 'system', metaMessages: [continuationPrompt], shouldQuery: true })
   return null

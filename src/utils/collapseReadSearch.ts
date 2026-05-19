@@ -1,6 +1,6 @@
 import { feature } from 'bun:bundle'
 import type { UUID } from 'crypto'
-import { findToolByName, type Tools } from '../Tool.js'
+import { createToolRegistry, type Tools } from '../Tool.js'
 import { extractBashCommentLabel } from '../tools/BashTool/commentLabel.js'
 import { BASH_TOOL_NAME } from '../tools/BashTool/toolName.js'
 import { FILE_EDIT_TOOL_NAME } from '../tools/FileEditTool/constants.js'
@@ -196,9 +196,9 @@ export function getToolSearchOrReadInfo(
   // stripped from the execution tools list, but REPL emits them as virtual
   // messages. Without the fallback they'd return isCollapsible: false and
   // vanish from the summary line.
-  const tool =
-    findToolByName(tools, toolName) ??
-    findToolByName(getReplPrimitiveTools(), toolName)
+  const mainRegistry = createToolRegistry(tools)
+  const primitiveRegistry = createToolRegistry(getReplPrimitiveTools())
+  const tool = mainRegistry.find(toolName) ?? primitiveRegistry.find(toolName)
   if (!tool?.isSearchOrReadCommand) {
     return {
       isCollapsible: false,

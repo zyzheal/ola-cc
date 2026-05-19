@@ -336,16 +336,16 @@ export function buildAPIProviderProperties(): Property[] {
     });
   }
   if (mtlsConfig) {
-    if (mtlsConfig.cert && process.env.CLAUDE_CODE_CLIENT_CERT) {
+    if (mtlsConfig.cert && process.env.OLA_CC_CLIENT_CERT) {
       properties.push({
         label: 'mTLS client cert',
-        value: process.env.CLAUDE_CODE_CLIENT_CERT
+        value: process.env.OLA_CC_CLIENT_CERT
       });
     }
-    if (mtlsConfig.key && process.env.CLAUDE_CODE_CLIENT_KEY) {
+    if (mtlsConfig.key && process.env.OLA_CC_CLIENT_KEY) {
       properties.push({
         label: 'mTLS client key',
-        value: process.env.CLAUDE_CODE_CLIENT_KEY
+        value: process.env.OLA_CC_CLIENT_KEY
       });
     }
   }

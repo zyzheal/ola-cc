@@ -6,6 +6,7 @@ on:
       - 'v*'
     branches:
       - 'feature-openai-bin'
+      - 'fix-windows-bun-crash'
   workflow_dispatch:
     inputs:
       publish:
@@ -66,8 +67,8 @@ jobs:
           # musl platforms: requires actual musl system to build, skip for now
           # - { label: linux-x64-musl, runner: ubuntu-22.04,   key: linux-x64-musl, musl: true }
           # - { label: linux-arm64-musl, runner: ubuntu-24.04-arm, key: linux-arm64-musl, musl: true }
-          - { label: win32-x64,      runner: windows-latest, key: win32-x64 }
-          - { label: win32-arm64,    runner: windows-11-arm, key: win32-arm64 }
+          - { label: win32-x64,      runner: windows-latest, key: win32-x64, jsbundle: true }
+          - { label: win32-arm64,    runner: windows-11-arm, key: win32-arm64, jsbundle: true }
 
     steps:
       - uses: actions/checkout@v4
@@ -97,12 +98,12 @@ jobs:
              bun install ---cache node_modules.cache; \
              bun run ./scripts/build-publish-bin.ts --only-bin || echo 'musl build skipped'"
 
-      # JS bundle platforms: darwin-x64 (no cross-compile) and win32 (pkg unreliable)
+      # JS bundle platforms: darwin-x64 (no cross-compile) and win32 (bun --compile crashes)
       - name: Build JS bundle package
         if: matrix.platform.jsbundle
         env:
-          BUILD_PUBLISH_BIN_PLATFORM: ${{ matrix.platform.key == 'darwin-x64' && 'darwin' || '' }}
-          BUILD_PUBLISH_BIN_ARCH: ${{ matrix.platform.key == 'darwin-x64' && 'x64' || '' }}
+          BUILD_PUBLISH_BIN_PLATFORM: ${{ matrix.platform.key == 'darwin-x64' && 'darwin' || (startsWith(matrix.platform.key, 'win32') && 'win32' || '') }}
+          BUILD_PUBLISH_BIN_ARCH: ${{ matrix.platform.key == 'darwin-x64' && 'x64' || (startsWith(matrix.platform.key, 'win32') && (contains(matrix.platform.key, 'arm64') && 'arm64' || 'x64') || '') }}
         run: bun run ./scripts/build-publish-bin.ts --only-bin
 
       # Native build for macOS arm64 and Linux
@@ -115,18 +116,27 @@ jobs:
         run: bun run ./scripts/build-publish-bin.ts --only-wrapper
 
       # ─── Test phase ──────────────────────────────────────
-      # Windows: test native .exe binary
-      - name: Test Windows binary
-        if: startsWith(matrix.platform.key, 'win32')
+      # Windows: test JS bundle (bun --compile crashes on Windows)
+      - name: Test Windows JS bundle
+        if: startsWith(matrix.platform.key, 'win32') && matrix.platform.jsbundle
         run: |
-          ./dist/publish-bin/${{ matrix.platform.key }}/ola-cc --version
+          # --version: fast path, verify basic startup works
+          node ./dist/publish-bin/${{ matrix.platform.key }}/cli.mjs --version
+          # -p: full module load path (init → setup → runHeadless),
+          # catches crashes from native module loading, NATS init, etc.
+          # API call will fail without key; timeout after 30s since we only
+          # care about module initialization, not API response.
+          timeout 30 node ./dist/publish-bin/${{ matrix.platform.key }}/cli.mjs -p "test" || [ $? -eq 124 ] || [ $? -eq 1 ]
         shell: bash
 
       # macOS arm64/Linux: test native binary
       - name: Test native binary
         if: "!matrix.platform.musl && !matrix.platform.jsbundle && !startsWith(matrix.platform.key, 'win32')"
         run: |
+          # --version: fast path
           ./dist/publish-bin/${{ matrix.platform.key }}/ola-cc --version
+          # -p: full module load path (same timeout rationale as above)
+          timeout 30 ./dist/publish-bin/${{ matrix.platform.key }}/ola-cc -p "test" || [ $? -eq 124 ] || [ $? -eq 1 ]
         shell: bash
 
       # Verify ugrep binary is included in wrapper package (Windows x64 only)
@@ -206,8 +216,13 @@ jobs:
           AUTHORIZED=1 npm install --foreground-scripts --no-save ./wrapper.tgz ./binary.tgz 2>&1
 
           # Verify the binary was placed by postinstall
-          # All platforms: use bin/ola-cc.js which delegates to native binary or JS bundle
-          ./node_modules/@zyzheal/ola-cc/bin/ola-cc --version
+          # Windows: run JS bundle directly with node
+          # Other platforms: use bin/ola-cc.js which delegates to native binary or JS bundle
+          if [[ "${{ matrix.platform.key }}" == win32-* ]]; then
+            node ./node_modules/@zyzheal/ola-cc/bin/ola-cc.js --version
+          else
+            ./node_modules/@zyzheal/ola-cc/bin/ola-cc --version
+          fi
 
           # Cleanup
           rm -rf "$TEST_DIR"

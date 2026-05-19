@@ -8,6 +8,9 @@ import { getSettingsForSource, updateSettingsForSource } from '../../utils/setti
 import type { LocalJSXCommandCall } from '../../types/command.js'
 import { useSetAppState } from '../../state/AppState.js'
 import { getAnthropicClient } from '../../services/api/client.js'
+import { setProcessScopedActiveProfile, getProcessScopedOlaProviders, syncProcessScopedOlaProviders, clearProcessScopedActiveProfile } from '../../utils/managedEnv.js'
+import { saveGlobalConfig } from '../../utils/config.js'
+import { normalizeApiKeyForConfig } from '../../utils/authPortable.js'
 
 // -- Types
 
@@ -81,16 +84,21 @@ function migrateProfile(p: unknown): ProviderProfile | null {
 
 function loadProfiles(): ProfilesData {
   try {
-    const settings = getSettingsForSource('userSettings')
-    const raw = (settings as any).__olaProviders__
-    if (raw && typeof raw === 'object') {
-      const profiles = (Array.isArray(raw.profiles) ? raw.profiles : [])
-        .map(migrateProfile)
-        .filter((p): p is ProviderProfile => p && typeof p.name === 'string' && p.name.length > 0)
-      return {
-        profiles,
-        activeProfile: raw.activeProfile,
-        activeModel: raw.activeModel,
+    // Check flagSettings (--settings) first, then userSettings
+    const sources = ['flagSettings', 'userSettings'] as const
+    for (const source of sources) {
+      const settings = getSettingsForSource(source)
+      if (!settings) continue
+      const raw = (settings as any).__olaProviders__
+      if (raw && typeof raw === 'object') {
+        const profiles = (Array.isArray(raw.profiles) ? raw.profiles : [])
+          .map(migrateProfile)
+          .filter((p): p is ProviderProfile => p && typeof p.name === 'string' && p.name.length > 0)
+        return {
+          profiles,
+          activeProfile: raw.activeProfile,
+          activeModel: raw.activeModel,
+        }
       }
     }
   } catch {
@@ -108,6 +116,31 @@ function saveProfiles(data: ProfilesData): { error: Error | null } {
     },
   })
   return result
+}
+
+// -- API Key Approval
+
+/**
+ * Add an anthropic provider's API key to the approved list in ~/.ola-cc.json
+ * so getAnthropicApiKeyWithSource() (src/utils/auth.ts:299-309) will recognize it.
+ * Without this, keys added via /auth add are not in the approved list
+ * (which /login normally populates), causing "Not logged in" errors.
+ * This mirrors saveApiKey() behavior for /login-flow consistency.
+ */
+function approveProviderApiKey(profile: ProviderProfile): void {
+  if (profile.provider !== 'anthropic' || !profile.apiKey) return
+  const normalizedKey = normalizeApiKeyForConfig(profile.apiKey)
+  saveGlobalConfig(current => {
+    const approved = current.customApiKeyResponses?.approved ?? []
+    if (approved.includes(normalizedKey)) return current
+    return {
+      ...current,
+      customApiKeyResponses: {
+        ...current.customApiKeyResponses,
+        approved: [...approved, normalizedKey],
+      },
+    }
+  })
 }
 
 // -- API Verification
@@ -165,7 +198,7 @@ async function verifyProviderProfile(
       if (profile.apiUrl) process.env.ANTHROPIC_BASE_URL = profile.apiUrl
 
       try {
-        const client = await getAnthropicClient({ maxRetries: 0 })
+        const client = await getAnthropicClient({ apiKey: profile.apiKey, maxRetries: 0 })
         const result = await (client.beta.messages.create({
           model: modelToTest || 'claude-sonnet-4-20250514',
           messages: [{ role: 'user', content: 'Hi' }],
@@ -280,7 +313,7 @@ function AuthActionView({
 
         case 'add': {
           if (!parsed.name || !parsed.apiUrl || !parsed.apiKey || !parsed.model) {
-            setMessage('用法: /auth add <name> --api-url <url> --api-key <key> --model <model>')
+            setMessage('用法: /auth add <name> --api-url <url> --api-key <key> --model <model> [--provider openai|anthropic]')
             setDone(true)
             break
           }
@@ -294,7 +327,9 @@ function AuthActionView({
             setDone(true)
             break
           }
-          const prov = parsed.provider || 'openai'
+          // Auto-detect provider from URL if not explicitly specified
+          const isAnthropicUrl = parsed.apiUrl.includes('/anthropic')
+          const prov = parsed.provider || (isAnthropicUrl ? 'anthropic' : 'openai')
           const existing = data.profiles.findIndex(p => p.name === parsed.name)
           const profile: ProviderProfile = {
             name: parsed.name,
@@ -319,7 +354,13 @@ function AuthActionView({
             else data.profiles.push(profile)
             setMessage(`已保存 "${profile.name}" 但验证失败:\n${chalk.red(verifyResult.error || 'Unknown error')}`)
           }
+
+          approveProviderApiKey(profile)
           saveProfiles(data)
+
+          // Sync new profile to process-scoped memory so it can be used immediately
+          syncProcessScopedOlaProviders(data)
+
           setDone(true)
           break
         }
@@ -330,29 +371,22 @@ function AuthActionView({
           if (!profile) { setMessage(`未找到 "${parsed.name}"`); setDone(true); break }
           if (profile.models.length === 0) { setMessage(`"${parsed.name}" 没有可用模型`); setDone(true); break }
 
-          if (profile.provider === 'openai') {
-            process.env.CLAUDE_CODE_USE_OPENAI = 'true'
-            process.env.OPENAI_API_KEY = profile.apiKey
-            process.env.OPENAI_API_BASE = profile.apiUrl
-            process.env.OPENAI_BASE_URL = profile.apiUrl
-            delete process.env.ANTHROPIC_API_KEY
-          } else {
-            process.env.ANTHROPIC_API_KEY = profile.apiKey
-            if (profile.apiUrl) process.env.ANTHROPIC_BASE_URL = profile.apiUrl
+          approveProviderApiKey(profile)
 
-            delete process.env.CLAUDE_CODE_USE_OPENAI
-            delete process.env.OPENAI_API_KEY
-            delete process.env.OPENAI_API_BASE
-            delete process.env.OPENAI_BASE_URL
-          }
+          // Use process-scoped memory switching — env vars are process-scoped,
+          // so multiple processes can independently switch providers.
+          setProcessScopedActiveProfile(profile.name, profile.defaultModel)
 
-          const modelToUse = profile.defaultModel || profile.models[0]
-          setAppState(prev => ({ ...prev, mainLoopModel: modelToUse, mainLoopModelForSession: null }))
+          // Update mainLoopModel via AppState for immediate effect in current session
+          setAppState(prev => ({ ...prev, mainLoopModel: profile.defaultModel, mainLoopModelForSession: null }))
+
+          // Persist the active profile to disk so new processes pick it up.
           data.activeProfile = profile.name
-          data.activeModel = modelToUse
+          data.activeModel = profile.defaultModel
           saveProfiles(data)
-          logEvent('tengu_auth_switch_provider', { provider: profile.provider, model: modelToUse })
-          setMessage(`已切换到 "${chalk.bold(profile.name)}" (${profile.provider})\n模型: ${chalk.bold(modelToUse)}\nURL: ${profile.apiUrl}`)
+
+          logEvent('tengu_auth_switch_provider', { provider: profile.provider, model: profile.defaultModel })
+          setMessage(`已切换到 "${chalk.bold(profile.name)}" (${profile.provider})\n模型: ${chalk.bold(profile.defaultModel)}\nURL: ${profile.apiUrl}`)
           setDone(true)
           break
         }
@@ -365,8 +399,14 @@ function AuthActionView({
           if (data.activeProfile === parsed.name) {
             data.activeProfile = undefined
             data.activeModel = undefined
+            // Clear process-scoped memory and env vars for deleted active profile
+            clearProcessScopedActiveProfile()
           }
           saveProfiles(data)
+
+          // Sync profile removal to process-scoped memory
+          syncProcessScopedOlaProviders(data)
+
           setMessage(`已删除 "${parsed.name}"`)
           setDone(true)
           break
@@ -398,6 +438,14 @@ function AuthActionView({
           if (result.success) { profile.verified = true; setMessage(`已添加 "${parsed.model}" 到 "${parsed.name}" — 连接验证成功 ${chalk.green('✓')}`) }
           else { profile.verified = false; setMessage(`已添加 "${parsed.model}" 但验证失败:\n${chalk.red(result.error || 'Unknown error')}`) }
           saveProfiles(data)
+
+          // Always sync process-scoped memory when active profile's models change
+          syncProcessScopedOlaProviders(data)
+          if (data.activeProfile !== parsed.name && data.activeProfile) {
+            // Re-apply the current active profile's env vars to ensure consistency
+            setProcessScopedActiveProfile(data.activeProfile, data.activeModel)
+          }
+
           logEvent('tengu_auth_add_model', { provider: profile.name, model: parsed.model })
           setDone(true)
           break
@@ -417,8 +465,15 @@ function AuthActionView({
           if (data.activeProfile === parsed.name && data.activeModel === parsed.model) {
             data.activeModel = profile.defaultModel
             setAppState(prev => ({ ...prev, mainLoopModel: profile.defaultModel }))
+
+            // Sync process memory for the active profile
+            setProcessScopedActiveProfile(parsed.name, profile.defaultModel)
           }
           saveProfiles(data)
+
+          // Always sync process-scoped memory when models change
+          syncProcessScopedOlaProviders(data)
+
           logEvent('tengu_auth_remove_model', { provider: profile.name, model: parsed.model })
           setMessage(`已从 "${parsed.name}" 移除 "${parsed.model}"`)
           setDone(true)
@@ -428,7 +483,7 @@ function AuthActionView({
         case 'help': {
           setMessage(
             `${chalk.bold('Provider 配置管理')}\n\n` +
-            `${chalk.cyan('/auth add')} <name> --api-url <url> --api-key <key> --model <model>\n  添加 provider 配置\n\n` +
+            `${chalk.cyan('/auth add')} <name> --api-url <url> --api-key <key> --model <model> [--provider openai|anthropic]\n  添加 provider 配置 (--provider 可选，默认根据 URL 自动检测)\n\n` +
             `${chalk.cyan('/auth list')}                     列出所有已保存的配置\n\n` +
             `${chalk.cyan('/auth use')} <name>               切换到指定 provider\n\n` +
             `${chalk.cyan('/auth delete')} <name>            删除 provider\n\n` +
@@ -437,6 +492,7 @@ function AuthActionView({
             `${chalk.cyan('/auth remove-model')} <name> <model> 从 provider 移除 model\n\n` +
             `${chalk.dim('示例:')}\n` +
             `  /auth add dashscope --api-url https://dashscope.aliyuncs.com/compatible-mode/v1 --api-key sk-xxx --model qwen3.6-plus\n` +
+            `  /auth add qwen --api-url https://coding.dashscope.aliyuncs.com/apps/anthropic --api-key sk-xxx --model qwen3.6-plus  # 自动检测为 Anthropic 协议\n` +
             `  /auth list\n` +
             `  /auth use dashscope\n` +
             `  /auth add-model dashscope qwen-max`,

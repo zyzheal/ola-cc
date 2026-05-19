@@ -1,1 +1,1 @@
-export const WorkflowTool = null
+export { WorkflowTool } from './index.js'

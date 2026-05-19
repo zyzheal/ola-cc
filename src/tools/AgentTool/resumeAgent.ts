@@ -1,5 +1,6 @@
 import { promises as fsp } from 'fs'
 import { getSdkAgentProgressSummariesEnabled } from '../../bootstrap/state.js'
+import { findAgentByType } from './agentToolUtils.js'
 import { getSystemPrompt } from '../../constants/prompts.js'
 import { isCoordinatorMode } from '../../coordinator/coordinatorMode.js'
 import type { CanUseToolFn } from '../../hooks/useCanUseTool.js'
@@ -103,9 +104,7 @@ export async function resumeAgentBackground({
     selectedAgent = FORK_AGENT
     isResumedFork = true
   } else if (meta?.agentType) {
-    const found = toolUseContext.options.agentDefinitions.activeAgents.find(
-      a => a.agentType === meta.agentType,
-    )
+    const found = findAgentByType(toolUseContext.options.agentDefinitions.activeAgents, meta.agentType)
     selectedAgent = found ?? GENERAL_PURPOSE_AGENT
   } else {
     selectedAgent = GENERAL_PURPOSE_AGENT
@@ -119,9 +118,7 @@ export async function resumeAgentBackground({
       forkParentSystemPrompt = toolUseContext.renderedSystemPrompt
     } else {
       const mainThreadAgentDefinition = appState.agent
-        ? appState.agentDefinitions.activeAgents.find(
-            a => a.agentType === appState.agent,
-          )
+        ? findAgentByType(appState.agentDefinitions.activeAgents, appState.agent)
         : undefined
       const additionalWorkingDirectories = Array.from(
         appState.toolPermissionContext.additionalWorkingDirectories.keys(),

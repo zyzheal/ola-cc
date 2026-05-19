@@ -139,16 +139,17 @@ export function CondensedLogo() {
     t11 = $[22];
   }
   let t12;
-  if ($[23] !== t10 || $[24] !== t11 || $[25] !== t6 || $[26] !== t7 || $[27] !== t9) {
-    t12 = <OffscreenFreeze><Box flexDirection="row" gap={2} alignItems="center">{t4}<Box flexDirection="column">{t6}{t7}{t9}{t10}{t11}</Box></Box></OffscreenFreeze>;
+  if ($[23] !== t10 || $[24] !== t11 || $[25] !== t6 || $[26] !== t7 || $[27] !== t9 || $[28] !== t4) {
+    t12 = <OffscreenFreeze><Box flexDirection="column" alignItems="center"><Box height={1} />{t4}<Box flexDirection="column" gap={0}>{t6}{t7}{t9}{t10}{t11}</Box></Box></OffscreenFreeze>;
     $[23] = t10;
     $[24] = t11;
     $[25] = t6;
     $[26] = t7;
     $[27] = t9;
-    $[28] = t12;
+    $[28] = t4;
+    $[29] = t12;
   } else {
-    t12 = $[28];
+    t12 = $[29];
   }
   return t12;
 }

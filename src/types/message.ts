@@ -9,6 +9,7 @@ export type MessageBase = {
   timestamp?: string
   createdAt?: string
   isMeta?: boolean
+  compactSafe?: boolean
   isVirtual?: boolean
   isCompactSummary?: boolean
   toolUseResult?: unknown
@@ -49,6 +50,7 @@ export type SystemMessage = MessageBase & {
   subtype?: string
   level?: SystemMessageLevel
   message?: string
+  content?: string
 }
 
 export type SystemLocalCommandMessage = SystemMessage & {
@@ -70,6 +72,24 @@ export type SystemAgentsKilledMessage = SystemMessage
 export type SystemApiMetricsMessage = SystemMessage
 export type SystemAPIErrorMessage = SystemMessage & { error?: string }
 export type SystemFileSnapshotMessage = SystemMessage
+
+// Goal fallback retry message types
+export type SystemGoalRetryTriggerMessage = SystemMessage & {
+  subtype: 'goal_retry_trigger'
+  retryCount: number
+}
+
+export type SystemGoalRetryStatusMessage = SystemMessage & {
+  subtype: 'goal_retry_status'
+}
+
+export type SystemGoalRetryProgressMessage = SystemMessage & {
+  subtype: 'goal_retry_progress'
+}
+
+export type SystemGoalRetryAbortedMessage = SystemMessage & {
+  subtype: 'goal_retry_aborted'
+}
 
 export type HookResultMessage = MessageBase & {
   type: 'hook_result'

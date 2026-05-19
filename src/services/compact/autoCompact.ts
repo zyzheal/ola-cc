@@ -38,7 +38,7 @@ export function getEffectiveContextWindowSize(model: string): number {
   )
   let contextWindow = getContextWindowForModel(model, getSdkBetas())
 
-  const autoCompactWindow = process.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW
+  const autoCompactWindow = process.env.OLA_CC_AUTO_COMPACT_WINDOW
   if (autoCompactWindow) {
     const parsed = parseInt(autoCompactWindow, 10)
     if (!isNaN(parsed) && parsed > 0) {
@@ -60,10 +60,27 @@ export type AutoCompactTrackingState = {
   consecutiveFailures?: number
 }
 
-export const AUTOCOMPACT_BUFFER_TOKENS = 13_000
-export const WARNING_THRESHOLD_BUFFER_TOKENS = 20_000
-export const ERROR_THRESHOLD_BUFFER_TOKENS = 20_000
-export const MANUAL_COMPACT_BUFFER_TOKENS = 3_000
+// Token buffers for context window management.
+//
+// Threshold firing order (from lowest to highest usage):
+//   WARNING (visual indicator) → ERROR (visual, different color)
+//   → AUTO-COMPACT (action: summarize conversation)
+//   → BLOCKING LIMIT (hard stop: "prompt too long" error)
+//
+// NOTE: Buffer values are SUBTRACTED from the effective context window,
+// so LARGER buffer = EARLIER firing. WARNING (50K) fires before ERROR (45K)
+// because 50K > 45K means a lower absolute token count threshold.
+//
+// For a 200K context window with ~8K output reserve:
+//   effectiveWindow = 192K
+//   warning threshold:   192K - 50K = 142K tokens (~74%)
+//   error threshold:     192K - 45K = 147K tokens (~77%)
+//   auto-compact fires:  192K - 40K = 152K tokens (~79%)
+//   manual compact limit: 192K - 10K = 182K tokens (~95%)
+export const AUTOCOMPACT_BUFFER_TOKENS = 40_000
+export const WARNING_THRESHOLD_BUFFER_TOKENS = 50_000
+export const ERROR_THRESHOLD_BUFFER_TOKENS = 45_000
+export const MANUAL_COMPACT_BUFFER_TOKENS = 10_000
 
 // Stop trying autocompact after this many consecutive failures.
 // BQ 2026-03-10: 1,279 sessions had 50+ consecutive failures (up to 3,272)
@@ -116,6 +133,13 @@ export function getAutoCompactThreshold(model: string): number {
     }
   }
 
+  // Guard against negative thresholds for models with very small context windows.
+  // If the effective window is smaller than the buffer, auto-compact is effectively
+  // disabled (return Infinity) rather than firing at a tiny fixed value like 1000,
+  // which would trigger on every turn and waste API calls.
+  if (autocompactThreshold <= 0) {
+    return Number.POSITIVE_INFINITY
+  }
   return autocompactThreshold
 }
 
@@ -153,7 +177,7 @@ export function calculateTokenWarningState(
     actualContextWindow - MANUAL_COMPACT_BUFFER_TOKENS
 
   // Allow override for testing
-  const blockingLimitOverride = process.env.CLAUDE_CODE_BLOCKING_LIMIT_OVERRIDE
+  const blockingLimitOverride = process.env.OLA_CC_BLOCKING_LIMIT_OVERRIDE
   const parsedOverride = blockingLimitOverride
     ? parseInt(blockingLimitOverride, 10)
     : NaN

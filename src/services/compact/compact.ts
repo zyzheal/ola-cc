@@ -48,6 +48,7 @@ import {
 import { logForDebugging } from '../../utils/debug.js'
 import { hasExactErrorMessage } from '../../utils/errors.js'
 import { cacheToObject } from '../../utils/fileStateCache.js'
+import { resolveCompactModel } from './compactModelRouter.js'
 import {
   type CacheSafeParams,
   runForkedAgent,
@@ -93,6 +94,8 @@ import {
   isToolSearchEnabled,
 } from '../../utils/toolSearch.js'
 import { getFeatureValue_CACHED_MAY_BE_STALE } from '../analytics/growthbook.js'
+import { isThirdPartyProvider } from '../../utils/model/providers.js'
+import type { TurnRecord } from '../../commands/goal/types.js'
 import {
   type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
   logEvent,
@@ -397,12 +400,19 @@ export async function compactConversation(
   isAutoCompact: boolean = false,
   recompactionInfo?: RecompactionInfo,
 ): Promise<CompactionResult> {
+  const compactStartTime = Date.now()
+  const logCompactDuration = (label: string) => {
+    const elapsed = Date.now() - compactStartTime
+    logForDebugging(`[Compact] ${label}: ${elapsed}ms`, { level: 'info' })
+  }
+
   try {
     if (messages.length === 0) {
       throw new Error(ERROR_MESSAGE_NOT_ENOUGH_MESSAGES)
     }
 
     const preCompactTokenCount = tokenCountWithEstimation(messages)
+    logCompactDuration('token_count_start')
 
     const appState = context.getAppState()
     void logPermissionContextForAnts(appState.toolPermissionContext, 'summary')
@@ -414,6 +424,7 @@ export async function compactConversation(
 
     // Execute PreCompact hooks
     context.setSDKStatus?.('compacting')
+    logCompactDuration('pre_hooks_start')
     const hookResult = await executePreCompactHooks(
       {
         trigger: isAutoCompact ? 'auto' : 'manual',
@@ -421,6 +432,7 @@ export async function compactConversation(
       },
       context.abortController.signal,
     )
+    logCompactDuration('pre_hooks_end')
     customInstructions = mergeHookInstructions(
       customInstructions,
       hookResult.newCustomInstructions,
@@ -431,15 +443,25 @@ export async function compactConversation(
     context.setStreamMode?.('requesting')
     context.setResponseLength?.(() => 0)
     context.onCompactProgress?.({ type: 'compact_start' })
+    context.onCompactProgress?.({
+      type: 'compact_progress',
+      stage: 'summarizing',
+      progress: 5,
+      message: '准备压缩对话...',
+    })
 
     // 3P default: true — forked-agent path reuses main conversation's prompt cache.
     // Experiment (Jan 2026) confirmed: false path is 98% cache miss, costs ~0.76% of
     // fleet cache_creation (~38B tok/day), concentrated in ephemeral envs (CCR/GHA/SDK)
     // with cold GB cache and 3P providers where GB is disabled. GB gate kept as kill-switch.
-    const promptCacheSharingEnabled = getFeatureValue_CACHED_MAY_BE_STALE(
-      'tengu_compact_cache_prefix',
-      true,
-    )
+    // For 3P providers (DashScope, DeepSeek, etc.), cache sharing doesn't work - disable it.
+    const isThirdParty = isThirdPartyProvider()
+    const promptCacheSharingEnabled = isThirdParty
+      ? false
+      : getFeatureValue_CACHED_MAY_BE_STALE(
+          'tengu_compact_cache_prefix',
+          true,
+        )
 
     const compactPrompt = getCompactPrompt(customInstructions)
     const summaryRequest = createUserMessage({
@@ -451,6 +473,7 @@ export async function compactConversation(
     let summaryResponse: AssistantMessage
     let summary: string | null
     let ptlAttempts = 0
+    logCompactDuration('stream_compact_summary_start')
     for (;;) {
       summaryResponse = await streamCompactSummary({
         messages: messagesToSummarize,
@@ -459,6 +482,8 @@ export async function compactConversation(
         context,
         preCompactTokenCount,
         cacheSafeParams: retryCacheSafeParams,
+        promptCacheSharingEnabled,
+        isThirdParty,
       })
       summary = getAssistantMessageText(summaryResponse)
       if (!summary?.startsWith(PROMPT_TOO_LONG_ERROR_MESSAGE)) break
@@ -495,8 +520,12 @@ export async function compactConversation(
     }
 
     if (!summary) {
+      // Log only metadata to avoid leaking sensitive data in tool_use blocks
+      const msgType = summaryResponse?.message?.content?.[0]?.type ?? 'unknown'
+      const stopReason = summaryResponse?.message?.stop_reason ?? 'unknown'
+      const usage = summaryResponse?.message?.usage
       logForDebugging(
-        `Compact failed: no summary text in response. Response: ${jsonStringify(summaryResponse)}`,
+        `Compact failed: no summary text in response. type=${msgType}, stopReason=${stopReason}, usage=${jsonStringify(usage)}`,
         { level: 'error' },
       )
       logEvent('tengu_compact_failed', {
@@ -517,6 +546,14 @@ export async function compactConversation(
       })
       throw new Error(summary)
     }
+
+    logCompactDuration('stream_compact_summary_end')
+    context.onCompactProgress?.({
+      type: 'compact_progress',
+      stage: 'processing',
+      progress: 50,
+      message: '正在生成摘要...',
+    })
 
     // Store the current file state before clearing
     const preCompactReadFileState = cacheToObject(context.readFileState)
@@ -753,6 +790,13 @@ export async function compactConversation(
       .filter(Boolean)
       .join('\n')
 
+    logCompactDuration('complete')
+    context.onCompactProgress?.({
+      type: 'compact_progress',
+      stage: 'post_processing',
+      progress: 80,
+      message: '正在处理附件...',
+    })
     return {
       boundaryMarker,
       summaryMessages,
@@ -765,6 +809,7 @@ export async function compactConversation(
       compactionUsage,
     }
   } catch (error) {
+    logCompactDuration('error')
     // Only show the error notification for manual /compact.
     // Auto-compact failures are retried on the next turn and the
     // notification is confusing when compaction eventually succeeds.
@@ -775,6 +820,12 @@ export async function compactConversation(
   } finally {
     context.setStreamMode?.('requesting')
     context.setResponseLength?.(() => 0)
+    context.onCompactProgress?.({
+      type: 'compact_progress',
+      stage: 'complete',
+      progress: 100,
+      message: '压缩完成',
+    })
     context.onCompactProgress?.({ type: 'compact_end' })
     context.setSDKStatus?.(null)
   }
@@ -869,6 +920,14 @@ export async function partialCompactConversation(
 
     // 'up_to' prefix hits cache directly; 'from' sends all (tail wouldn't cache).
     // PTL retry breaks the cache prefix but unblocks the user (CC-1180).
+    // For 3P providers (DashScope, DeepSeek, etc.), cache sharing doesn't work - disable it.
+    const isThirdParty = isThirdPartyProvider()
+    const promptCacheSharingEnabled = isThirdParty
+      ? false
+      : getFeatureValue_CACHED_MAY_BE_STALE(
+          'tengu_compact_cache_prefix',
+          true,
+        )
     let apiMessages = direction === 'up_to' ? messagesToSummarize : allMessages
     let retryCacheSafeParams =
       direction === 'up_to'
@@ -885,6 +944,8 @@ export async function partialCompactConversation(
         context,
         preCompactTokenCount,
         cacheSafeParams: retryCacheSafeParams,
+        promptCacheSharingEnabled,
+        isThirdParty,
       })
       summary = getAssistantMessageText(summaryResponse)
       if (!summary?.startsWith(PROMPT_TOO_LONG_ERROR_MESSAGE)) break
@@ -1170,6 +1231,8 @@ async function streamCompactSummary({
   context,
   preCompactTokenCount,
   cacheSafeParams,
+  promptCacheSharingEnabled,
+  isThirdParty,
 }: {
   messages: Message[]
   summaryRequest: UserMessage
@@ -1177,15 +1240,11 @@ async function streamCompactSummary({
   context: ToolUseContext
   preCompactTokenCount: number
   cacheSafeParams: CacheSafeParams
+  promptCacheSharingEnabled: boolean
+  isThirdParty?: boolean
 }): Promise<AssistantMessage> {
-  // When prompt cache sharing is enabled, use forked agent to reuse the
-  // main conversation's cached prefix (system prompt, tools, context messages).
-  // Falls back to regular streaming path on failure.
-  // 3P default: true — see comment at the other tengu_compact_cache_prefix read above.
-  const promptCacheSharingEnabled = getFeatureValue_CACHED_MAY_BE_STALE(
-    'tengu_compact_cache_prefix',
-    true,
-  )
+  // promptCacheSharingEnabled is computed once in compactConversation and passed here
+  // to avoid redundant isThirdPartyProvider() calls and URL parsing
   // Send keep-alive signals during compaction to prevent remote session
   // WebSocket idle timeouts from dropping bridge connections. Compaction
   // API calls can take 5-10+ seconds, during which no other messages
@@ -1205,8 +1264,15 @@ async function streamCompactSummary({
       )
     : undefined
 
+  const streamStartTime = Date.now()
+  const logStreamDuration = (label: string) => {
+    const elapsed = Date.now() - streamStartTime
+    logForDebugging(`[Compact Stream] ${label}: ${elapsed}ms`, { level: 'info' })
+  }
+
   try {
     if (promptCacheSharingEnabled) {
+      logStreamDuration('cache_sharing_start')
       try {
         // DO NOT set maxOutputTokens here. The fork piggybacks on the main thread's
         // prompt cache by sending identical cache-key params (system, tools, model,
@@ -1228,6 +1294,7 @@ async function streamCompactSummary({
           // `signal: context.abortController.signal` below.
           overrides: { abortController: context.abortController },
         })
+        logStreamDuration('cache_sharing_end')
         const assistantMsg = getLastAssistantMessage(result.messages)
         const assistantText = assistantMsg
           ? getAssistantMessageText(assistantMsg)
@@ -1258,8 +1325,10 @@ async function streamCompactSummary({
           }
           return assistantMsg
         }
+        // Log only metadata to avoid leaking sensitive data
+        const msgType = assistantMsg?.message?.content?.[0]?.type ?? 'unknown'
         logForDebugging(
-          `Compact cache sharing: no text in response, falling back. Response: ${jsonStringify(assistantMsg)}`,
+          `Compact cache sharing: no text in response, falling back. type=${msgType}`,
           { level: 'warn' },
         )
         logEvent('tengu_compact_cache_sharing_fallback', {
@@ -1274,21 +1343,28 @@ async function streamCompactSummary({
             'error' as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
           preCompactTokenCount,
         })
+        logStreamDuration('cache_sharing_error')
       }
     }
 
     // Regular streaming path (fallback when cache sharing fails or is disabled)
+    // Route compaction to a cheaper/faster model (Sonnet) unless kill-switch enabled
+    const mainLoopModel = context.options.mainLoopModel
+    const compactModelInfo = resolveCompactModel(mainLoopModel)
+
     const retryEnabled = getFeatureValue_CACHED_MAY_BE_STALE(
       'tengu_compact_streaming_retry',
       false,
     )
     const maxAttempts = retryEnabled ? MAX_COMPACT_STREAMING_RETRIES : 1
 
+    logStreamDuration('streaming_fallback_start')
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
       // Reset state for retry
       let hasStartedStreaming = false
       let response: AssistantMessage | undefined
       context.setResponseLength?.(() => 0)
+      logStreamDuration(`streaming_attempt_${attempt}_start`)
 
       // Check if tool search is enabled using the main loop's tools list.
       // context.options.tools includes MCP tools merged via useMergedTools.
@@ -1299,6 +1375,7 @@ async function streamCompactSummary({
         context.options.agentDefinitions.activeAgents,
         'compact',
       )
+      logStreamDuration(`tool_search_check_done`)
 
       // When tool search is enabled, include ToolSearchTool and MCP tools. They get
       // defer_loading: true and don't count against context - the API filters them out
@@ -1318,17 +1395,22 @@ async function streamCompactSummary({
             'name',
           )
         : [FileReadTool]
+      logStreamDuration(`tools_prepared`)
+
+      logStreamDuration('normalize_start')
+      const messagesForAPI = normalizeMessagesForAPI(
+        stripImagesFromMessages(
+          stripReinjectedAttachments([
+            ...getMessagesAfterCompactBoundary(messages),
+            summaryRequest,
+          ]),
+        ),
+        context.options.tools,
+      )
+      logStreamDuration('normalize_end')
 
       const streamingGen = queryModelWithStreaming({
-        messages: normalizeMessagesForAPI(
-          stripImagesFromMessages(
-            stripReinjectedAttachments([
-              ...getMessagesAfterCompactBoundary(messages),
-              summaryRequest,
-            ]),
-          ),
-          context.options.tools,
-        ),
+        messages: messagesForAPI,
         systemPrompt: asSystemPrompt([
           'You are a helpful AI assistant tasked with summarizing conversations.',
         ]),
@@ -1340,14 +1422,21 @@ async function streamCompactSummary({
             const appState = context.getAppState()
             return appState.toolPermissionContext
           },
-          model: context.options.mainLoopModel,
+          model: compactModelInfo.model,
           toolChoice: undefined,
           isNonInteractiveSession: context.options.isNonInteractiveSession,
           hasAppendSystemPrompt: !!context.options.appendSystemPrompt,
-          maxOutputTokensOverride: Math.min(
-            COMPACT_MAX_OUTPUT_TOKENS,
-            getMaxOutputTokensForModel(context.options.mainLoopModel),
-          ),
+          // For 3P providers, use smaller output to speed up response
+          // Configurable via OLA_CC_COMPACT_OUTPUT_TOKENS
+          maxOutputTokensOverride: (() => {
+            const thirdPartyCompactTokens = process.env.OLA_CC_COMPACT_OUTPUT_TOKENS
+              ? parseInt(process.env.OLA_CC_COMPACT_OUTPUT_TOKENS, 10)
+              : 8_000
+            return Math.min(
+              isThirdParty ? thirdPartyCompactTokens : COMPACT_MAX_OUTPUT_TOKENS,
+              getMaxOutputTokensForModel(compactModelInfo.model),
+            )
+          })(),
           querySource: 'compact',
           agents: context.options.agentDefinitions.activeAgents,
           mcpTools: [],
@@ -1386,7 +1475,32 @@ async function streamCompactSummary({
         next = await streamIter.next()
       }
 
+      logStreamDuration(`streaming_attempt_${attempt}_end`)
       if (response) {
+        // Check if summary was truncated due to max_tokens limit
+        const stopReason = response.message?.stop_reason
+        if (stopReason === 'max_tokens') {
+          const outputTokens = response.message?.usage?.output_tokens ?? 0
+          logForDebugging(
+            `Compact summary was truncated by max_tokens. outputTokens=${outputTokens}, preCompactTokenCount=${preCompactTokenCount}`,
+            { level: 'warn' },
+          )
+          logEvent('tengu_compact_summary_truncated', {
+            preCompactTokenCount,
+            outputTokens,
+            model: context.options.mainLoopModel,
+          })
+          // Append a marker so the model knows context is incomplete
+          const truncatedText = getAssistantMessageText(response)
+          if (truncatedText) {
+            const markedText = truncatedText + '\n\n[Summary truncated due to length limit - some earlier context may be lost]'
+            ;(response as any).message = {
+              ...response.message,
+              content: [{ type: 'text', text: markedText }],
+            }
+          }
+        }
+        logStreamDuration('streaming_success')
         return response
       }
 
@@ -1609,44 +1723,76 @@ type SetAppStateFn = (f: (prev: AppState) => AppState) => void
  */
 export function resetGoalRuntimeAfterCompact(
   setAppState: SetAppStateFn,
-  compactionUsage?: { input_tokens: number; output_tokens: number },
+  compactionUsage?: { input_tokens: number; output_tokens: number; cache_read_input_tokens?: number },
 ): void {
   setAppState(prev => {
-    // Reset accounting.turn for any goal that's still tracked (Active or BudgetLimited)
-    // BudgetLimited goals still have accounting state that needs reset to prevent negative delta
-    // on subsequent events (tool_completed, turn_finished)
-    if (!prev.goal?.id) {
-      return prev
-    }
-    const goalStatus = prev.goal.status
-    if (goalStatus !== ThreadGoalStatus.Active && goalStatus !== ThreadGoalStatus.BudgetLimited) {
-      return prev
-    }
+    if (!prev.goal?.id) return prev
+    const status = prev.goal.status
+    if (status !== ThreadGoalStatus.Active && status !== ThreadGoalStatus.BudgetLimited) return prev
 
-    // Session Memory Compact doesn't call API, so compactionUsage is undefined → delta = 0
-    // This is intentional: SM-compact doesn't consume API tokens, just reorganizes context
-    const compactDelta = compactionUsage
-      ? compactionUsage.input_tokens + compactionUsage.output_tokens
-      : 0
+    // Always reset accounting.turn to prevent negative delta
+    // Session Memory Compact has no compactionUsage, but still needs the turn reset
+    if (!prev.goalRuntime) return prev
 
-    return {
+    const baseUpdate = {
       ...prev,
       goal: {
         ...prev.goal,
-        tokensUsed: prev.goal.tokensUsed + compactDelta,
         updatedAt: Date.now(),
       },
-      // Reset accounting.turn so next turn_started initializes fresh baseline
-      // CRITICAL: Without this, tokenDeltaSinceLastAccounting would compute negative delta
-      // because lastTokenUsage (pre-compact high) vs current (post-compact low) = negative
       goalRuntime: {
         ...prev.goalRuntime,
         accounting: {
-          ...prev.goalRuntime.accounting,
+          ...prev.goalRuntime?.accounting,
           turn: null,
         },
       },
     }
+
+    // Record compact tokens in ring buffer (only when compactionUsage is available)
+    if (compactionUsage) {
+      const compactTurn: TurnRecord = {
+        turnId: `compact-${prev.goalRuntime?.accounting.turn?.turnId ?? Date.now()}`,
+        inputTokens: compactionUsage.input_tokens,
+        outputTokens: compactionUsage.output_tokens,
+        cacheReadTokens: compactionUsage.cache_read_input_tokens ?? 0,
+        wallStartMs: Date.now(),
+        wallEndMs: Date.now(),
+        // compact is a system operation, not a business turn
+        toolCallsSummary: [],
+        hadObservableChanges: false,
+      }
+      const buffer = [...(prev.goalRuntime?.turnBuffer ?? [])]
+      buffer.push(compactTurn)
+      if (buffer.length > 3) buffer.shift()
+
+      // Accumulate compact tokens into cumulative totals (matching turn_finished semantics)
+      // Exclude cached input tokens (they're part of inputTokens, not additional cost)
+      const compactTokenTotal = Math.max(0, compactionUsage.output_tokens) +
+        Math.max(0, compactionUsage.input_tokens -
+          (compactionUsage.cache_read_input_tokens ?? 0))
+      const prevTotalApiTokens = prev.goalRuntime?.totalApiTokens ?? 0
+      const prevTotalApiWallMs = prev.goalRuntime?.totalApiWallMs ?? 0
+
+      return {
+        ...baseUpdate,
+        goal: {
+          ...baseUpdate.goal,
+          tokensUsed: prev.goal.tokensUsed + compactTokenTotal,
+        },
+        goalRuntime: {
+          ...baseUpdate.goalRuntime,
+          turnBuffer: buffer,
+          totalApiTokens: prevTotalApiTokens + compactTokenTotal,
+          totalApiWallMs: prevTotalApiWallMs, // compact has zero wall time
+          // Reset counters after compact since context has been refreshed
+          turnsWithNoChanges: 0,
+          consecutiveErrors: 0,
+          consecutiveCritical: 0,
+        },
+      }
+    }
+    return baseUpdate
   })
 }
 
@@ -1878,7 +2024,7 @@ function shouldExcludeFromPostCompactRestore(
 
   // Exclude all types of claude.md files
   // TODO: Refactor to use isMemoryFilePath() from claudemd.ts for consistency
-  // and to also match child directory memory files (.claude/rules/*.md, etc.)
+  // and to also match child directory memory files (.ola-cc/rules/*.md, etc.)
   try {
     const normalizedMemoryPaths = new Set(
       MEMORY_TYPE_VALUES.map(type => expandPath(getMemoryPath(type))),

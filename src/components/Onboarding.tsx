@@ -13,13 +13,14 @@ import { isRunningOnHomespace } from '../utils/envUtils.js';
 import { PreflightStep } from '../utils/preflightChecks.js';
 import type { ThemeSetting } from '../utils/theme.js';
 import { ApproveApiKey } from './ApproveApiKey.js';
+import { ConfigApiStep } from './ConfigApiStep.js';
 import { ConsoleOAuthFlow } from './ConsoleOAuthFlow.js';
 import { Select } from './CustomSelect/select.js';
 import { WelcomeV2 } from './LogoV2/WelcomeV2.js';
 import { PressEnterToContinue } from './PressEnterToContinue.js';
 import { ThemePicker } from './ThemePicker.js';
 import { OrderedList } from './ui/OrderedList.js';
-type StepId = 'preflight' | 'theme' | 'oauth' | 'api-key' | 'security' | 'terminal-setup';
+type StepId = 'preflight' | 'theme' | 'config-api' | 'oauth' | 'api-key' | 'security' | 'terminal-setup';
 interface OnboardingStep {
   id: StepId;
   component: React.ReactNode;
@@ -94,6 +95,7 @@ export function Onboarding({
       <PressEnterToContinue />
     </Box>;
   const preflightStep = <PreflightStep onSuccess={goToNextStep} />;
+  const configApiStep = <ConfigApiStep onDone={goToNextStep} />;
   // Create the steps array - determine which steps to include based on reAuth and oauthEnabled
   const apiKeyNeedingApproval = useMemo(() => {
     // Add API key step if needed
@@ -123,6 +125,10 @@ export function Onboarding({
   steps.push({
     id: 'theme',
     component: themeStep
+  });
+  steps.push({
+    id: 'config-api',
+    component: configApiStep
   });
   if (apiKeyNeedingApproval) {
     steps.push({

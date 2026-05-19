@@ -153,6 +153,12 @@ export type CompactProgressEvent =
       hookType: 'pre_compact' | 'post_compact' | 'session_start'
     }
   | { type: 'compact_start' }
+  | {
+      type: 'compact_progress'
+      stage: 'summarizing' | 'processing' | 'post_processing' | 'complete'
+      progress: number // 0-100
+      message?: string
+    }
   | { type: 'compact_end' }
 
 export type ToolUseContext = {
@@ -357,6 +363,51 @@ export function toolMatchesName(
  */
 export function findToolByName(tools: Tools, name: string): Tool | undefined {
   return tools.find(t => toolMatchesName(t, name))
+}
+
+/**
+ * Tool registry with O(1) lookup using Map.
+ * Hot paths migrated: query.ts, queryHelpers.ts, toolOrchestration.ts,
+ * StreamingToolExecutor.ts, LocalAgentTask.tsx, hooks.ts, ToolSearchTool.ts,
+ * Messages.tsx, analyzeContext.ts, messages.ts, AgentTool/UI.tsx,
+ * collapseReadSearch.ts, GroupedToolUseContent.tsx, renderToolActivity.tsx,
+ * mcp.ts, useInboxPoller.ts, useDirectConnect.ts, useSSHSession.ts,
+ * useRemoteSession.ts. Remaining: React-compiled UI components.
+ */
+export class ToolRegistry {
+  private toolMap: Map<string, Tool>
+  private readonly tools: Tools
+
+  constructor(tools: Tools) {
+    this.tools = tools
+    this.toolMap = new Map()
+    for (const tool of tools) {
+      // Primary name
+      this.toolMap.set(tool.name.toLowerCase(), tool)
+      // Aliases
+      if (tool.aliases) {
+        for (const alias of tool.aliases) {
+          this.toolMap.set(alias.toLowerCase(), tool)
+        }
+      }
+    }
+  }
+
+  find(name: string): Tool | undefined {
+    return this.toolMap.get(name.toLowerCase())
+  }
+
+  getTools(): Tools {
+    return this.tools
+  }
+}
+
+/**
+ * Create a ToolRegistry from tools.
+ * Hot paths migrated (see ToolRegistry class doc).
+ */
+export function createToolRegistry(tools: Tools): ToolRegistry {
+  return new ToolRegistry(tools)
 }
 
 export type Tool<

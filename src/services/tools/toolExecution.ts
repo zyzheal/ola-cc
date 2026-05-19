@@ -29,7 +29,7 @@ import {
 } from '../../hooks/toolPermission/permissionLogging.js'
 import type { CanUseToolFn } from '../../hooks/useCanUseTool.js'
 import {
-  findToolByName,
+  ToolRegistry,
   type Tool,
   type ToolProgress,
   type ToolProgressData,
@@ -49,6 +49,7 @@ import {
   TOOL_SEARCH_TOOL_NAME,
 } from '../../tools/ToolSearchTool/prompt.js'
 import { getAllBaseTools } from '../../tools.js'
+import { isCacheableTool, tryGetCachedToolResult, cacheToolResult } from '../../utils/toolCache/toolCacheIntegration.js'
 import type { HookProgress } from '../../types/hooks.js'
 import type {
   AssistantMessage,
@@ -334,6 +335,55 @@ function getMcpServerBaseUrlFromToolName(
   return getLoggingSafeMcpBaseUrl(serverConnection.config)
 }
 
+// Module-level cache for ToolRegistry, invalidated when tools change
+let toolRegistryCache: ToolRegistry | null = null
+let cachedToolsHash = 0
+let cachedBaseToolsRegistry: ToolRegistry | null = null
+let cachedBaseToolsHash = 0
+
+/**
+ * Simple string hash function for cache key generation.
+ */
+function hashString(str: string): number {
+  let hash = 0
+  for (let i = 0; i < str.length; i++) {
+    const char = str.charCodeAt(i)
+    hash = (hash << 5) - hash + char
+    hash = hash & hash // Convert to 32bit integer
+  }
+  return hash
+}
+
+/**
+ * Get or create a cached ToolRegistry for the given tools.
+ * Uses tool name based hash to detect changes.
+ */
+function getToolRegistry(tools: Tools): ToolRegistry {
+  const toolNames = tools.map(t => t.name).join(',')
+  const currentHash = hashString(toolNames)
+  if (toolRegistryCache && cachedToolsHash === currentHash) {
+    return toolRegistryCache
+  }
+  toolRegistryCache = new ToolRegistry(tools)
+  cachedToolsHash = currentHash
+  return toolRegistryCache
+}
+
+/**
+ * Get or create a cached ToolRegistry for base tools.
+ */
+function getBaseToolsRegistry(): ToolRegistry {
+  const baseTools = getAllBaseTools()
+  const toolNames = baseTools.map(t => t.name).join(',')
+  const currentHash = hashString(toolNames)
+  if (cachedBaseToolsRegistry && cachedBaseToolsHash === currentHash) {
+    return cachedBaseToolsRegistry
+  }
+  cachedBaseToolsRegistry = new ToolRegistry(baseTools)
+  cachedBaseToolsHash = currentHash
+  return cachedBaseToolsRegistry
+}
+
 export async function* runToolUse(
   toolUse: ToolUseBlock,
   assistantMessage: AssistantMessage,
@@ -341,14 +391,16 @@ export async function* runToolUse(
   toolUseContext: ToolUseContext,
 ): AsyncGenerator<MessageUpdateLazy, void> {
   const toolName = toolUse.name
-  // First try to find in the available tools (what the model sees)
-  let tool = findToolByName(toolUseContext.options.tools, toolName)
+  // First try to find in the available tools (what the model sees) using O(1) lookup
+  const registry = getToolRegistry(toolUseContext.options.tools)
+  let tool = registry.find(toolName)
 
   // If not found, check if it's a deprecated tool being called by alias
   // (e.g., old transcripts calling "KillShell" which is now an alias for "TaskStop")
   // Only fall back for tools where the name matches an alias, not the primary name
   if (!tool) {
-    const fallbackTool = findToolByName(getAllBaseTools(), toolName)
+    const baseToolsRegistry = getBaseToolsRegistry()
+    const fallbackTool = baseToolsRegistry.find(toolName)
     // Only use fallback if the tool was found via alias (deprecated name)
     if (fallbackTool && fallbackTool.aliases?.includes(toolName)) {
       tool = fallbackTool
@@ -1203,6 +1255,30 @@ async function checkPermissionsAndCallTool(
   } else if (processedInput !== backfilledClone) {
     callInput = processedInput
   }
+
+  // Check tool result cache for read-only tools
+  const cacheable = isCacheableTool(tool.name, callInput)
+  if (cacheable) {
+    const cached = tryGetCachedToolResult(tool.name, callInput)
+    if (cached !== null) {
+      const durationMs = Date.now() - startTime
+      addToToolDuration(durationMs)
+      return [{
+        message: createUserMessage({
+          content: [
+            {
+              type: 'tool_result',
+              content: cached,
+              tool_use_id: toolUseID,
+            },
+          ],
+          toolUseResult: cached,
+          sourceToolAssistantUUID: assistantMessage.uuid,
+        }),
+      }]
+    }
+  }
+
   try {
     const result = await tool.call(
       callInput,
@@ -1222,6 +1298,15 @@ async function checkPermissionsAndCallTool(
     )
     const durationMs = Date.now() - startTime
     addToToolDuration(durationMs)
+
+    // Cache successful tool result for read-only tools
+    if (cacheable && result.data) {
+      const mappedBlock = tool.mapToolResultToToolResultBlockParam?.(result.data, toolUseID)
+      const cacheContent = typeof mappedBlock?.content === 'string' ? mappedBlock.content : undefined
+      if (cacheContent) {
+        cacheToolResult(tool.name, callInput, cacheContent)
+      }
+    }
 
     // Log tool content/output as span event if enabled
     if (result.data && typeof result.data === 'object') {

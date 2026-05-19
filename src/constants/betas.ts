@@ -1,6 +1,8 @@
 import { feature } from 'bun:bundle'
 
-export const CLAUDE_CODE_20250219_BETA_HEADER = 'claude-code-20250219'
+export const OLA_CC_20250219_BETA_HEADER = 'claude-code-20250219'
+// Backward compatibility alias (deprecated)
+/** @deprecated Use OLA_CC_20250219_BETA_HEADER directly */
 export const INTERLEAVED_THINKING_BETA_HEADER =
   'interleaved-thinking-2025-05-14'
 export const CONTEXT_1M_BETA_HEADER = 'context-1m-2025-08-07'
@@ -46,7 +48,7 @@ export const BEDROCK_EXTRA_PARAMS_HEADERS = new Set([
  * Other betas will cause 400 errors.
  */
 export const VERTEX_COUNT_TOKENS_ALLOWED_BETAS = new Set([
-  CLAUDE_CODE_20250219_BETA_HEADER,
+  OLA_CC_20250219_BETA_HEADER,
   INTERLEAVED_THINKING_BETA_HEADER,
   CONTEXT_MANAGEMENT_BETA_HEADER,
 ])
