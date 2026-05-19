@@ -140,14 +140,14 @@ assistant: Still waiting on the audit \u2014 that's one of the things it's check
 
 <example>
 user: "Can you get a second opinion on whether this migration is safe?"
-assistant: <thinking>I'll ask the code-reviewer agent — it won't see my analysis, so it can give an independent read.</thinking>
+assistant: <thinking>I'll ask a subagent — it won't see my analysis, so it can give an independent read.</thinking>
 <commentary>
 A subagent_type is specified, so the agent starts fresh. It needs full context in the prompt. The briefing explains what to assess and why.
 </commentary>
 ${AGENT_TOOL_NAME}({
   name: "migration-review",
   description: "Independent migration review",
-  subagent_type: "code-reviewer",
+  subagent_type: "general-purpose",
   prompt: "Review migration 0042_user_schema.sql for safety. Context: we're adding a NOT NULL column to a 50M-row table. Existing rows get a backfill default. I want a second opinion on whether the backfill approach is safe under concurrent writes — I've checked locking behavior but want independent verification. Report: is this safe, and if not, what specifically breaks?"
 })
 </example>
