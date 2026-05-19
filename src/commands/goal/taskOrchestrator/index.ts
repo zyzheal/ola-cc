@@ -26,7 +26,8 @@ export type {
  * 整合所有模块,提供统一的任务编排入口
  */
 import type { ToolUseContext } from '../../Tool.js';
-import type { OrchestratorConfig, AggregatedResult } from './index.js';
+import type { OrchestratorConfig } from './config.js';
+import type { AggregatedResult } from './types.js';
 import { TaskAnalyzer } from './TaskAnalyzer.js';
 import { TaskScheduler } from './TaskScheduler.js';
 import { TaskExecutor, SimpleCancellationToken } from './TaskExecutor.js';
