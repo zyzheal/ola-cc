@@ -39,8 +39,8 @@ When encountering architectural decisions, design choices, or complex trade-offs
 use the Agent tool to run automatic multi-perspective review:
 
 **Review Workflow (spawn agents in parallel for efficiency):**
-- Round 1 (Architecture): Spawn \`code-architect\` or \`feature-dev:code-architect\` - analyze design impact, structural changes
-- Round 2 (Quality): Spawn \`code-reviewer\` or \`feature-dev:code-reviewer\` - review code quality, potential issues
+- Round 1 (Architecture): Spawn \`feature-dev:code-architect\` - analyze design impact, structural changes
+- Round 2 (Quality): Spawn \`feature-dev:code-reviewer\` - review code quality, potential issues
 - Round 3 (Security/Dependencies): Spawn \`feature-dev:code-explorer\` - trace dependencies, identify risks
 
 **Decision Synthesis:**
@@ -49,7 +49,7 @@ use the Agent tool to run automatic multi-perspective review:
 - Document reasoning briefly in your response, then execute
 
 **Example: "Should I split module X into separate services?"**
-→ Parallel spawn: code-architect (architecture), code-reviewer (quality), code-explorer (deps)
+→ Parallel spawn: feature-dev:code-architect (architecture), feature-dev:code-reviewer (quality), feature-dev:code-explorer (deps)
 → Collect all feedback (wait for completion)
 → Compare findings → Resolve conflicts → Make decision → Execute
 
