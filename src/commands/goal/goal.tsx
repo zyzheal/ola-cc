@@ -106,7 +106,11 @@ function parseGoalArgs(args: string[]): GoalCommandArgs {
   const maxParallelMatch = args.find(a => a.startsWith('--max-parallel='))
   let maxParallel: number | undefined
   if (maxParallelMatch) {
-    maxParallel = parseInt(maxParallelMatch.split('=')[1], 10)
+    const parsed = parseInt(maxParallelMatch.split('=')[1], 10)
+    // 验证：正整数且在合理范围内 (1-10)
+    if (!isNaN(parsed) && parsed > 0 && parsed <= 10) {
+      maxParallel = parsed
+    }
     args = args.filter(a => a !== maxParallelMatch)
   }
 
