@@ -97,10 +97,12 @@ function parseGoalArgs(args: string[]): GoalCommandArgs {
     args = args.filter((_, i) => i !== budgetIndex && i !== budgetIndex + 1)
   }
 
-  const autoSplitIndex = args.indexOf('--auto-split')
-  const autoSplit = autoSplitIndex !== -1
-  if (autoSplit) {
-    args = args.filter(a => a !== '--auto-split')
+  // 默认启用任务编排（autoSplit）
+  // 用户可通过 --no-auto-split 显式禁用
+  const noAutoSplitIndex = args.indexOf('--no-auto-split')
+  const autoSplit = noAutoSplitIndex === -1
+  if (noAutoSplitIndex !== -1) {
+    args = args.filter((_, i) => i !== noAutoSplitIndex)
   }
 
   const maxParallelMatch = args.find(a => a.startsWith('--max-parallel='))
