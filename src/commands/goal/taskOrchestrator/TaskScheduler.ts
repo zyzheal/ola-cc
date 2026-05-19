@@ -48,19 +48,22 @@ export class TaskScheduler {
     const inDegree = new Map<string, number>();
     const result: string[] = [];
 
-    // 初始化入度
-    for (const task of tasks) {
-      inDegree.set(task.id, 0);
+    // 从 graph.nodes 初始化入度（包含所有节点）
+    for (const taskId of graph.nodes.keys()) {
+      inDegree.set(taskId, 0);
     }
 
-    // 计算入度
-    for (const [taskId, deps] of graph.edges) {
-      for (const depId of deps) {
-        inDegree.set(depId, (inDegree.get(depId) || 0) + 1);
+    // 计算入度：edges 表示 taskId -> 依赖 taskId 的任务列表
+    // 入度 = 依赖该任务的任务数量
+    for (const [taskId, dependents] of graph.edges) {
+      for (const dependentId of dependents) {
+        // dependentId 依赖于 taskId，所以 taskId 完成前 dependentId 不能执行
+        // taskId 的入度表示有多少任务依赖它
+        inDegree.set(taskId, (inDegree.get(taskId) || 0) + 1);
       }
     }
 
-    // 入度为 0 的节点队列
+    // 入度为 0 的节点队列（没有任务依赖它，可以先执行）
     const queue: string[] = [];
     for (const [taskId, degree] of inDegree) {
       if (degree === 0) queue.push(taskId);
@@ -70,13 +73,19 @@ export class TaskScheduler {
       const taskId = queue.shift()!;
       result.push(taskId);
 
-      // 更新依赖节点的入度
-      const deps = graph.edges.get(taskId) || [];
-      for (const depId of deps) {
-        const newDegree = (inDegree.get(depId) || 0) - 1;
-        inDegree.set(depId, newDegree);
-        if (newDegree === 0) queue.push(depId);
+      // 更新依赖节点的入度（当 taskId 完成后，依赖它的任务入度减 1）
+      const dependents = graph.edges.get(taskId) || [];
+      for (const dependentId of dependents) {
+        const newDegree = (inDegree.get(dependentId) || 0) - 1;
+        inDegree.set(dependentId, newDegree);
+        if (newDegree === 0) queue.push(dependentId);
       }
+    }
+
+    // 循环检测：如果结果数量不等于节点数量，说明存在循环依赖
+    if (result.length !== graph.nodes.size) {
+      const remainingNodes = Array.from(graph.nodes.keys()).filter(id => !result.includes(id));
+      throw new Error(`循环依赖 detected: ${remainingNodes.join(' -> ')}`);
     }
 
     return result;
