@@ -258,11 +258,11 @@ export const call: LocalJSXCommandCall = async (onDone, context, args) => {
         })
       })
       onDone(result.summary, { display: 'system' })
-      return
+      return null
     } catch (error) {
       const errorMsg = error instanceof Error ? error.message : String(error)
       onDone(`任务编排失败: ${errorMsg}`, { display: 'system' })
-      return
+      return null
     }
   }
 

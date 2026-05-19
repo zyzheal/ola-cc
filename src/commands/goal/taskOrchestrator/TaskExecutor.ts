@@ -72,16 +72,20 @@ export class TaskExecutor {
 			});
 
 			if (stage.canParallel && stage.tasks.length > 1) {
-				// 并行执行
-				const results = await Promise.all(
-					stage.tasks.map(task => this.executeTask(task, context, options))
-				);
+				// 并行执行（限制最大并行数）
+				const maxParallel = stage.effectiveMaxParallel || stage.tasks.length;
+				for (let i = 0; i < stage.tasks.length; i += maxParallel) {
+					const batch = stage.tasks.slice(i, i + maxParallel);
+					const results = await Promise.all(
+						batch.map(task => this.executeTask(task, context, options))
+					);
 
-				for (const result of results) {
-					if (result.success) {
-						completedTasks.push(result.result!);
-					} else {
-						failedTasks.push(result.error!);
+					for (const result of results) {
+						if (result.success) {
+							completedTasks.push(result.result!);
+						} else {
+							failedTasks.push(result.error!);
+						}
 					}
 				}
 			} else {
@@ -188,8 +192,15 @@ export class TaskExecutor {
 			throw new Error('任务已取消');
 		}
 
-		// 模拟执行延迟
-		await new Promise(resolve => setTimeout(resolve, 100));
+		// 超时控制
+		const timeoutPromise = new Promise<never>((_, reject) => {
+			setTimeout(() => reject(new Error(`任务执行超时 (${TASK_TIMEOUT_MS}ms)`)), TASK_TIMEOUT_MS);
+		});
+
+		const taskPromise = new Promise<string>(resolve => {
+			// 模拟执行延迟
+			setTimeout(() => resolve(`任务 "${task.content}" 已完成`), 100);
+		});
 
 		// TODO: 后续集成 runAgent
 		// const agentParams = {
@@ -201,7 +212,7 @@ export class TaskExecutor {
 		// };
 		// for await (const msg of runAgent(agentParams)) { ... }
 
-		return `任务 "${task.content}" 已完成`;
+		return Promise.race([taskPromise, timeoutPromise]);
 	}
 
 	/**

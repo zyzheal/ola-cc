@@ -54,12 +54,10 @@ export class TaskScheduler {
     }
 
     // 计算入度：edges 表示 taskId -> 依赖 taskId 的任务列表
-    // 入度 = 依赖该任务的任务数量
+    // 即 dependentId 依赖 taskId，所以 dependentId 的入度 +1
     for (const [taskId, dependents] of graph.edges) {
       for (const dependentId of dependents) {
-        // dependentId 依赖于 taskId，所以 taskId 完成前 dependentId 不能执行
-        // taskId 的入度表示有多少任务依赖它
-        inDegree.set(taskId, (inDegree.get(taskId) || 0) + 1);
+        inDegree.set(dependentId, (inDegree.get(dependentId) || 0) + 1);
       }
     }
 
@@ -85,7 +83,7 @@ export class TaskScheduler {
     // 循环检测：如果结果数量不等于节点数量，说明存在循环依赖
     if (result.length !== graph.nodes.size) {
       const remainingNodes = Array.from(graph.nodes.keys()).filter(id => !result.includes(id));
-      throw new Error(`循环依赖 detected: ${remainingNodes.join(' -> ')}`);
+      throw new Error(`检测到循环依赖: ${remainingNodes.join(' -> ')}`);
     }
 
     return result;
@@ -176,14 +174,12 @@ export class TaskScheduler {
       canParallel = tasks.length > 1;
     }
 
-    // 限制并行数
-    const parallelTasks = canParallel ? tasks.slice(0, effectiveMaxParallel) : tasks;
-
     return {
       stageId,
-      tasks: parallelTasks,
+      tasks,
       canParallel,
-      estimatedDuration: tasks.reduce((sum, t) => sum + t.estimatedTokens * 10, 0), // 简单估算
+      estimatedDuration: tasks.reduce((sum, t) => sum + t.estimatedTokens * 10, 0),
+      effectiveMaxParallel,
     };
   }
 }

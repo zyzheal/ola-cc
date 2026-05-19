@@ -2,8 +2,6 @@
 import type { OrchestratedTask, DependencyGraph, TaskAnalysisResult, SplitQualityScore } from './types.js';
 import { COMPLEXITY_THRESHOLDS } from './config.js';
 
-const randomUUID = () => crypto.randomUUID();
-
 export class TaskAnalyzer {
 	/**
 	 * 分析目标，拆分为细粒度任务 + 构建依赖图
@@ -24,7 +22,7 @@ export class TaskAnalyzer {
 		dependencyGraph.cyclePath = cycleResult.cycle;
 
 		if (cycleResult.hasCycle) {
-			throw new Error(`循环依赖 detected: ${cycleResult.cycle.join(' -> ')}`);
+			throw new Error(`检测到循环依赖: ${cycleResult.cycle.join(' -> ')}`);
 		}
 
 		// 4. 评估拆分质量
@@ -56,7 +54,7 @@ export class TaskAnalyzer {
 		];
 
 		return defaultTasks.map((content, index) => ({
-			id: randomUUID(),
+			id: crypto.randomUUID(),
 			content,
 			status: 'pending' as const,
 			order: index,
@@ -122,31 +120,30 @@ export class TaskAnalyzer {
 	private detectCycle(graph: DependencyGraph): { hasCycle: boolean; cycle?: string[] } {
 		const visited = new Set<string>();
 		const recursionStack = new Set<string>();
-		const cycle: string[] = [];
 
-		const dfs = (nodeId: string, path: string[]): boolean => {
+		const dfs = (nodeId: string): string[] | null => {
 			visited.add(nodeId);
 			recursionStack.add(nodeId);
-			cycle.push(nodeId);
 
 			const dependencies = graph.edges.get(nodeId) || [];
 			for (const depId of dependencies) {
 				if (!visited.has(depId)) {
-					if (dfs(depId, [...path, depId])) return true;
+					const cycle = dfs(depId);
+					if (cycle) return cycle;
 				} else if (recursionStack.has(depId)) {
-					cycle.push(depId);
-					return true;
+					// 找到循环：从 depId 回到 depId
+					return [depId, nodeId, depId];
 				}
 			}
 
 			recursionStack.delete(nodeId);
-			cycle.pop();
-			return false;
+			return null;
 		};
 
 		for (const nodeId of graph.nodes.keys()) {
 			if (!visited.has(nodeId)) {
-				if (dfs(nodeId, [nodeId])) {
+				const cycle = dfs(nodeId);
+				if (cycle) {
 					return { hasCycle: true, cycle };
 				}
 			}

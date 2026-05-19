@@ -39,6 +39,7 @@ export interface ExecutionStage {
 	tasks: OrchestratedTask[];
 	canParallel: boolean;
 	estimatedDuration: number;
+	effectiveMaxParallel: number;
 }
 
 export interface TaskProgressEvent {
