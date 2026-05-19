@@ -16,6 +16,7 @@ import {
   logEvent,
 } from 'src/services/analytics/index.js'
 import { prefetchAllMcpResources } from 'src/services/mcp/client.js'
+import { sanitizeSchemaForAPI } from 'src/services/api/schemaSanitizer.js'
 import type { ScopedMcpServerConfig } from 'src/services/mcp/types.js'
 import { BashTool } from 'src/tools/BashTool/BashTool.js'
 import { FileEditTool } from 'src/tools/FileEditTool/FileEditTool.js'
@@ -174,7 +175,7 @@ export async function toolToAPISchema(
         agents: options.agents,
         allowedAgentTypes: options.allowedAgentTypes,
       }),
-      input_schema,
+      input_schema: sanitizeSchemaForAPI(input_schema),
     }
 
     // Only add strict if:
