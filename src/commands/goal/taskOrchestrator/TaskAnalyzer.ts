@@ -159,6 +159,9 @@ export class TaskAnalyzer {
 	 * 评估拆分质量
 	 */
 	private evaluateQuality(tasks: OrchestratedTask[]): SplitQualityScore {
+		if (tasks.length === 0) {
+			return { averageTaskSize: 0, independenceScore: 0, parallelismPotential: 0 };
+		}
 		const avgSize = tasks.reduce((sum, t) => sum + t.estimatedTokens, 0) / tasks.length;
 		const independentCount = tasks.filter(t => t.dependencies.length === 0).length;
 
@@ -173,6 +176,9 @@ export class TaskAnalyzer {
 	 * 计算预估并行度
 	 */
 	private calculateParallelism(_tasks: OrchestratedTask[], _graph: DependencyGraph): number {
+		if (_tasks.length === 0) {
+			return 0;
+		}
 		const maxParallel = Math.max(
 			..._tasks.map(t => {
 				if (t.complexity === 'simple') return 5;

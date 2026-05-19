@@ -16,6 +16,7 @@ export const DEFAULT_RETRY_COUNT = 1;
 export const COMPLEXITY_THRESHOLDS = {
   simple: { maxTokens: 1000, maxTools: 2 },
   medium: { maxTokens: 5000, maxTools: 5 },
+  complex: { maxTokens: 10000, maxTools: 10 }, // 超过 medium 即为 complex
 };
 
 export interface OrchestratorConfig {
