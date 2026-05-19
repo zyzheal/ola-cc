@@ -292,12 +292,12 @@ function SpinnerWithVerbInner({
       {progress !== null ? (
         <Box flexDirection="column" width="100%" marginBottom={0}>
           <Box flexDirection="row" alignItems="center">
-            <Text dimColor>▌ </Text>
+            <Text>  </Text>
             <Text bold color="cyan">{progress}%</Text>
             <Text dimColor> {message || '压缩中...'}</Text>
           </Box>
           <Box marginTop={0}>
-            <Text dimColor>{renderProgressBar(progress, Math.min(columns - 4, 50))}</Text>
+            <Text dimColor>{renderProgressBar(progress, Math.min(columns - 4, 30))}</Text>
           </Box>
         </Box>
       ) : (
