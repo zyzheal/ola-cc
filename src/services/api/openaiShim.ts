@@ -16,6 +16,25 @@
 import { randomUUID } from 'crypto'
 import { APIError, APIConnectionError, APIUserAbortError } from '@anthropic-ai/sdk'
 import { logForDebugging } from '../../utils/debug.js'
+import { sanitizeNestedSchema as sanitizeNestedSchemaBase, sanitizeSchemaForAPI as sanitizeSchemaForAPIBase } from './schemaSanitizer.js'
+
+// Re-exports for local use (keeping original names for minimal diff)
+const sanitizeNestedSchema = sanitizeNestedSchemaBase
+
+// Wrapper that adds warning logging for schema issues
+function sanitizeSchemaForOpenAI(schema: unknown): Record<string, unknown> {
+  const result = sanitizeSchemaForAPIBase(schema)
+  // Log warning if schema was missing critical fields (was originally handled inline)
+  if (result.required && Array.isArray(result.required)) {
+    const props = result.properties as Record<string, unknown>
+    for (const key of result.required) {
+      if (typeof key === 'string' && !(key in props)) {
+        warn(`Schema has required field "${key}" not in properties — added as {type: 'string'}`)
+      }
+    }
+  }
+  return result
+}
 
 export interface OpenAICompatibleClientOptions {
   apiKey?: string
@@ -204,163 +223,8 @@ function extractTextContent(
     .join('\n')
 }
 
-// -- JSON Schema sanitizer
-
-/**
- * Sanitize a nested JSON Schema (properties, array items, additionalProperties).
- * Does NOT force type: 'object' — that is only for top-level tool schemas.
- */
-function sanitizeNestedSchema(schema: unknown): Record<string, unknown> {
-  if (!schema || typeof schema !== 'object') {
-    return schema as Record<string, unknown>
-  }
-
-  const result = { ...(schema as Record<string, unknown>) }
-
-  // Convert 'integer' to 'number' for OpenAI compatibility
-  if (result.type === 'integer') {
-    result.type = 'number'
-  }
-
-  // Normalize type: if it's an array, take the first element (OpenAI requires single string type)
-  if (Array.isArray(result.type)) {
-    result.type = result.type[0]
-    if (result.type === 'integer') result.type = 'number'
-    if (result.type === 'null') result.type = 'string' // fallback for nullable fields
-  }
-
-  // Remove polymorphism
-  delete (result as Record<string, unknown>).anyOf
-  delete (result as Record<string, unknown>).oneOf
-  delete (result as Record<string, unknown>).allOf
-
-  // Remove unsupported JSON Schema keywords
-  delete (result as Record<string, unknown>).$ref
-  delete (result as Record<string, unknown>).$defs
-  delete (result as Record<string, unknown>).$schema
-  delete (result as Record<string, unknown>).definitions
-  delete (result as Record<string, unknown>).const
-  delete (result as Record<string, unknown>).if
-  delete (result as Record<string, unknown>).then
-  delete (result as Record<string, unknown>).else
-  delete (result as Record<string, unknown>).contains
-  delete (result as Record<string, unknown>).propertyNames
-  delete (result as Record<string, unknown>).patternProperties
-  delete (result as Record<string, unknown>).additionalItems
-
-  // Handle malformed required field (non-array → delete)
-  if (result.required !== undefined && !Array.isArray(result.required)) {
-    delete result.required
-  }
-
-  // Recurse into object properties
-  if (result.properties && typeof result.properties === 'object') {
-    const properties = result.properties as Record<string, unknown>
-    for (const [key, value] of Object.entries(properties)) {
-      if (value && typeof value === 'object') {
-        properties[key] = sanitizeNestedSchema(value)
-      }
-    }
-  }
-
-  // Recurse into array items
-  if (result.type === 'array' && result.items && typeof result.items === 'object') {
-    result.items = sanitizeNestedSchema(result.items)
-  }
-
-  // Recurse into additionalProperties
-  if (result.additionalProperties && typeof result.additionalProperties === 'object') {
-    result.additionalProperties = sanitizeNestedSchema(result.additionalProperties)
-  }
-
-  return result
-}
-
-/**
- * Sanitize a top-level tool JSON Schema for OpenAI API compatibility.
- * OpenAI requires that tool schemas have type: 'object'.
- *
- * This function:
- * - Forces type: 'object' (top-level tool schemas must be objects)
- * - Converts 'integer' to 'number' for nested schemas
- * - Removes required fields that don't have matching properties
- * - Adds missing properties as {type: 'string'} for required fields
- * - Removes anyOf/oneOf/allOf (not supported in tool schemas)
- * - Normalizes nested schemas recursively
- */
-function sanitizeSchemaForOpenAI(schema: unknown): Record<string, unknown> {
-  if (!schema || typeof schema !== 'object') {
-    return { type: 'object', properties: {} }
-  }
-
-  const obj = schema as Record<string, unknown>
-  const result = { ...obj }
-
-  // Ensure type is a single string (top-level tool schemas must be type: 'object')
-  // If type is an array, take the first element
-  if (Array.isArray(result.type)) {
-    result.type = result.type[0]
-  }
-  result.type = 'object'
-
-  // Ensure properties exists and is an object
-  if (!result.properties || typeof result.properties !== 'object') {
-    result.properties = {}
-  }
-
-  // Remove anyOf/oneOf/allOf — OpenAI tool schemas don't support polymorphism
-  delete result.anyOf
-  delete result.oneOf
-  delete result.allOf
-
-  // Remove unsupported JSON Schema keywords
-  delete result.$ref
-  delete result.$defs
-  delete result.$schema
-  delete result.definitions
-  delete result.const
-  delete result.if
-  delete result.then
-  delete result.else
-  delete result.contains
-  delete result.propertyNames
-  delete result.patternProperties
-  delete result.additionalItems
-
-  // Handle malformed required field (non-array → delete)
-  if (result.required !== undefined && !Array.isArray(result.required)) {
-    delete result.required
-  }
-
-  const properties = result.properties as Record<string, unknown>
-  const required = result.required
-
-  if (Array.isArray(required)) {
-    // Ensure all required fields have properties
-    for (const key of required) {
-      if (typeof key === 'string' && !(key in properties)) {
-        warn(`Schema has required field "${key}" not in properties — adding as {type: 'string'}`)
-        properties[key] = { type: 'string' }
-      }
-    }
-    // Remove required fields that aren't strings
-    result.required = required.filter((k) => typeof k === 'string')
-  }
-
-  // Recursively sanitize nested properties
-  for (const [key, value] of Object.entries(properties)) {
-    if (value && typeof value === 'object') {
-      properties[key] = sanitizeNestedSchema(value)
-    }
-  }
-
-  // Sanitize additionalProperties if present
-  if (result.additionalProperties && typeof result.additionalProperties === 'object') {
-    result.additionalProperties = sanitizeNestedSchema(result.additionalProperties)
-  }
-
-  return result
-}
+// -- JSON Schema sanitizer (delegated to shared module)
+// sanitizeNestedSchema and sanitizeSchemaForOpenAI are imported from schemaSanitizer.ts
 
 // -- Message conversion
 
