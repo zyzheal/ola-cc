@@ -4,6 +4,7 @@ import { type Goal, ThreadGoalStatus, IDLE_GOAL, type GoalMode, type GoalTask, m
 import type { TodoItem } from '../../utils/todo/types.js'
 import { buildContinuationPrompt } from '../../utils/goal/goalSteering.js'
 import { notifyPermissionModeChanged } from '../../utils/sessionState.js'
+import { GoalTaskOrchestrator } from './taskOrchestrator/index.js'
 
 const randomUUID = () => crypto.randomUUID()
 
@@ -38,6 +39,8 @@ interface GoalCommandArgs {
   // 新增
   retryInterval?: string  // e.g., "5m", "10m", "30s"
   maxRetryHours?: number
+  autoSplit?: boolean     // 自动拆分任务
+  maxParallel?: number    // 最大并行数
 }
 
 function parseGoalArgs(args: string[]): GoalCommandArgs {
@@ -94,6 +97,19 @@ function parseGoalArgs(args: string[]): GoalCommandArgs {
     args = args.filter((_, i) => i !== budgetIndex && i !== budgetIndex + 1)
   }
 
+  const autoSplitIndex = args.indexOf('--auto-split')
+  const autoSplit = autoSplitIndex !== -1
+  if (autoSplit) {
+    args = args.filter(a => a !== '--auto-split')
+  }
+
+  const maxParallelMatch = args.find(a => a.startsWith('--max-parallel='))
+  let maxParallel: number | undefined
+  if (maxParallelMatch) {
+    maxParallel = parseInt(maxParallelMatch.split('=')[1], 10)
+    args = args.filter(a => a !== maxParallelMatch)
+  }
+
   const firstArg = args[0]?.toLowerCase()
 
   if (firstArg === 'status') return { action: 'status' }
@@ -104,7 +120,7 @@ function parseGoalArgs(args: string[]): GoalCommandArgs {
   if (firstArg === 'budget' && args[1]) return { action: 'budget', newBudget: parseInt(args[1], 10) }
   if (firstArg === 'mode' && mode) return { action: 'mode', mode }
 
-  return { objective: args.join(' '), tokenBudget, autoAccept, autoEdit, mode, retryInterval, maxRetryHours }
+  return { objective: args.join(' '), tokenBudget, autoAccept, autoEdit, mode, retryInterval, maxRetryHours, autoSplit, maxParallel }
 }
 
 function formatGoalStatus(goal: Goal | undefined, todos: TodoItem[] | undefined): string {
@@ -132,7 +148,7 @@ function formatGoalStatus(goal: Goal | undefined, todos: TodoItem[] | undefined)
 
 export const call: LocalJSXCommandCall = async (onDone, context, args) => {
   const argsArray = args ? args.trim().split(/\s+/).filter(Boolean) : []
-  const { objective, action, tokenBudget, autoAccept, autoEdit, mode, editObjective, newBudget, retryInterval, maxRetryHours } = parseGoalArgs(argsArray)
+  const { objective, action, tokenBudget, autoAccept, autoEdit, mode, editObjective, newBudget, retryInterval, maxRetryHours, autoSplit, maxParallel } = parseGoalArgs(argsArray)
   const appState = context.getAppState()
   let goal = appState.goal
   // Migrate existing goal if it has old schema
@@ -221,6 +237,27 @@ export const call: LocalJSXCommandCall = async (onDone, context, args) => {
     }))
     onDone(`目标模式已设为 ${mode ?? 'standard'}。`, { display: 'system' })
     return null
+  }
+
+  // 新增：autoSplit 模式
+  if (autoSplit && objective) {
+    try {
+      const orchestrator = new GoalTaskOrchestrator(context, { maxParallel })
+      const result = await orchestrator.execute(objective, (event) => {
+        context.appendSystemMessage?.({
+          type: 'system',
+          subtype: 'task_progress',
+          content: event.message,
+          isMeta: true,
+        })
+      })
+      onDone(result.summary, { display: 'system' })
+      return
+    } catch (error) {
+      const errorMsg = error instanceof Error ? error.message : String(error)
+      onDone(`任务编排失败: ${errorMsg}`, { display: 'system' })
+      return
+    }
   }
 
   // Create new goal
