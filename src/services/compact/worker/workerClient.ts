@@ -44,12 +44,29 @@ export async function compactInWorker(
   return new Promise((resolve, reject) => {
     let timeoutHandle: NodeJS.Timeout | null = null
     let progressHandler: ((msg: WorkerProgressMessage) => void) | null = null
+    let errorHandler: ((error: Error) => void) | null = null
+
+    // Set up error handler — reject in-flight request if Worker crashes
+    errorHandler = (error: Error) => {
+      if (timeoutHandle) {
+        clearTimeout(timeoutHandle)
+        timeoutHandle = null
+      }
+      if (progressHandler) {
+        worker.off('message', progressHandler)
+      }
+      reject(new Error(`Compact worker crashed: ${error.message}`))
+    }
+    worker.on('error', errorHandler)
 
     // 设置超时
     timeoutHandle = setTimeout(() => {
       // 超时后移除监听器并拒绝
       if (progressHandler) {
         worker.off('message', progressHandler)
+      }
+      if (errorHandler) {
+        worker.off('error', errorHandler)
       }
       reject(new Error('Compact worker timeout'))
     }, REQUEST_TIMEOUT_MS)
@@ -66,6 +83,9 @@ export async function compactInWorker(
           timeoutHandle = null
         }
         worker.off('message', progressHandler!)
+        if (errorHandler) {
+          worker.off('error', errorHandler)
+        }
 
         if (msg.success && msg.result) {
           logForDebugging(`[Compact Worker] Request ${requestId} succeeded`)
