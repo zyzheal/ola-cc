@@ -161,9 +161,9 @@ export async function compactWithOrchestrator(
 
     // Only show fallback message once per session (deduplicate by error type)
     // Avoid flooding conversation with repeated messages on auto-compact retries
-    const isBun = typeof process !== 'undefined' && 'bun' in process.versions
-    const isRuntimeError = errorMsg.includes('invalid execArgv') || errorMsg.includes('max-old-space-size')
-    if (!isBun || !isRuntimeError) {
+    const errorKey = errorMsg.split(':')[0].trim() || 'unknown'
+    if (!shownFallbackErrors.has(errorKey)) {
+      shownFallbackErrors.add(errorKey)
       context.appendSystemMessage?.({
         type: 'system',
         subtype: 'compact_fallback',
@@ -250,6 +250,9 @@ function registerDisposeOnProcessExit() {
     process.exit(0)
   })
 }
+
+// Session-level deduplication for fallback messages
+const shownFallbackErrors = new Set<string>()
 
 /**
  * 强制重置 Worker (用于调试)
