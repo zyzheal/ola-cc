@@ -121,8 +121,14 @@ export async function compactInWorker(
     } catch (postError) {
       if (timeoutHandle) {
         clearTimeout(timeoutHandle)
+        timeoutHandle = null
       }
-      worker.off('message', progressHandler)
+      if (progressHandler) {
+        worker.off('message', progressHandler)
+      }
+      if (errorHandler) {
+        worker.off('error', errorHandler)
+      }
       reject(postError)
     }
   })
