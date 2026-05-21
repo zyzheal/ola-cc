@@ -146,6 +146,41 @@ export function renderToolUseErrorMessage(result: ToolResultBlockParam['content'
           <Text color="error">File not found</Text>
         </MessageResponse>;
     }
+    if (errorMessage?.includes('No changes to make')) {
+      return <MessageResponse>
+          <Text dimColor>No changes needed — old_string and new_string are identical</Text>
+        </MessageResponse>;
+    }
+    if (errorMessage?.includes('Cannot create new file')) {
+      return <MessageResponse>
+          <Text color="error">File already exists with content</Text>
+        </MessageResponse>;
+    }
+    if (errorMessage?.includes('Jupyter Notebook')) {
+      return <MessageResponse>
+          <Text color="error">Use the NotebookEdit tool for .ipynb files</Text>
+        </MessageResponse>;
+    }
+    if (errorMessage?.includes('File has been modified since read')) {
+      return <MessageResponse>
+          <Text color="warning">File changed externally — re-read it before editing</Text>
+        </MessageResponse>;
+    }
+    if (errorMessage?.includes('String to replace not found')) {
+      return <MessageResponse>
+          <Text color="error">String not found — old_string doesn't match file content</Text>
+        </MessageResponse>;
+    }
+    if (errorMessage?.includes('matches of the string to replace')) {
+      return <MessageResponse>
+          <Text color="warning">Multiple matches found — add more context or set replace_all to true</Text>
+        </MessageResponse>;
+    }
+    if (errorMessage?.includes('File is too large')) {
+      return <MessageResponse>
+          <Text color="error">File too large to edit</Text>
+        </MessageResponse>;
+    }
     return <MessageResponse>
         <Text color="error">Error editing file</Text>
       </MessageResponse>;
