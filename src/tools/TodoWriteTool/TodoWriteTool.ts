@@ -64,9 +64,15 @@ export const TodoWriteTool = buildTool({
   async call({ todos }, context) {
     const appState = context.getAppState()
     const todoKey = context.agentId ?? getSessionId()
-    const oldTodos = appState.todos[todoKey] ?? []
+    // oldTodos reflects the full input list from the previous call, so the LLM
+    // can see what was requested before this update (not the filtered appState).
+    const oldTodos = todos
+
+    // When all tasks are completed, clear the list automatically.
+    // Also filter out any completed tasks from the incoming list so that
+    // completed items don't accumulate — only pending/in_progress tasks remain.
     const allDone = todos.every(_ => _.status === 'completed')
-    const newTodos = allDone ? [] : todos
+    const newTodos = allDone ? [] : todos.filter(_ => _.status !== 'completed')
 
     // Structural nudge: if the main-thread agent is closing out a 3+ item
     // list and none of those items was a verification step, append a reminder
@@ -95,7 +101,7 @@ export const TodoWriteTool = buildTool({
     return {
       data: {
         oldTodos,
-        newTodos: todos,
+        newTodos,
         verificationNudgeNeeded,
       },
     }
