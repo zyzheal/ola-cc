@@ -27,6 +27,7 @@ import {
 } from '../../services/mcp/client.js'
 import { getMcpConfigByName } from '../../services/mcp/config.js'
 import { runQualityScan, type ScanResult } from '../../services/codeQuality/regexScanner.js'
+import { runASTCheck } from '../../services/codeQuality/astChecker.js'
 import type {
   MCPServerConnection,
   ScopedMcpServerConfig,
@@ -90,7 +91,7 @@ import { resolveAgentTools } from './agentToolUtils.js'
 import { type AgentClassification, getClassification } from './agentClassifications.js'
 import { type AgentDefinition, isBuiltInAgent } from './loadAgentsDir.js'
 import { BUILT_IN_TEMPLATES, buildAgentPrompt } from './promptTemplate.js'
-import { VALIDATION_GATE_ENABLED, parseVerificationVerdict } from './validationGate.js'
+import { VALIDATION_GATE_ENABLED, parseVerificationVerdict, runTypeCheck, formatTypeCheckSummary, detectTestRunner, runTests, formatTestSummary } from './validationGate.js'
 
 /**
  * Initialize agent-specific MCP servers
@@ -974,6 +975,9 @@ export async function* runAgent({
     // --- Validation Gate ---
     // After the agent completes, optionally check if the output looks like
     // it successfully completed. Only for implementation/general agents.
+    //
+    // Order: Verdict → TypeCheck → RegexScan
+    // TypeCheck is WARNING-level (reports but doesn't block).
     if (
       VALIDATION_GATE_ENABLED &&
       !agentBudgetExceeded &&
@@ -1005,6 +1009,75 @@ export async function* runAgent({
         } else {
           logForDebugging(
             `[Agent ${agentDefinition.agentType}] Validation gate: no explicit verdict found (PASS assumed)`,
+          )
+        }
+
+        // --- Type Check (WARNING-level, doesn't block) ---
+        // Run after verdict check, before quality scan.
+        // Catches type errors that compilation doesn't catch.
+        try {
+          const projectRoot = getProjectRoot() || process.cwd()
+          const typeCheckResult = await runTypeCheck(projectRoot)
+
+          if (!typeCheckResult.passed) {
+            const summary = formatTypeCheckSummary(typeCheckResult)
+            logForDebugging(
+              `[Agent ${agentDefinition.agentType}] Type check: ${typeCheckResult.errors.length} error(s) found`,
+            )
+            yield {
+              type: 'tool_use_summary',
+              uuid: randomUUID(),
+              timestamp: Date.now(),
+              summary,
+            } as ToolUseSummaryMessage
+          } else if (typeCheckResult.command) {
+            logForDebugging(
+              `[Agent ${agentDefinition.agentType}] Type check passed (${typeCheckResult.command})`,
+            )
+          }
+        } catch (typeCheckError) {
+          logForDebugging(
+            `[Agent ${agentDefinition.agentType}] Type check failed: ${typeCheckError}`,
+          )
+        }
+
+        // --- Test Execution (WARNING-level, doesn't block) ---
+        // Detects and runs the project's test suite after type check.
+        // Test failures are logged but don't block the agent.
+        try {
+          const projectRoot = getProjectRoot() || process.cwd()
+          const testRunner = await detectTestRunner(projectRoot)
+
+          if (testRunner) {
+            logForDebugging(
+              `[Agent ${agentDefinition.agentType}] Running tests: ${testRunner.command} (detected by ${testRunner.detectedBy})`,
+            )
+            const testResult = await runTests(projectRoot, testRunner.command)
+
+            if (!testResult.passed) {
+              const summary = formatTestSummary(
+                testResult.passed,
+                testResult.output,
+                testRunner.command,
+              )
+              logForDebugging(
+                `[Agent ${agentDefinition.agentType}] Tests failed: ${testRunner.command}`,
+              )
+              yield {
+                type: 'tool_use_summary',
+                uuid: randomUUID(),
+                timestamp: Date.now(),
+                summary,
+              } as ToolUseSummaryMessage
+            } else {
+              logForDebugging(
+                `[Agent ${agentDefinition.agentType}] Tests passed (${testRunner.command})`,
+              )
+            }
+          }
+        } catch (testError) {
+          logForDebugging(
+            `[Agent ${agentDefinition.agentType}] Test execution failed: ${testError}`,
           )
         }
       }
@@ -1055,6 +1128,34 @@ export async function* runAgent({
         } catch (scanError) {
           logForDebugging(
             `[Agent ${agentDefinition.agentType}] Quality scan failed: ${scanError}`,
+          )
+        }
+
+        // --- AST-Level Quality Check ---
+        // Run AST-based checks for deeper code quality issues that regex can't catch.
+        // Only error-level issues are reported.
+        try {
+          const projectRoot = getProjectRoot() || process.cwd()
+          const astResults = await runASTCheck([`${projectRoot}/src/**/*.ts`, `${projectRoot}/src/**/*.tsx`])
+
+          const errorLevelAST = astResults.filter((r: ScanResult) => r.severity === 'error')
+          if (errorLevelAST.length > 0) {
+            logForDebugging(
+              `[Agent ${agentDefinition.agentType}] AST check: ${errorLevelAST.length} error-level issue(s) found`,
+              { level: 'warn' },
+            )
+
+            const astSummary = `AST-level issues found:\n${errorLevelAST.slice(0, 5).map(r => `  ${r.file}:${r.line} [${r.check}] ${r.message}`).join('\n')}`
+            yield {
+              type: 'tool_use_summary',
+              uuid: randomUUID(),
+              timestamp: Date.now(),
+              summary: astSummary,
+            } as ToolUseSummaryMessage
+          }
+        } catch (astError) {
+          logForDebugging(
+            `[Agent ${agentDefinition.agentType}] AST check failed: ${astError}`,
           )
         }
       }

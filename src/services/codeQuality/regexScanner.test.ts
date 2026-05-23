@@ -27,9 +27,9 @@ async function removeTestFiles() {
 // -- Tests
 
 describe('getAvailableChecks', () => {
-  it('returns all 7 check definitions', () => {
+  it('returns all 15 check definitions', () => {
     const checks = getAvailableChecks()
-    expect(checks.length).toBe(7)
+    expect(checks.length).toBe(15)
   })
 
   it('each check has required fields', () => {
@@ -208,6 +208,133 @@ describe('runQualityScan', () => {
     expect(results.length).toBe(1)
     expect(results[0].fix).toBeDefined()
     expect(results[0].fix).toContain('logging')
+  })
+
+  // -- New checks (8)
+
+  it('detects unused imports', async () => {
+    const path = await writeTestFile('unused.ts', 'import { something } from "some-lib";\n')
+    const results = await runQualityScan({
+      paths: [path],
+      checks: ['unused-import'],
+    })
+    expect(results.length).toBe(1)
+    expect(results[0].check).toBe('unused-import')
+    expect(results[0].severity).toBe('info')
+  })
+
+  it('detects any type usage', async () => {
+    const path = await writeTestFile('anyType.ts', 'const x: any = 1\n')
+    const results = await runQualityScan({
+      paths: [path],
+      checks: ['any-type'],
+    })
+    expect(results.length).toBe(1)
+    expect(results[0].check).toBe('any-type')
+    expect(results[0].severity).toBe('warning')
+  })
+
+  it('does not flag :any in a comment', async () => {
+    const path = await writeTestFile('anyComment.ts', '// TODO: any value works\n')
+    const results = await runQualityScan({
+      paths: [path],
+      checks: ['any-type'],
+    })
+    expect(results.length).toBe(0)
+  })
+
+  it('detects console.error in source code', async () => {
+    const path = await writeTestFile('error.ts', 'console.error("fail")\n')
+    const results = await runQualityScan({
+      paths: [path],
+      checks: ['console-error'],
+    })
+    expect(results.length).toBe(1)
+    expect(results[0].check).toBe('console-error')
+    expect(results[0].severity).toBe('warning')
+  })
+
+  it('detects async function without await', async () => {
+    const path = await writeTestFile('noAwait.ts', 'async function foo() { return 1 }\n')
+    const results = await runQualityScan({
+      paths: [path],
+      checks: ['missing-await'],
+    })
+    expect(results.length).toBe(1)
+    expect(results[0].check).toBe('missing-await')
+    expect(results[0].severity).toBe('warning')
+  })
+
+  it('does not flag async function that has await', async () => {
+    const path = await writeTestFile('hasAwait.ts', 'async function foo() { await bar() }\n')
+    const results = await runQualityScan({
+      paths: [path],
+      checks: ['missing-await'],
+    })
+    expect(results.length).toBe(0)
+  })
+
+  it('detects TODO comments', async () => {
+    const path = await writeTestFile('todo.ts', '// TODO: fix this later\n')
+    const results = await runQualityScan({
+      paths: [path],
+      checks: ['todo-comment'],
+    })
+    expect(results.length).toBe(1)
+    expect(results[0].check).toBe('todo-comment')
+    expect(results[0].severity).toBe('info')
+  })
+
+  it('detects TODO in block comments', async () => {
+    const path = await writeTestFile('todoBlock.ts', '/* TODO: refactor */\n')
+    const results = await runQualityScan({
+      paths: [path],
+      checks: ['todo-comment'],
+    })
+    expect(results.length).toBe(1)
+    expect(results[0].check).toBe('todo-comment')
+  })
+
+  it('detects debugger statements', async () => {
+    const path = await writeTestFile('debug.ts', 'function foo() { debugger; }\n')
+    const results = await runQualityScan({
+      paths: [path],
+      checks: ['debug-breakpoint'],
+    })
+    expect(results.length).toBe(1)
+    expect(results[0].check).toBe('debug-breakpoint')
+    expect(results[0].severity).toBe('error')
+  })
+
+  it('detects eval() calls', async () => {
+    const path = await writeTestFile('eval.ts', 'const x = eval("1+1")\n')
+    const results = await runQualityScan({
+      paths: [path],
+      checks: ['eval-call'],
+    })
+    expect(results.length).toBe(1)
+    expect(results[0].check).toBe('eval-call')
+    expect(results[0].severity).toBe('error')
+  })
+
+  it('detects innerHTML assignment', async () => {
+    const path = await writeTestFile('inner.tsx', 'el.innerHTML = "<div>hi</div>"\n')
+    const results = await runQualityScan({
+      paths: [path],
+      checks: ['inner-html'],
+    })
+    expect(results.length).toBe(1)
+    expect(results[0].check).toBe('inner-html')
+    expect(results[0].severity).toBe('warning')
+  })
+
+  it('does not flag innerHTML in comment', async () => {
+    const path = await writeTestFile('innerComment.tsx', '// set .innerHTML = something\n')
+    const results = await runQualityScan({
+      paths: [path],
+      checks: ['inner-html'],
+    })
+    expect(results.length).toBe(0)
   })
 })
 
