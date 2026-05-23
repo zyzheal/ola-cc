@@ -277,6 +277,20 @@ Safety checks (`checkPathSafetyForAutoEdit` in `src/utils/permissions/filesystem
 5. `.claude/CLAUDE.md` (project-level)
 6. `CLAUDE.md` (project instructions, checked in)
 
+## Skill Anti-Confusion System
+
+Skills support three optional frontmatter fields to prevent model confusion when multiple skills have overlapping functionality:
+
+| Field | Consumer | Purpose |
+|-------|----------|---------|
+| `trigger` | Program (conflict detection) | Declarative trigger words for automatic conflict checking |
+| `priority` | LLM (skill listing) | Numeric priority shown as `[P{n}]` in system-reminder listing |
+| `conflicts-with` | Program (logging) | Declared conflicts, used for startup warnings only |
+
+**Conflict detection**: Runs once at session startup after all skills load. Uses keyword tokenization + substring matching + synonym expansion. Results cached in memory and displayed as `[!] 触发词与 X 重叠` in the skill listing.
+
+**Description validation**: Validates that descriptions contain exclusion statements ("不做XXX") and scope statements ("当..."/"Trigger:"). WARNING only — does not block skill loading.
+
 ## Skill 中文提示要求
 
 使用任何 superpowers 技能时，必须使用中文与用户交互，包括：

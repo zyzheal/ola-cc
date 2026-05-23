@@ -206,6 +206,12 @@ export type CommandBase = {
   isSensitive?: boolean // If true, args are redacted from the conversation history
   /** Defaults to `name`. Only override when the displayed name differs (e.g. plugin prefix stripping). */
   userFacingName?: () => string
+  // Trigger words for conflict detection (program-only, not visible to model)
+  trigger?: string[]
+  // Priority for skill selection when triggers overlap (higher = more priority)
+  priority?: number
+  // Declared conflicts with other skill names (for logging only)
+  conflictsWith?: string[]
 }
 
 export type Command = CommandBase &

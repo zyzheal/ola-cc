@@ -55,6 +55,12 @@ export type FrontmatterData = {
   // Never consults settings.defaultShell: skills are portable across platforms,
   // so the author picks the shell, not the reader. See docs/design/ps-shell-selection.md §5.3.
   shell?: string | null
+  // Trigger words for skill conflict detection (program-only, not visible to model)
+  trigger?: string | string[] | null
+  // Priority for skill selection when triggers overlap (higher = more priority)
+  priority?: number | null
+  // Declared conflicts with other skill names (for logging only, not runtime)
+  'conflicts-with'?: string | string[] | null
   [key: string]: unknown
 }
 

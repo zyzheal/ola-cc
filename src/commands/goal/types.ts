@@ -129,6 +129,8 @@ export function migrateGoal(goal: Goal): Goal {
 		totalApiWallMs: goal.totalApiWallMs ?? (goal.timeUsedSeconds ?? 0) * 1000,
 		mode: goal.mode ?? "standard",
 		autoEdit: goal.autoEdit ?? false,
+		retryConfig: goal.retryConfig ?? getRetryConfig({}),
+		retryCount: goal.retryCount ?? 0,
 	};
 }
 

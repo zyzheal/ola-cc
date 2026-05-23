@@ -17,6 +17,22 @@ import { toError } from '../../utils/errors.js'
 import { truncate } from '../../utils/format.js'
 import { logError } from '../../utils/log.js'
 
+// Lazy-loaded conflict accessor — avoids ESM import cycle.
+// Cached after first load since conflicts are computed once at startup.
+let _getConflictsForSkill: ((name: string) => import('../../skills/triggerConflict.js').Conflict[]) | undefined
+function getConflictsForSkill(name: string): import('../../skills/triggerConflict.js').Conflict[] {
+  if (!_getConflictsForSkill) {
+    try {
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      const mod = require('../../skills/triggerConflict.js')
+      _getConflictsForSkill = mod.getConflictsForSkill
+    } catch {
+      _getConflictsForSkill = () => []
+    }
+  }
+  return _getConflictsForSkill(name)
+}
+
 // Skill listing gets 1% of the context window (in characters)
 export const SKILL_BUDGET_CONTEXT_PERCENT = 0.01
 export const CHARS_PER_TOKEN = 4
@@ -62,7 +78,26 @@ function formatCommandDescription(cmd: Command): string {
     )
   }
 
-  return `- ${cmd.name}: ${getCommandDescription(cmd)}`
+  let desc = `- ${cmd.name}: `
+
+  // Priority marker (new)
+  if (cmd.priority && cmd.priority > 0) {
+    desc += `[P${cmd.priority}] `
+  }
+
+  // Description (reuse existing getCommandDescription, which already joins whenToUse)
+  desc += getCommandDescription(cmd)
+
+  // Conflict warning (new, only shown when conflicts are detected)
+  const conflicts = getConflictsForSkill(cmd.name)
+  if (conflicts.length > 0) {
+    const conflictNames = conflicts
+      .map(c => c.skillA === cmd.name ? c.skillB : c.skillA)
+      .join(', ')
+    desc += ` [!] 触发词与 ${conflictNames} 重叠`
+  }
+
+  return desc
 }
 
 const MIN_DESC_LENGTH = 20
