@@ -178,6 +178,35 @@ function parseSkillPaths(frontmatter: FrontmatterData): string[] | undefined {
 }
 
 /**
+ * Parse a comma-separated string or string array frontmatter field.
+ * Returns empty array if absent or invalid.
+ */
+function parseStringArrayFrontmatter(
+  value: string | string[] | null | undefined,
+): string[] {
+  if (!value) return []
+  if (Array.isArray(value)) {
+    return value.map(s => String(s).trim()).filter(s => s.length > 0)
+  }
+  return String(value)
+    .split(',')
+    .map(s => s.trim())
+    .filter(s => s.length > 0)
+}
+
+/**
+ * Parse priority frontmatter field.
+ * Returns 0 if absent or invalid.
+ */
+function parsePriorityFrontmatter(
+  value: number | string | null | undefined,
+): number {
+  if (value == null) return 0
+  const parsed = typeof value === 'number' ? value : parseInt(String(value), 10)
+  return Number.isInteger(parsed) && parsed >= 0 ? parsed : 0
+}
+
+/**
  * Parses all skill frontmatter fields that are shared between file-based and
  * MCP skill loading. Caller supplies the resolved skill name and the
  * source/loadedFrom/baseDir/paths fields separately.
@@ -204,6 +233,9 @@ export function parseSkillFrontmatterFields(
   agent: string | undefined
   effort: EffortValue | undefined
   shell: FrontmatterShell | undefined
+  trigger: string[]
+  priority: number
+  conflictsWith: string[]
 } {
   const validatedDescription = coerceDescriptionToString(
     frontmatter.description,
@@ -249,7 +281,7 @@ export function parseSkillFrontmatterFields(
     argumentNames: parseArgumentNames(
       frontmatter.arguments as string | string[] | undefined,
     ),
-    whenToUse: frontmatter.when_to_use as string | undefined,
+    whenToUse: (frontmatter.when_to_use as string | undefined | null) ?? undefined,
     version: frontmatter.version as string | undefined,
     model,
     disableModelInvocation: parseBooleanFrontmatter(
@@ -261,6 +293,9 @@ export function parseSkillFrontmatterFields(
     agent: frontmatter.agent as string | undefined,
     effort,
     shell: parseShellFrontmatter(frontmatter.shell, resolvedName),
+    trigger: parseStringArrayFrontmatter(frontmatter.trigger),
+    priority: parsePriorityFrontmatter(frontmatter.priority),
+    conflictsWith: parseStringArrayFrontmatter(frontmatter['conflicts-with']),
   }
 }
 
@@ -290,6 +325,9 @@ export function createSkillCommand({
   paths,
   effort,
   shell,
+  trigger,
+  priority,
+  conflictsWith,
 }: {
   skillName: string
   displayName: string | undefined
@@ -313,6 +351,9 @@ export function createSkillCommand({
   paths: string[] | undefined
   effort: EffortValue | undefined
   shell: FrontmatterShell | undefined
+  trigger: string[]
+  priority: number
+  conflictsWith: string[]
 }): Command {
   return {
     type: 'prompt',
@@ -331,6 +372,9 @@ export function createSkillCommand({
     agent,
     effort,
     paths,
+    trigger: trigger.length > 0 ? trigger : undefined,
+    priority: priority > 0 ? priority : undefined,
+    conflictsWith: conflictsWith.length > 0 ? conflictsWith : undefined,
     contentLength: markdownContent.length,
     isHidden: !userInvocable,
     progressMessage: 'running',
@@ -456,6 +500,10 @@ async function loadSkillsFromSkillsDir(
           skillName,
         )
         const paths = parseSkillPaths(frontmatter)
+
+        // Validate description format (exclusion + scope statements)
+        const { validateDescription } = await import('./descriptionValidator.js')
+        validateDescription(parsed.description, parsed.whenToUse, skillName)
 
         return {
           skill: createSkillCommand({
@@ -797,6 +845,15 @@ export const getSkillDirCommands = memoize(
 
     logForDebugging(
       `Loaded ${deduplicatedSkills.length} unique skills (${unconditionalSkills.length} unconditional, ${newConditionalSkills.length} conditional, managed: ${managedSkills.length}, user: ${userSkills.length}, project: ${projectSkillsNested.flat().length}, additional: ${additionalSkillsNested.flat().length}, legacy commands: ${legacyCommands.length})`,
+    )
+
+    // Run trigger conflict detection once after all skills are loaded
+    const { runConflictDetection } = await import('./triggerConflict.js')
+    runConflictDetection(
+      unconditionalSkills.map(s => ({
+        name: s.name,
+        trigger: s.trigger,
+      })),
     )
 
     // Apply skillOverrides: filter disabled skills, apply description/model overrides

@@ -26,6 +26,14 @@ import { logError } from '../../utils/log.js'
 import { logEvent } from '../../services/analytics/index.js'
 import type { CompactionResult } from './compact.js'
 
+/**
+ * Check if running under Bun runtime.
+ * Bun has limited Worker thread support and can cause OOM crashes.
+ */
+function isBunRuntime(): boolean {
+  return typeof process !== 'undefined' && 'bun' in process.versions
+}
+
 export interface CompactOptions {
   cacheSafeParams: CacheSafeParams
   suppressFollowUpQuestions: boolean
@@ -54,6 +62,35 @@ export async function compactWithOrchestrator(
   registerDisposeOnProcessExit()
 
   const messageCount = messages.length
+
+  // Bun runtime: completely skip Worker path to prevent OOM crashes.
+  // Bun has limited Worker thread support and memory management that can
+  // crash the parent process. Always use local compact under Bun.
+  if (isBunRuntime()) {
+    logForDebugging(
+      '[CompactOrchestrator] Bun runtime detected, using local compact (Worker disabled)'
+    )
+    logEvent('tengu_compact_orchestrator_decision', {
+      memoryUsed: 0,
+      memoryTotal: 0,
+      isHigh: false,
+      isCritical: false,
+      messageCount,
+      useWorker: false,
+      isAutoCompact: options.isAutoCompact,
+      reason: 'bun_runtime',
+    })
+    return compactConversation(
+      messages,
+      context,
+      options.cacheSafeParams,
+      options.suppressFollowUpQuestions,
+      options.customInstructions,
+      options.isAutoCompact,
+      options.recompactionInfo,
+    )
+  }
+
   const memory = getMemoryPressure()
 
   // 决策: 是否使用 Worker

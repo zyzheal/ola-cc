@@ -137,11 +137,12 @@ async function initSessionMemoryCompactConfig(): Promise<void> {
  */
 export function hasTextBlocks(message: Message): boolean {
   if (message.type === 'assistant') {
-    const content = message.message.content
+    const content = message.message?.content
+    if (!Array.isArray(content)) return false
     return content.some(block => block.type === 'text')
   }
   if (message.type === 'user') {
-    const content = message.message.content
+    const content = message.message?.content
     if (typeof content === 'string') {
       return content.length > 0
     }

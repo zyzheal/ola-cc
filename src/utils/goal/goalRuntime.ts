@@ -150,8 +150,23 @@ function isWorkTool(toolName: string): boolean {
 	return WORK_TOOLS.has(toolName);
 }
 
-/** Threshold for consecutive critical analyses before auto-pause */
-const AUTO_PAUSE_CRITICAL_THRESHOLD = 3;
+/**
+ * Get configurable threshold for consecutive critical analyses before auto-pause.
+ * Defaults to 3, configurable via OLA_CC_GOAL_AUTO_PAUSE_CRITICAL_THRESHOLD env var.
+ */
+function getAutoPauseCriticalThreshold(): number {
+  const env = parseInt(process.env.OLA_CC_GOAL_AUTO_PAUSE_CRITICAL_THRESHOLD || "", 10);
+  return isNaN(env) || env < 1 ? 3 : env;
+}
+
+/**
+ * Get configurable limit for dead turns before auto-pause.
+ * Defaults to 5, configurable via OLA_CC_GOAL_DEAD_TURN_LIMIT env var.
+ */
+function getDeadTurnLimit(): number {
+  const env = parseInt(process.env.OLA_CC_GOAL_DEAD_TURN_LIMIT || "", 10);
+  return isNaN(env) || env < 1 ? 5 : env;
+}
 
 // Helper: Auto-progress task status
 function autoProgressTasks(
@@ -497,8 +512,9 @@ export function processGoalRuntimeEvent(
 				}
 
 				// Circuit breaker: auto-pause after consecutive critical analyses
+				const criticalThreshold = getAutoPauseCriticalThreshold();
 				if (
-					(runtime.consecutiveCritical ?? 0) >= AUTO_PAUSE_CRITICAL_THRESHOLD
+					(runtime.consecutiveCritical ?? 0) >= criticalThreshold
 				) {
 					const pausedGoal = {
 						...goal,
@@ -510,7 +526,7 @@ export function processGoalRuntimeEvent(
 					runtime.pendingAnalysis = undefined;
 					return {
 						shouldContinue: false,
-						injectedPrompt: `[Goal auto-paused] 3 consecutive critical issues detected. Latest: "${analysisResult.reason ?? "Unknown"}". Use /goal resume to continue or /goal stop to cancel.`,
+						injectedPrompt: `[Goal auto-paused] ${criticalThreshold} consecutive critical issues detected. Latest: "${analysisResult.reason ?? "Unknown"}". Use /goal resume to continue or /goal stop to cancel.`,
 					};
 				}
 
@@ -539,14 +555,14 @@ export function processGoalRuntimeEvent(
 				}
 
 				// Circuit breaker: auto-pause after excessive dead turns (prevents infinite loops)
-				const DEAD_TURN_LIMIT = 5;
-				if (turnsWithNoChanges >= DEAD_TURN_LIMIT) {
+				const deadTurnLimit = getDeadTurnLimit();
+				if (turnsWithNoChanges >= deadTurnLimit) {
 					const pausedGoal = {
 						...goal,
 						status: Status.Paused,
 						updatedAt: Date.now(),
 					};
-					pausedGoal.pauseReason = `Auto-paused: ${turnsWithNoChanges} consecutive turns with no observable changes`;
+					pausedGoal.pauseReason = `Auto-paused: ${turnsWithNoChanges} consecutive turns with no observable changes (limit: ${deadTurnLimit})`;
 					context.updateGoal(pausedGoal);
 					runtime.pendingAnalysis = undefined;
 					return {
