@@ -48,8 +48,10 @@ import { FILE_READ_TOOL_NAME } from '../FileReadTool/prompt.js';
 import { spawnTeammate } from '../shared/spawnMultiAgent.js';
 import { setAgentColor } from './agentColorManager.js';
 import { agentToolResultSchema, classifyHandoffIfNeeded, emitTaskProgress, extractPartialResult, finalizeAgentTool, findAgentByType, getLastToolUseName, runAsyncAgentLifecycle } from './agentToolUtils.js';
+import { getClassification } from './agentClassifications.js';
 import { GENERAL_PURPOSE_AGENT } from './built-in/generalPurposeAgent.js';
-import { AGENT_TOOL_NAME, LEGACY_AGENT_TOOL_NAME, ONE_SHOT_BUILTIN_AGENT_TYPES } from './constants.js';
+import { VERIFICATION_AGENT } from './built-in/verificationAgent.js';
+import { AGENT_TOOL_NAME, LEGACY_AGENT_TOOL_NAME, ONE_SHOT_BUILTIN_AGENT_TYPES, VERIFICATION_AGENT_TYPE } from './constants.js';
 import { buildForkedMessages, buildWorktreeNotice, FORK_AGENT, isForkSubagentEnabled, isInForkChild } from './forkSubagent.js';
 import type { AgentDefinition } from './loadAgentsDir.js';
 import { filterAgentsByMcpRequirements, hasRequiredMcpServers, isBuiltInAgent } from './loadAgentsDir.js';
@@ -76,6 +78,142 @@ function getAutoBackgroundMs(): number {
     return 120_000;
   }
   return 0;
+}
+
+// --- Auto Verification ---
+// Auto-spawn a verification agent after non-trivial implementation agents complete
+
+// Min file-edit count to trigger auto-verification
+const AUTO_VERIFY_FILE_EDIT_THRESHOLD = 3;
+
+// File write/edit tool names that count toward the verification threshold
+const FILE_EDIT_TOOL_NAMES = new Set([
+  'FileEdit', 'FileEditTool', 'FileWrite', 'FileWriteTool',
+  'NotebookEdit', 'NotebookEditTool',
+]);
+
+/** Count how many file-edit tool uses appear in agent messages */
+function countFileEdits(messages: MessageType[]): number {
+  let count = 0;
+  for (const msg of messages) {
+    if (msg.type !== 'assistant' || !msg.message || !Array.isArray(msg.message.content)) continue;
+    for (const block of msg.message.content) {
+      if (block.type === 'tool_use' && FILE_EDIT_TOOL_NAMES.has(block.name)) {
+        count++;
+      }
+    }
+  }
+  return count;
+}
+
+/**
+ * Determine whether a completed agent should trigger auto-verification.
+ * Skips research/planning/review agents; triggers for implementation/general
+ * agents with 3+ file edits.
+ */
+function shouldAutoVerify(
+  agentType: string,
+  fileEditCount: number,
+): boolean {
+  // Check env var to disable auto-verification entirely
+  if (isEnvTruthy(process.env.OLA_CC_DISABLE_AUTO_VERIFY)) return false;
+
+  const classification = getClassification(agentType);
+  const agentClass = classification?.class;
+
+  // Skip research, planning, and review agents
+  if (agentClass === 'research' || agentClass === 'planning' || agentClass === 'review') {
+    return false;
+  }
+
+  // Trigger for implementation or general agents with sufficient edits
+  const isImplementor =
+    agentClass === 'implementation' ||
+    agentClass === 'general' ||
+    !classification; // unclassified = general
+
+  return isImplementor && fileEditCount >= AUTO_VERIFY_FILE_EDIT_THRESHOLD;
+}
+
+/**
+ * Spawn a verification agent in the background to verify the completed agent's work.
+ * Fire-and-forget — does not block the main loop.
+ */
+function spawnVerificationAgent(params: {
+  originalPrompt: string;
+  agentType: string;
+  fileEditCount: number;
+  toolUseContext: typeof import('../../Tool.js').ToolUseContext;
+  rootSetAppState: import('../../state/AppStateStore.js').SetAppState;
+  runAgentParams: Parameters<typeof runAgent>[0];
+}) {
+  const { originalPrompt, agentType, fileEditCount, toolUseContext, rootSetAppState, runAgentParams } = params;
+
+  const verifyDescription = `Verify ${agentType} agent's work (${fileEditCount} file edits)`;
+  const verifyPrompt = `The following task was completed by an ${agentType} agent. Please verify the implementation is correct.\n\nOriginal task:\n${originalPrompt}`;
+
+  const verifyAgentId = createAgentId();
+
+  logForDebugging(`[Auto-Verify] Spawning verification agent for ${agentType} agent (id: ${verifyAgentId})`);
+
+  const verifyBackgroundTask = registerAsyncAgent({
+    agentId: verifyAgentId,
+    description: verifyDescription,
+    prompt: verifyPrompt,
+    selectedAgent: VERIFICATION_AGENT,
+    setAppState: rootSetAppState,
+    toolUseId: toolUseContext.toolUseId,
+  });
+
+  const verificationContext = {
+    agentId: verifyAgentId,
+    parentSessionId: getParentSessionId(),
+    agentType: 'subagent' as const,
+    subagentName: VERIFICATION_AGENT.agentType,
+    isBuiltIn: true,
+    invokingRequestId: undefined,
+    invocationKind: 'spawn' as const,
+    invocationEmitted: false,
+  };
+
+  const verifyMetadata = {
+    prompt: verifyPrompt,
+    resolvedAgentModel: 'inherit',
+    isBuiltInAgent: true,
+    startTime: Date.now(),
+    agentType: VERIFICATION_AGENT.agentType,
+    isAsync: true,
+  };
+
+  void runWithAgentContext(verificationContext, async () => {
+    try {
+      await runAsyncAgentLifecycle({
+        taskId: verifyBackgroundTask.agentId,
+        abortController: verifyBackgroundTask.abortController!,
+        makeStream: onCacheSafeParams => runAgent({
+          ...runAgentParams,
+          agentDefinition: VERIFICATION_AGENT,
+          promptMessages: [createUserMessage({ content: verifyPrompt })],
+          isAsync: true,
+          override: {
+            ...runAgentParams.override,
+            agentId: asAgentId(verifyBackgroundTask.agentId),
+            abortController: verifyBackgroundTask.abortController!,
+          },
+          onCacheSafeParams,
+        }),
+        metadata: verifyMetadata,
+        description: verifyDescription,
+        toolUseContext,
+        rootSetAppState,
+        agentIdForCleanup: verifyAgentId,
+        enableSummarization: false,
+        getWorktreeResult: async () => ({}),
+      });
+    } catch (error) {
+      logForDebugging(`[Auto-Verify] Verification agent failed: ${errorMessage(error)}`);
+    }
+  });
 }
 
 // Multi-agent type constants are defined inline inside gated blocks to enable dead code elimination
@@ -804,7 +942,20 @@ export const AgentTool = buildTool({
         rootSetAppState,
         agentIdForCleanup: asyncAgentId,
         enableSummarization: isCoordinator || isForkSubagentEnabled() || getSdkAgentProgressSummariesEnabled(),
-        getWorktreeResult: cleanupWorktreeIfNeeded
+        getWorktreeResult: cleanupWorktreeIfNeeded,
+        onComplete: (agentMessages) => {
+          const fileEditCount = countFileEdits(agentMessages);
+          if (shouldAutoVerify(selectedAgent.agentType, fileEditCount)) {
+            spawnVerificationAgent({
+              originalPrompt: prompt,
+              agentType: selectedAgent.agentType,
+              fileEditCount,
+              toolUseContext,
+              rootSetAppState,
+              runAgentParams,
+            });
+          }
+        }
       })));
       const canReadOutputFile = toolUseContext.options.tools.some(t => toolMatchesName(t, FILE_READ_TOOL_NAME) || toolMatchesName(t, BASH_TOOL_NAME));
       return {
@@ -1031,6 +1182,20 @@ export const AgentTool = buildTool({
 
                     // Clean up worktree before notification so we can include it
                     const worktreeResult = await cleanupWorktreeIfNeeded();
+
+                    // --- Auto Verification Trigger (background agent) ---
+                    const bgFileEditCount = countFileEdits(agentMessages);
+                    if (shouldAutoVerify(selectedAgent.agentType, bgFileEditCount)) {
+                      spawnVerificationAgent({
+                        originalPrompt: prompt,
+                        agentType: selectedAgent.agentType,
+                        fileEditCount: bgFileEditCount,
+                        toolUseContext,
+                        rootSetAppState,
+                        runAgentParams,
+                      });
+                    }
+
                     enqueueAgentNotification({
                       taskId: backgroundedTaskId,
                       description,
@@ -1310,6 +1475,18 @@ export const AgentTool = buildTool({
               text: handoffWarning
             }, ...agentResult.content];
           }
+        }
+        // --- Auto Verification Trigger (sync agent) ---
+        const syncFileEditCount = countFileEdits(agentMessages);
+        if (shouldAutoVerify(selectedAgent.agentType, syncFileEditCount)) {
+          spawnVerificationAgent({
+            originalPrompt: prompt,
+            agentType: selectedAgent.agentType,
+            fileEditCount: syncFileEditCount,
+            toolUseContext,
+            rootSetAppState,
+            runAgentParams,
+          });
         }
         return {
           data: {

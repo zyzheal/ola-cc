@@ -562,6 +562,7 @@ export async function runAsyncAgentLifecycle({
   agentIdForCleanup,
   enableSummarization,
   getWorktreeResult,
+  onComplete,
 }: {
   taskId: string
   abortController: AbortController
@@ -578,6 +579,8 @@ export async function runAsyncAgentLifecycle({
     worktreePath?: string
     worktreeBranch?: string
   }>
+  /** Optional callback fired with agentMessages after successful completion, before notification */
+  onComplete?: (agentMessages: MessageType[]) => void
 }): Promise<void> {
   let stopSummarization: (() => void) | undefined
   const agentMessages: MessageType[] = []
@@ -666,6 +669,9 @@ export async function runAsyncAgentLifecycle({
     }
 
     const worktreeResult = await getWorktreeResult()
+
+    // Fire optional completion callback (e.g. auto-verification trigger)
+    onComplete?.(agentMessages)
 
     enqueueAgentNotification({
       taskId,
