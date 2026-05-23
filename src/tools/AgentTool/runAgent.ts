@@ -88,6 +88,8 @@ import { createAgentId } from '../../utils/uuid.js'
 import { resolveAgentTools } from './agentToolUtils.js'
 import { type AgentClassification, getClassification } from './agentClassifications.js'
 import { type AgentDefinition, isBuiltInAgent } from './loadAgentsDir.js'
+import { BUILT_IN_TEMPLATES, buildAgentPrompt } from './promptTemplate.js'
+import { VALIDATION_GATE_ENABLED, parseVerificationVerdict } from './validationGate.js'
 
 /**
  * Initialize agent-specific MCP servers
@@ -812,6 +814,9 @@ export async function* runAgent({
   // NOT a hard limit — we need our own counter for enforcement)
   let agentOutputTokens = 0
 
+  // Track the last assistant message text for validation gate
+  let lastAssistantMessageText = ''
+
   try {
     for await (const message of query({
       messages: initialMessages,
@@ -933,6 +938,19 @@ export async function* runAgent({
         if (message.type !== 'progress') {
           lastRecordedUuid = message.uuid
         }
+        // Track last assistant message text for validation gate
+        if (message.type === 'assistant' && message.message?.content) {
+          const content = message.message.content
+          if (typeof content === 'string') {
+            lastAssistantMessageText = content
+          } else if (Array.isArray(content)) {
+            const textBlocks = content
+              .filter((b: { type: string }) => b.type === 'text')
+              .map((b: { text: string }) => b.text)
+              .join('\n')
+            if (textBlocks) lastAssistantMessageText = textBlocks
+          }
+        }
         yield message
       }
     }
@@ -950,6 +968,45 @@ export async function* runAgent({
     // Run callback if provided (only built-in agents have callbacks)
     if (isBuiltInAgent(agentDefinition) && agentDefinition.callback) {
       agentDefinition.callback()
+    }
+
+    // --- Validation Gate ---
+    // After the agent completes, optionally check if the output looks like
+    // it successfully completed. Only for implementation/general agents.
+    if (
+      VALIDATION_GATE_ENABLED &&
+      !agentBudgetExceeded &&
+      !agentAbortController.signal.aborted &&
+      lastAssistantMessageText
+    ) {
+      const classification = getClassification(agentDefinition.agentType)
+      const agentClass = classification?.class
+      const shouldValidate =
+        agentClass === 'implementation' ||
+        agentClass === 'general' ||
+        !classification // unclassified agents are treated as general
+
+      if (shouldValidate) {
+        const verdict = parseVerificationVerdict(lastAssistantMessageText)
+
+        if (verdict === 'FAIL' || verdict === 'PARTIAL') {
+          // Agent self-reported failure — yield a summary so the caller
+          // can spawn the verification agent with this context.
+          yield {
+            type: 'tool_use_summary',
+            uuid: randomUUID(),
+            timestamp: Date.now(),
+          } as ToolUseSummaryMessage
+
+          logForDebugging(
+            `[Agent ${agentDefinition.agentType}] Validation gate: verdict=${verdict} — verification agent recommended`,
+          )
+        } else {
+          logForDebugging(
+            `[Agent ${agentDefinition.agentType}] Validation gate: no explicit verdict found (PASS assumed)`,
+          )
+        }
+      }
     }
   } finally {
     // Clean up timeout timer if still running
@@ -1054,24 +1111,34 @@ async function getAgentSystemPrompt(
 ): Promise<string[]> {
   const enabledToolNames = new Set(resolvedTools.map(t => t.name))
   const settings = getInitialSettings()
-  try {
-    const agentPrompt = agentDefinition.getSystemPrompt({ toolUseContext })
-    const prompts = [agentPrompt, getLanguageSection(settings.language)]
 
-    return await enhanceSystemPromptWithEnvDetails(
-      prompts,
-      resolvedAgentModel,
-      additionalWorkingDirectories,
-      enabledToolNames,
-    )
-  } catch (_error) {
-    return enhanceSystemPromptWithEnvDetails(
-      [DEFAULT_AGENT_PROMPT, getLanguageSection(settings.language)],
-      resolvedAgentModel,
-      additionalWorkingDirectories,
-      enabledToolNames,
-    )
+  // Determine the base agent prompt
+  let agentPrompt: string
+
+  // 1. Check if a built-in template applies (research, review, etc.)
+  const template = BUILT_IN_TEMPLATES[agentDefinition.agentType]
+  if (template) {
+    agentPrompt = buildAgentPrompt(template, {
+      agentType: agentDefinition.agentType,
+      cwd: getProjectRoot(),
+    })
+  } else {
+    // 2. Fall back to the agent's own getSystemPrompt
+    try {
+      agentPrompt = agentDefinition.getSystemPrompt({ toolUseContext })
+    } catch (_error) {
+      agentPrompt = DEFAULT_AGENT_PROMPT
+    }
   }
+
+  const prompts = [agentPrompt, getLanguageSection(settings.language)]
+
+  return await enhanceSystemPromptWithEnvDetails(
+    prompts,
+    resolvedAgentModel,
+    additionalWorkingDirectories,
+    enabledToolNames,
+  )
 }
 
 /**
