@@ -191,9 +191,14 @@ async function verifyProviderProfile(
         else delete process.env.OPENAI_BASE_URL
       }
     } else {
+      const prevOpenai = process.env.CLAUDE_CODE_USE_OPENAI
+      const prevOlaOpenai = process.env.OLA_CC_USE_OPENAI
       const prevKey = process.env.ANTHROPIC_API_KEY
       const prevBase = process.env.ANTHROPIC_BASE_URL
 
+      // Clear OpenAI shim flags to ensure getAnthropicClient returns real Anthropic client
+      delete process.env.CLAUDE_CODE_USE_OPENAI
+      delete process.env.OLA_CC_USE_OPENAI
       process.env.ANTHROPIC_API_KEY = profile.apiKey
       if (profile.apiUrl) process.env.ANTHROPIC_BASE_URL = profile.apiUrl
 
@@ -212,6 +217,10 @@ async function verifyProviderProfile(
         }
         return { success: false, error: 'Unexpected response format' }
       } finally {
+        if (prevOpenai !== undefined) process.env.CLAUDE_CODE_USE_OPENAI = prevOpenai
+        else delete process.env.CLAUDE_CODE_USE_OPENAI
+        if (prevOlaOpenai !== undefined) process.env.OLA_CC_USE_OPENAI = prevOlaOpenai
+        else delete process.env.OLA_CC_USE_OPENAI
         if (prevKey !== undefined) process.env.ANTHROPIC_API_KEY = prevKey
         else delete process.env.ANTHROPIC_API_KEY
         if (prevBase !== undefined) process.env.ANTHROPIC_BASE_URL = prevBase
