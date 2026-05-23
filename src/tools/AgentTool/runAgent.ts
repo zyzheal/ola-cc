@@ -26,6 +26,7 @@ import {
   fetchToolsForClient,
 } from '../../services/mcp/client.js'
 import { getMcpConfigByName } from '../../services/mcp/config.js'
+import { runQualityScan, type ScanResult } from '../../services/codeQuality/regexScanner.js'
 import type {
   MCPServerConnection,
   ScopedMcpServerConfig,
@@ -1008,6 +1009,56 @@ export async function* runAgent({
         }
       }
     }
+
+    // --- Post-Completion Quality Scan ---
+    // After implementation/general agents complete, automatically scan for
+    // common code quality issues. Only runs when the agent finished normally
+    // (not aborted or budget-exceeded).
+    if (
+      !agentBudgetExceeded &&
+      !agentAbortController.signal.aborted
+    ) {
+      const agentClass = classificationRef?.class
+      const shouldScan =
+        agentClass === 'implementation' ||
+        agentClass === 'general' ||
+        !classificationRef
+
+      if (shouldScan) {
+        try {
+          const scanResults = await runQualityScan({
+            checks: [],
+            paths: [getProjectRoot() ? `src/**/*.{ts,tsx}` : 'src/**/*.{ts,tsx}'],
+          })
+
+          const errorLevelIssues = scanResults.filter(
+            (r: ScanResult) => r.severity === 'error',
+          )
+
+          if (errorLevelIssues.length > 0) {
+            logForDebugging(
+              `[Agent ${agentDefinition.agentType}] Quality scan: ${errorLevelIssues.length} error-level issue(s) found`,
+            )
+
+            const summary = formatQualityScanSummary(errorLevelIssues)
+            yield {
+              type: 'tool_use_summary',
+              uuid: randomUUID(),
+              timestamp: Date.now(),
+              summary,
+            } as ToolUseSummaryMessage
+          } else {
+            logForDebugging(
+              `[Agent ${agentDefinition.agentType}] Quality scan: no error-level issues found`,
+            )
+          }
+        } catch (scanError) {
+          logForDebugging(
+            `[Agent ${agentDefinition.agentType}] Quality scan failed: ${scanError}`,
+          )
+        }
+      }
+    }
   } finally {
     // Clean up timeout timer if still running
     if (timeoutTimer) {
@@ -1181,3 +1232,41 @@ function resolveSkillName(
 
   return null
 }
+
+/**
+ * Format quality scan results into a human-readable summary for tool_use_summary.
+ * Groups issues by file and limits output to avoid overwhelming the caller.
+ */
+function formatQualityScanSummary(results: ScanResult[]): string {
+  const relPath = (fullPath: string) => {
+    const root = getProjectRoot() || process.cwd()
+    return fullPath.replace(root + '/', '')
+  }
+
+  const lines: string[] = [
+    `Quality scan found ${results.length} error-level issue(s):`,
+    '',
+  ]
+
+  // Group by file
+  const byFile = new Map<string, ScanResult[]>()
+  for (const r of results) {
+    const key = relPath(r.file)
+    const existing = byFile.get(key) ?? []
+    existing.push(r)
+    byFile.set(key, existing)
+  }
+
+  for (const [file, issues] of byFile) {
+    lines.push(`  ${file}:`)
+    for (const issue of issues) {
+      lines.push(
+        `    Line ${issue.line}: [${issue.check}] ${issue.message}${issue.fix ? ` — ${issue.fix}` : ''}`,
+      )
+    }
+    lines.push('')
+  }
+
+  return lines.join('\n')
+}
+

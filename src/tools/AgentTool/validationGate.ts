@@ -10,15 +10,14 @@
  * - regex scanner for error-level violations
  *
  * Controlled by env var:
- *   OLA_CC_ENABLE_VALIDATION_GATE=true (default: false)
+ *   OLA_CC_DISABLE_VALIDATION_GATE=true (default: enabled)
  *   OLA_CC_MAX_REPAIR_ATTEMPTS=2 (default: 2)
  */
 
 import { isEnvTruthy } from '../../utils/envUtils.js'
 
-export const VALIDATION_GATE_ENABLED = isEnvTruthy(
-  process.env.OLA_CC_ENABLE_VALIDATION_GATE,
-)
+export const VALIDATION_GATE_ENABLED =
+  !isEnvTruthy(process.env.OLA_CC_DISABLE_VALIDATION_GATE)
 
 const MAX_REPAIR_ATTEMPTS_DEFAULT = 2
 
