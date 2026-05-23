@@ -95,7 +95,8 @@ const fullInputSchema = lazySchema(() => {
   const multiAgentInputSchema = z.object({
     name: z.string().optional().describe('Name for the spawned agent. Makes it addressable via SendMessage({to: name}) while running.'),
     team_name: z.string().optional().describe('Team name for spawning. Uses current team context if omitted.'),
-    mode: permissionModeSchema().optional().describe('Permission mode for spawned teammate (e.g., "plan" to require plan approval).')
+    mode: permissionModeSchema().optional().describe('Permission mode for spawned teammate (e.g., "plan" to require plan approval).'),
+    depends_on: z.array(z.string()).optional().describe('Agent names this agent depends on. Dependencies must complete before this agent starts. Used for DAG-based parallel execution.'),
   });
   return baseInputSchema().merge(multiAgentInputSchema).extend({
     isolation: ("external" === 'ant' ? z.enum(['worktree', 'remote']) : z.enum(['worktree'])).optional().describe("external" === 'ant' ? 'Isolation mode. "worktree" creates a temporary git worktree so the agent works on an isolated copy of the repo. "remote" launches the agent in a remote CCR environment (always runs in background).' : 'Isolation mode. "worktree" creates a temporary git worktree so the agent works on an isolated copy of the repo.'),
@@ -258,7 +259,8 @@ export const AgentTool = buildTool({
     cwd,
     max_budget_usd,
     max_tokens,
-    timeout_seconds
+    timeout_seconds,
+    depends_on
   }: AgentToolInput, toolUseContext, canUseTool, assistantMessage, onProgress?) {
     const startTime = Date.now();
     const model = isCoordinatorMode() ? undefined : modelParam;
@@ -577,6 +579,42 @@ export const AgentTool = buildTool({
     // <task-notification> re-entry there is handled by the else branch
     // below (registerAsyncAgentTask + notifyOnCompletion).
     const assistantForceAsync = feature('KAIROS') ? appState.kairosEnabled : false;
+
+    // --- DAG-based dependency resolution (Phase 5) ---
+    // If depends_on is specified, wait for all dependencies to complete before spawning.
+    // Dependencies are resolved via the agentNameRegistry (name → agentId mapping).
+    if (depends_on && depends_on.length > 0) {
+      logForDebugging(
+        `[Agent] depends_on specified: [${depends_on.join(', ')}] — waiting for dependencies`,
+      );
+
+      for (const depName of depends_on) {
+        const depAgentId = appState.agentNameRegistry.get(depName)
+        if (!depAgentId) {
+          throw new Error(`Dependency "${depName}" not found in agent registry. Available: ${[...appState.agentNameRegistry.keys()].join(', ') || '(none)'}`)
+        }
+
+        // Poll for dependency completion
+        let attempts = 0
+        const maxWaitMs = 300_000 // 5 minute timeout
+        while (attempts < maxWaitMs / 1000) {
+          // Check task status in AppState
+          const taskEntry = appState.localAgentTasks?.get(depAgentId)
+          if (taskEntry) {
+            if (taskEntry.status === 'completed') break // Success
+            if (taskEntry.status === 'failed') {
+              throw new Error(`Dependency "${depName}" failed. Aborting this agent.`)
+            }
+          }
+          await sleep(1000)
+          attempts++
+        }
+        if (attempts >= maxWaitMs / 1000) {
+          throw new Error(`Dependency "${depName}" timed out after 5 minutes. Aborting this agent.`)
+        }
+      }
+    }
+
     const shouldRunAsync = (run_in_background === true || selectedAgent.background === true || isCoordinator || forceAsync || assistantForceAsync || (proactiveModule?.isProactiveActive() ?? false)) && !isBackgroundTasksDisabled;
     // Assemble the worker's tool pool independently of the parent's.
     // Workers always get their tools from assembleToolPool with their own
