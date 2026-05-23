@@ -1,0 +1,1608 @@
+/**
+ * AST-based code quality checker for Design Constraint items.
+ *
+ * Uses the TypeScript compiler API's createSourceFile (not the full compiler)
+ * to parse TS/TSX files and walk the AST with visitor functions. Detects
+ * semantic issues that regex cannot catch: type errors, control flow, API misuse.
+ *
+ * Usage:
+ *   const results = await runASTCheck(files, checks)
+ *
+ * Design:
+ *   - Parse with ts.createSourceFile (lightweight, no type checker)
+ *   - Walk AST with ts.forEachChild visitor pattern
+ *   - Each check is a visitor function that returns structured findings
+ */
+
+import { promises as fs } from 'node:fs'
+import { join, relative, dirname, basename } from 'node:path'
+import * as ts from 'typescript'
+
+// -- Types
+
+export interface ASTCheckResult {
+  file: string
+  line: number
+  column: number
+  check: string
+  message: string
+  severity: 'error' | 'warning' | 'info'
+  fix?: string
+}
+
+// -- Known design tokens (simplified set)
+
+const KNOWN_DESIGN_TOKENS = [
+  'primary', 'secondary', 'success', 'warning', 'error', 'info',
+  'background', 'foreground', 'border', 'text',
+  'blue-500', 'red-500', 'green-500', 'yellow-500',
+  'gray-50', 'gray-100', 'gray-200', 'gray-300', 'gray-500', 'gray-700', 'gray-900',
+  '--color-primary', '--color-secondary', '--color-success', '--color-error',
+  '--color-warning', '--color-info', '--color-background', '--color-foreground',
+  'spacing', 'padding', 'margin', 'radius', 'shadow',
+]
+
+// -- Exclusion Rules
+
+const EXCLUDE_PATTERNS = [
+  /\/node_modules\//,
+  /\/\.(git|next|output|cache|vite|dist)\//,
+  /\.d\.ts$/,
+  /\.test\.(ts|tsx)$/,
+  /\.spec\.(ts|tsx)$/,
+]
+
+function shouldExcludeFile(filePath: string): boolean {
+  return EXCLUDE_PATTERNS.some(p => p.test(filePath))
+}
+
+// -- Utilities
+
+function indexToLineColumn(source: ts.SourceFile, pos: number): { line: number; column: number } {
+  const lineAndChar = source.getLineAndCharacterOfPosition(pos)
+  return {
+    line: lineAndChar.line + 1,
+    column: lineAndChar.character + 1,
+  }
+}
+
+async function readFile(path: string): Promise<string | null> {
+  try {
+    return await fs.readFile(path, 'utf-8')
+  }
+  catch {
+    return null
+  }
+}
+
+function parseSourceFile(filePath: string, content: string): ts.SourceFile {
+  return ts.createSourceFile(
+    filePath,
+    content,
+    ts.ScriptTarget.Latest,
+    /* setParentNodes */ true,
+    filePath.endsWith('.tsx') ? ts.ScriptKind.TSX : ts.ScriptKind.TS,
+  )
+}
+
+function makeResult(
+  source: ts.SourceFile,
+  node: ts.Node,
+  check: string,
+  message: string,
+  severity: 'error' | 'warning' | 'info',
+  fix?: string,
+): ASTCheckResult {
+  const { line, column } = indexToLineColumn(source, node.getStart(source))
+  return {
+    file: source.fileName,
+    line,
+    column,
+    check,
+    message,
+    severity,
+    fix,
+  }
+}
+
+// -- Walk helpers
+
+/** Visit all descendants matching a predicate. */
+function visitAll<T extends ts.Node>(
+  node: ts.Node,
+  predicate: (n: ts.Node) => n is T,
+): T[] {
+  const results: T[] = []
+  function walk(n: ts.Node) {
+    if (predicate(n)) results.push(n)
+    ts.forEachChild(n, walk)
+  }
+  walk(node)
+  return results
+}
+
+/** Check if an async function body contains a TryStatement. */
+function hasTryStatement(node: ts.Node): boolean {
+  let found = false
+  function walk(n: ts.Node) {
+    if (ts.isTryStatement(n)) { found = true; return }
+    // Don't descend into nested function declarations
+    if (
+      n !== node &&
+      (ts.isFunctionDeclaration(n) || ts.isFunctionExpression(n) ||
+       ts.isArrowFunction(n) || ts.isMethodDeclaration(n))
+    ) return
+    ts.forEachChild(n, walk)
+  }
+  walk(node)
+  return found
+}
+
+/** Check if a function body has a TryStatement at any depth (including nested functions). */
+function hasTryStatementDeep(node: ts.Node): boolean {
+  let found = false
+  function walk(n: ts.Node) {
+    if (ts.isTryStatement(n)) { found = true; return }
+    ts.forEachChild(n, walk)
+  }
+  walk(node)
+  return found
+}
+
+/** Check if an async call is followed by .catch() at the same expression level. */
+function hasCatchChain(node: ts.CallExpression): boolean {
+  const parent = node.parent
+  if (parent && ts.isPropertyAccessExpression(parent)) {
+    if (parent.name.text === 'catch') return true
+  }
+  return false
+}
+
+/** Check if a call is within a try-catch block. */
+function isInTryCatch(node: ts.Node): boolean {
+  let current: ts.Node | undefined = node.parent
+  while (current) {
+    if (ts.isTryStatement(current)) return true
+    current = current.parent
+  }
+  return false
+}
+
+/** Get the text of a JSX element's tag name. */
+function getJsxTagName(element: ts.JsxElement | ts.JsxSelfClosingElement | ts.JsxOpeningElement): string {
+  if (ts.isJsxElement(element) || ts.isJsxSelfClosingElement(element)) {
+    const opening = ts.isJsxSelfClosingElement(element) ? element : element.openingElement
+    return getTagNameText(opening.tagName)
+  }
+  return ''
+}
+
+function getTagNameText(tagName: ts.JsxTagNameExpression): string {
+  if (ts.isIdentifier(tagName)) return tagName.text
+  if (ts.isJsxNamespacedName(tagName)) return `${tagName.namespace.name.text}:${tagName.name.text}`
+  return ''
+}
+
+/** Check if a JSX element has a specific prop. */
+function jsxHasProp(attributes: ts.JsxAttributes, propName: string): boolean {
+  return attributes.properties.some(prop => {
+    if (ts.isJsxAttribute(prop)) return prop.name.text === propName
+    return false
+  })
+}
+
+/** Check if a node is inside a JSX context (attribute or expression). */
+function isInJsxContext(node: ts.Node): boolean {
+  let current: ts.Node | undefined = node.parent
+  while (current) {
+    if (ts.isJsxAttribute(current) || ts.isJsxExpression(current) || ts.isJsxOpeningElement(current) ||
+        ts.isJsxSelfClosingElement(current) || ts.isJsxElement(current)) return true
+    current = current.parent
+  }
+  return false
+}
+
+/** Get all string literals in a JSX subtree. */
+function collectJsxStringLiterals(node: ts.Node): ts.StringLiteral[] {
+  return visitAll(node, (n): n is ts.StringLiteral => ts.isStringLiteral(n))
+}
+
+// -- Individual Check Implementations
+
+// --- Frontend Checks ---
+
+/**
+ * Check 1: Hardcoded color values
+ * Detect hex color strings (#RRGGBB or #RGB) in JSX/CSS contexts.
+ */
+function checkHardcodedColor(
+  source: ts.SourceFile,
+): ASTCheckResult[] {
+  const results: ASTCheckResult[] = []
+  const hexColor = /^#[0-9a-fA-F]{3,8}$/
+
+  function visit(node: ts.Node) {
+    // String literals with hex color in JSX context
+    if (ts.isStringLiteral(node) && hexColor.test(node.text)) {
+      if (isInJsxContext(node)) {
+        results.push(makeResult(source, node, 'hardcoded-color',
+          `Hardcoded color "${node.text}" found in JSX. Consider using a design token or CSS variable.`,
+          'warning',
+          'Replace with a design token (e.g., var(--color-primary)) or theme reference.',
+        ))
+      }
+    }
+    // Template expression with hex color in JSX
+    if (ts.isTemplateExpression(node)) {
+      const text = node.getFullText(source)
+      if (/#\d{3,8}/.test(text)) {
+        const parent = node.parent
+        if (parent && (ts.isJsxAttribute(parent) || ts.isJsxExpression(parent))) {
+          const { line, column } = indexToLineColumn(source, node.getStart(source))
+          results.push({
+            file: source.fileName, line, column,
+            check: 'hardcoded-color',
+            message: 'Hardcoded hex color found in JSX template. Consider using a design token.',
+            severity: 'warning',
+            fix: 'Replace with a design token or CSS variable.',
+          })
+        }
+      }
+    }
+    ts.forEachChild(node, visit)
+  }
+
+  ts.forEachChild(source, visit)
+  return results
+}
+
+/**
+ * Check 2: Missing Design Token usage
+ * Detect known token literal values used directly instead of token references.
+ */
+function checkMissingDesignToken(
+  source: ts.SourceFile,
+): ASTCheckResult[] {
+  const results: ASTCheckResult[] = []
+  const tokenValueMap: Record<string, string> = {
+    '#1890ff': 'primary', '#52c41a': 'success', '#faad14': 'warning', '#ff4d4f': 'error',
+    '#001529': 'background-dark', '#ffffff': 'background-light', '#fafafa': 'background-gray',
+  }
+
+  function visit(node: ts.Node) {
+    if (ts.isStringLiteral(node)) {
+      const lower = node.text.toLowerCase()
+      if (tokenValueMap[lower] && isInJsxContext(node)) {
+        results.push(makeResult(source, node, 'missing-design-token',
+          `Color value "${node.text}" used directly instead of design token "${tokenValueMap[lower]}".`,
+          'warning',
+          `Use the design token "${tokenValueMap[lower]}" or a CSS variable instead.`,
+        ))
+      }
+    }
+    ts.forEachChild(node, visit)
+  }
+
+  ts.forEachChild(source, visit)
+  return results
+}
+
+/**
+ * Check 3: Form without validation
+ * Detect Form components (Ant Design / generic) without rules prop.
+ */
+function checkFormWithoutValidation(
+  source: ts.SourceFile,
+): ASTCheckResult[] {
+  const results: ASTCheckResult[] = []
+
+  function visit(node: ts.Node) {
+    if (ts.isJsxOpeningElement(node) || ts.isJsxSelfClosingElement(node)) {
+      const tagName = getTagNameText(node.tagName)
+      if (tagName === 'Form' || tagName === 'form' || tagName === 'ProForm' || tagName === 'ModalForm') {
+        const hasRules = node.attributes.properties.some(prop => {
+          if (!ts.isJsxAttribute(prop)) return false
+          const name = prop.name.text
+          return name === 'rules' || name === 'validateMessages' || name === 'onFinish'
+        })
+        if (!hasRules) {
+          results.push(makeResult(source, node, 'form-without-validation',
+            `Form component "${tagName}" has no validation (rules/validateMessages/onFinish).`,
+            'error',
+            'Add form validation rules using the "rules" prop or "validateMessages".',
+          ))
+        }
+      }
+    }
+    ts.forEachChild(node, visit)
+  }
+
+  ts.forEachChild(source, visit)
+  return results
+}
+
+/**
+ * Check 4: Async without try-catch
+ * Detect async function declarations/expressions without try-catch in body.
+ */
+function checkAsyncWithoutTryCatch(
+  source: ts.SourceFile,
+): ASTCheckResult[] {
+  const results: ASTCheckResult[] = []
+
+  function visit(node: ts.Node) {
+    // Arrow async functions: async () => ...
+    if (ts.isArrowFunction(node) && node.modifiers?.some(m => m.kind === ts.SyntaxKind.AsyncKeyword)) {
+      if (!hasTryStatementDeep(node)) {
+        results.push(makeResult(source, node, 'async-without-try-catch',
+          'Async arrow function has no try-catch block for error handling.',
+          'error',
+          'Wrap async operations in try-catch or use .catch() for error handling.',
+        ))
+      }
+      return
+    }
+    // Regular async functions
+    if (
+      (ts.isFunctionDeclaration(node) || ts.isFunctionExpression(node) || ts.isMethodDeclaration(node)) &&
+      node.modifiers?.some(m => m.kind === ts.SyntaxKind.AsyncKeyword)
+    ) {
+      if (!hasTryStatementDeep(node)) {
+        results.push(makeResult(source, node, 'async-without-try-catch',
+          `Async function "${node.name?.getText(source) ?? 'anonymous'}" has no try-catch block.`,
+          'error',
+          'Wrap async operations in try-catch to handle potential errors.',
+        ))
+      }
+      return
+    }
+    ts.forEachChild(node, visit)
+  }
+
+  ts.forEachChild(source, visit)
+  return results
+}
+
+/**
+ * Check 5: Missing loading state
+ * Detect Button with async onClick but no loading/disabled prop.
+ */
+function checkMissingLoadingState(
+  source: ts.SourceFile,
+): ASTCheckResult[] {
+  const results: ASTCheckResult[] = []
+
+  function visit(node: ts.Node) {
+    if (ts.isJsxSelfClosingElement(node) || ts.isJsxElement(node)) {
+      const opening = ts.isJsxSelfClosingElement(node) ? node : node.openingElement
+      const tagName = getTagNameText(opening.tagName)
+      if (tagName === 'Button' || tagName === 'button' || tagName === 'a-button') {
+        // Find onClick prop
+        const onClickProp = opening.attributes.properties.find(prop => {
+          if (!ts.isJsxAttribute(prop)) return false
+          return prop.name.text === 'onClick'
+        }) as ts.JsxAttribute | undefined
+
+        if (onClickProp?.initializer) {
+          // Check if onClick handler calls an async function or returns a Promise
+          const init = onClickProp.initializer
+          let isAsyncHandler = false
+
+          if (ts.isJsxExpression(init)) {
+            const expr = init.expression
+            // Direct call: onClick={handleClick}
+            if (expr && ts.isIdentifier(expr)) {
+              // Check if the called function name suggests async (fetch, load, submit, etc.)
+              const name = expr.text.toLowerCase()
+              if (name.includes('async') || name.includes('fetch') || name.includes('load') ||
+                  name.includes('submit') || name.includes('save') || name.includes('send')) {
+                isAsyncHandler = true
+              }
+            }
+            // Arrow with async: onClick={async () => ...}
+            if (expr && ts.isArrowFunction(expr)) {
+              if (expr.modifiers?.some(m => m.kind === ts.SyntaxKind.AsyncKeyword) ||
+                  visitAll(expr, (n): n is ts.AwaitExpression => ts.isAwaitExpression(n)).length > 0) {
+                isAsyncHandler = true
+              }
+            }
+          }
+
+          if (isAsyncHandler) {
+            const hasLoading = jsxHasProp(opening.attributes, 'loading')
+            const hasDisabled = jsxHasProp(opening.attributes, 'disabled')
+            if (!hasLoading && !hasDisabled) {
+              results.push(makeResult(source, node, 'missing-loading-state',
+                `Button "${tagName}" has async onClick but no loading or disabled state.`,
+                'warning',
+                'Add a "loading" or "disabled" prop to prevent double-clicks during async operations.',
+              ))
+            }
+          }
+        }
+      }
+    }
+    ts.forEachChild(node, visit)
+  }
+
+  ts.forEachChild(source, visit)
+  return results
+}
+
+/**
+ * Check 6: Empty state missing
+ * Detect List/Table without Empty component.
+ */
+function checkEmptyStateMissing(
+  source: ts.SourceFile,
+): ASTCheckResult[] {
+  const results: ASTCheckResult[] = []
+
+  function visit(node: ts.Node) {
+    if (ts.isJsxOpeningElement(node) || ts.isJsxSelfClosingElement(node)) {
+      const tagName = getTagNameText(node.tagName)
+      if (tagName === 'List' || tagName === 'Table' || tagName === 'a-table' || tagName === 'a-list' ||
+          tagName === 'ul' || tagName === 'ol') {
+        // Check if there's an Empty component as a child or a locale.emptyText prop
+        const hasEmptyText = node.attributes.properties.some(prop => {
+          if (ts.isJsxAttribute(prop) && prop.name.text === 'locale') {
+            return true
+          }
+          if (ts.isJsxAttribute(prop) && prop.name.text === 'emptyText') {
+            return true
+          }
+          return false
+        })
+        if (!hasEmptyText) {
+          // For self-closing elements like <List ... />, flag immediately
+          if (ts.isJsxSelfClosingElement(node)) {
+            results.push(makeResult(source, node, 'empty-state-missing',
+              `List/Table "${tagName}" has no Empty component or emptyText prop.`,
+              'info',
+              'Add an Empty component or emptyText prop to show user-friendly empty state.',
+            ))
+            return
+          }
+          // For non-self-closing, check children for Empty component
+          if (ts.isJsxElement(node.parent)) {
+            const children = node.parent.children
+            const hasEmptyChild = children.some(child => {
+              if (ts.isJsxElement(child)) {
+                const childTag = getJsxTagName(child)
+                return childTag === 'Empty' || childTag === 'a-empty'
+              }
+              if (ts.isJsxSelfClosingElement(child)) {
+                const childTag = getTagNameText(child.tagName)
+                return childTag === 'Empty' || childTag === 'a-empty'
+              }
+              return false
+            })
+            if (!hasEmptyChild) {
+              results.push(makeResult(source, node, 'empty-state-missing',
+                `List/Table "${tagName}" has no Empty component or emptyText prop.`,
+                'info',
+                'Add an Empty component or emptyText prop to show user-friendly empty state.',
+              ))
+            }
+          }
+        }
+      }
+    }
+    ts.forEachChild(node, visit)
+  }
+
+  ts.forEachChild(source, visit)
+  return results
+}
+
+/**
+ * Check 7: Success feedback missing
+ * Detect async calls without message.success/error after.
+ */
+function checkSuccessFeedbackMissing(
+  source: ts.SourceFile,
+): ASTCheckResult[] {
+  const results: ASTCheckResult[] = []
+
+  // Find async functions that don't have message.success/message.error/message.warning
+  function visit(node: ts.Node) {
+    if (
+      (ts.isFunctionDeclaration(node) || ts.isFunctionExpression(node) || ts.isArrowFunction(node) || ts.isMethodDeclaration(node)) &&
+      node.modifiers?.some(m => m.kind === ts.SyntaxKind.AsyncKeyword)
+    ) {
+      const bodyText = node.getFullText(source)
+      // Check if function has await/call but no user feedback
+      const hasAwait = /\bawait\b/.test(bodyText)
+      const hasMutation = /\b(post|put|delete|patch|save|create|update|remove)\s*\(/i.test(bodyText) ||
+                          /\b\.save\(|\.create\(|\.update\(|\.delete\(/.test(bodyText)
+      const hasFeedback = /\bmessage\.(success|error|warning|info)\s*\(/.test(bodyText) ||
+                          /\bnotification\.(success|error|warning|info)\s*\(/.test(bodyText) ||
+                          /\btoast\.(success|error|warning|info)\s*\(/.test(bodyText)
+
+      if ((hasAwait || hasMutation) && !hasFeedback) {
+        // Only flag if the function name suggests a mutation
+        const funcName = ts.isFunctionDeclaration(node) || ts.isMethodDeclaration(node) || ts.isFunctionExpression(node)
+          ? node.name?.getText(source) ?? ''
+          : ''
+        const suggestsMutation = /\b(submit|save|create|update|delete|remove|add|send|post|publish)\b/i.test(funcName)
+
+        if (hasMutation || suggestsMutation) {
+          results.push(makeResult(source, node, 'success-feedback-missing',
+            `Async function "${funcName || 'anonymous'}" performs mutation without user feedback (message.success/error).`,
+            'warning',
+            'Add message.success() or message.error() to provide user feedback after the operation.',
+          ))
+        }
+      }
+      return
+    }
+    ts.forEachChild(node, visit)
+  }
+
+  ts.forEachChild(source, visit)
+  return results
+}
+
+/**
+ * Check 8: Duplicate component (simplified)
+ * Detect similar JSX structures by counting element patterns.
+ */
+function checkDuplicateComponent(
+  source: ts.SourceFile,
+): ASTCheckResult[] {
+  const results: ASTCheckResult[] = []
+
+  // Simple heuristic: collect JSX tag signatures and find repeats
+  const tagSignatures: Map<string, ts.Node[]> = new Map()
+
+  function visit(node: ts.Node) {
+    if (ts.isJsxElement(node) || ts.isJsxSelfClosingElement(node)) {
+      const opening = ts.isJsxSelfClosingElement(node) ? node : node.openingElement
+      const tagName = getTagNameText(opening.tagName)
+      const propCount = opening.attributes.properties.length
+      const signature = `${tagName}:${propCount}`
+
+      if (!tagSignatures.has(signature)) {
+        tagSignatures.set(signature, [])
+      }
+      tagSignatures.get(signature)!.push(node)
+    }
+    ts.forEachChild(node, visit)
+  }
+
+  ts.forEachChild(source, visit)
+
+  // Flag groups with 5+ identical signatures
+  for (const [signature, nodes] of tagSignatures) {
+    if (nodes.length >= 5) {
+      const { line, column } = indexToLineColumn(source, nodes[0].getStart(source))
+      results.push({
+        file: source.fileName, line, column,
+        check: 'duplicate-component',
+        message: `Found ${nodes.length} similar JSX structures (${signature}). Consider extracting a reusable component.`,
+        severity: 'info',
+        fix: 'Extract repeated JSX pattern into a separate component.',
+      })
+    }
+  }
+
+  return results
+}
+
+// --- Backend Checks ---
+
+/**
+ * Check 9: Missing tenant_id filter
+ * Detect DB queries without WHERE tenant_id clause.
+ */
+function checkMissingTenantFilter(
+  source: ts.SourceFile,
+): ASTCheckResult[] {
+  const results: ASTCheckResult[] = []
+
+  function visit(node: ts.Node) {
+    // Detect query builder patterns: .where(), prisma queries, typeorm
+    if (ts.isCallExpression(node)) {
+      const exprText = node.expression.getText(source)
+      // Prisma: model.findMany(), model.findFirst(), etc. without where
+      if (/\w+\.(findMany|findFirst|findUnique|findAll|query)\s*$/.test(exprText)) {
+        const hasWhere = node.arguments.some(arg => {
+          const argText = arg.getText(source)
+          return /tenant[_-]?id|where/i.test(argText)
+        })
+        // Also check chained .where() calls
+        const parent = node.parent
+        let hasChainedWhere = false
+        if (parent && ts.isPropertyAccessExpression(parent)) {
+          if (parent.name.text === 'where') hasChainedWhere = true
+        }
+        if (!hasWhere && !hasChainedWhere) {
+          results.push(makeResult(source, node, 'missing-tenant-filter',
+            'Database query without tenant_id filter. This may leak cross-tenant data.',
+            'error',
+            'Add a WHERE clause filtering by tenant_id to ensure data isolation.',
+          ))
+        }
+      }
+    }
+
+    // Detect raw SQL queries without tenant_id in WHERE
+    if (ts.isStringLiteral(node) || ts.isTemplateExpression(node) || ts.isNoSubstitutionTemplateLiteral(node)) {
+      const text = node.getText(source)
+      const isSqlQuery = /\b(SELECT|INSERT|UPDATE|DELETE)\b/i.test(text)
+      if (isSqlQuery && !/tenant[_-]?id/i.test(text)) {
+        // Check if this is passed to a query method
+        const parent = node.parent
+        if (parent && ts.isCallExpression(parent)) {
+          const callText = parent.expression.getText(source)
+          if (/query|execute|raw|sql/i.test(callText)) {
+            results.push(makeResult(source, node, 'missing-tenant-filter',
+              'SQL query without tenant_id filter. Risk of cross-tenant data leakage.',
+              'error',
+              'Add "WHERE tenant_id = ?" to the query.',
+            ))
+          }
+        }
+      }
+    }
+
+    ts.forEachChild(node, visit)
+  }
+
+  ts.forEachChild(source, visit)
+  return results
+}
+
+/**
+ * Check 10: Missing pagination
+ * Detect list endpoint handlers without page/pageSize parameters.
+ */
+function checkMissingPagination(
+  source: ts.SourceFile,
+): ASTCheckResult[] {
+  const results: ASTCheckResult[] = []
+
+  function visit(node: ts.Node) {
+    // Detect Express/Fastify route handlers for list-like endpoints
+    if (ts.isCallExpression(node)) {
+      const exprText = node.expression.getText(source)
+      // app.get('/api/list', ...) or router.get(...)
+      if (/\w+\.(get|post|put|delete|patch|route)\s*$/.test(exprText)) {
+        const args = node.arguments
+        if (args.length >= 2) {
+          // Check if the path suggests a list endpoint
+          const pathArg = args[0]
+          if (ts.isStringLiteral(pathArg)) {
+            const path = pathArg.text
+            const isListEndpoint = /\/list|\/items|\/all|\/query|\[\]/i.test(path) ||
+                                   path.split('/').pop()?.includes('list')
+
+            if (isListEndpoint) {
+              // Check handler for page/pageSize params
+              const handler = args[args.length - 1]
+              let handlerText = ''
+              if (ts.isIdentifier(handler)) {
+                // Can't resolve cross-file, skip
+              }
+              else {
+                handlerText = handler.getText(source)
+              }
+
+              const hasPagination = /\b(page|pageSize|limit|offset|cursor|pagination)\b/i.test(handlerText)
+              if (!hasPagination && handlerText.length > 10) {
+                results.push(makeResult(source, node, 'missing-pagination',
+                  `List endpoint "${path}" has no pagination (page/pageSize/limit/offset).`,
+                  'warning',
+                  'Add pagination parameters (page, pageSize) to the list endpoint handler.',
+                ))
+              }
+            }
+          }
+        }
+      }
+    }
+
+    ts.forEachChild(node, visit)
+  }
+
+  ts.forEachChild(source, visit)
+  return results
+}
+
+/**
+ * Check 11: Error code inconsistency
+ * Detect throw new Error without standard error code prefix.
+ */
+function checkErrorCodeInconsistency(
+  source: ts.SourceFile,
+): ASTCheckResult[] {
+  const results: ASTCheckResult[] = []
+
+  function visit(node: ts.Node) {
+    if (ts.isThrowStatement(node)) {
+      const expr = node.expression
+      // new Error('...')
+      if (ts.isNewExpression(expr) && expr.expression && ts.isIdentifier(expr.expression) &&
+          expr.expression.text === 'Error') {
+        const errorArg = expr.arguments?.[0]
+        if (errorArg && ts.isStringLiteral(errorArg)) {
+          const msg = errorArg.text
+          // Check if message has a standard error code prefix (e.g., E001, ERR_, ErrorCode.)
+          const hasCodePrefix = /^(E\d{3,}|ERR[_-]|ErrorCodes?\.\w|code\s*:)/i.test(msg)
+          if (!hasCodePrefix && msg.length > 0) {
+            results.push(makeResult(source, node, 'error-code-inconsistent',
+              `Error thrown without standard error code prefix: "${msg.slice(0, 50)}${msg.length > 50 ? '...' : ''}".`,
+              'info',
+              'Use a standard error code prefix (e.g., E001, ERR_USER_NOT_FOUND).',
+            ))
+          }
+        }
+      }
+    }
+    ts.forEachChild(node, visit)
+  }
+
+  ts.forEachChild(source, visit)
+  return results
+}
+
+/**
+ * Check 12: Unhandled rejection
+ * Detect Promise creation without .catch() or try-catch.
+ */
+function checkUnhandledRejection(
+  source: ts.SourceFile,
+): ASTCheckResult[] {
+  const results: ASTCheckResult[] = []
+
+  function visit(node: ts.Node) {
+    if (ts.isNewExpression(node) && node.expression && ts.isIdentifier(node.expression) &&
+        node.expression.text === 'Promise') {
+      // Check if the Promise is part of a chain with .catch()
+      const parent = node.parent
+      let hasCatch = false
+      if (parent && ts.isPropertyAccessExpression(parent)) {
+        let current: ts.Node = parent
+        while (ts.isPropertyAccessExpression(current)) {
+          if (current.name.text === 'catch' || current.name.text === 'finally') {
+            hasCatch = true
+            break
+          }
+          current = current.parent ?? current
+        }
+      }
+
+      // Check if inside try-catch
+      if (!hasCatch && !isInTryCatch(node)) {
+        // Check if assigned to a variable that might have error handling
+        const assigned = ts.isVariableDeclaration(node.parent) ||
+                         (node.parent && ts.isPropertyAccessExpression(node.parent) &&
+                          ts.isVariableDeclaration(node.parent.parent))
+        if (!assigned) {
+          results.push(makeResult(source, node, 'unhandled-rejection',
+            'Promise created without .catch() or try-catch. Rejection will be unhandled.',
+            'error',
+            'Add .catch() handler or wrap in try-catch.',
+          ))
+        }
+      }
+    }
+    ts.forEachChild(node, visit)
+  }
+
+  ts.forEachChild(source, visit)
+  return results
+}
+
+/**
+ * Check 13: Missing input validation
+ * Detect API handlers without input validation before processing.
+ */
+function checkMissingInputValidation(
+  source: ts.SourceFile,
+): ASTCheckResult[] {
+  const results: ASTCheckResult[] = []
+
+  function visit(node: ts.Node) {
+    // POST/PUT/PATCH route handlers
+    if (ts.isCallExpression(node)) {
+      const exprText = node.expression.getText(source)
+      if (/\w+\.(post|put|patch)\s*$/.test(exprText)) {
+        const args = node.arguments
+        if (args.length >= 2) {
+          const pathArg = args[0]
+          const handler = args[args.length - 1]
+          const handlerText = handler.getText(source)
+
+          // Check for validation patterns
+          const hasValidation =
+            // Zod
+            /\.parse\(|\.safeParse\(|\.strict\(|z\.\w+Schema/.test(handlerText) ||
+            // Joi
+            /Joi\.|joi\.|\.validate\(/.test(handlerText) ||
+            // Custom validate
+            /validate\w*\(|assert\(|check\w*\(/.test(handlerText) ||
+            // Type guards
+            /is\w+\(|typeof\s+\w+\s*===/.test(handlerText)
+
+          if (!hasValidation && handlerText.length > 20) {
+            const path = ts.isStringLiteral(pathArg) ? pathArg.text : 'unknown'
+            results.push(makeResult(source, node, 'missing-input-validation',
+              `Mutation endpoint "${path}" has no input validation (Zod/Joi/validate).`,
+              'warning',
+              'Add input validation using Zod, Joi, or a validate function before processing.',
+            ))
+          }
+        }
+      }
+    }
+
+    ts.forEachChild(node, visit)
+  }
+
+  ts.forEachChild(source, visit)
+  return results
+}
+
+/**
+ * Check 14: SQL injection risk
+ * Detect string concatenation in SQL queries.
+ */
+function checkSqlInjectionRisk(
+  source: ts.SourceFile,
+): ASTCheckResult[] {
+  const results: ASTCheckResult[] = []
+
+  function visit(node: ts.Node) {
+    // String concatenation in SQL context
+    if (ts.isBinaryExpression(node) && node.operatorToken.kind === ts.SyntaxKind.PlusToken) {
+      const leftText = node.left.getText(source)
+      const rightText = node.right.getText(source)
+      const hasSql = /\b(SELECT|INSERT|UPDATE|DELETE|FROM|WHERE)\b/i.test(leftText) ||
+                     /\b(SELECT|INSERT|UPDATE|DELETE|FROM|WHERE)\b/i.test(rightText)
+      if (hasSql) {
+        const hasVarConcat = !ts.isStringLiteral(node.left) || !ts.isStringLiteral(node.right)
+        if (hasVarConcat) {
+          results.push(makeResult(source, node, 'sql-injection-risk',
+            'SQL query built using string concatenation. Potential SQL injection risk.',
+            'error',
+            'Use parameterized queries or an ORM query builder instead of string concatenation.',
+          ))
+        }
+      }
+    }
+
+    // Template literals with SQL and variable interpolation
+    if (ts.isTemplateExpression(node)) {
+      const head = node.head.getText(source)
+      if (/\b(SELECT|INSERT|UPDATE|DELETE)\b/i.test(head)) {
+        results.push(makeResult(source, node, 'sql-injection-risk',
+          'SQL query built with template literal interpolation. Potential SQL injection risk.',
+          'error',
+          'Use parameterized queries or an ORM query builder instead of template interpolation.',
+        ))
+      }
+    }
+
+    ts.forEachChild(node, visit)
+  }
+
+  ts.forEachChild(source, visit)
+  return results
+}
+
+/**
+ * Check 15: Missing audit log
+ * Detect mutation operations without audit logging.
+ */
+function checkMissingAuditLog(
+  source: ts.SourceFile,
+): ASTCheckResult[] {
+  const results: ASTCheckResult[] = []
+
+  function visit(node: ts.Node) {
+    // Detect mutation functions (create, update, delete)
+    if (
+      (ts.isFunctionDeclaration(node) || ts.isMethodDeclaration(node) || ts.isArrowFunction(node))
+    ) {
+      const name = ts.isFunctionDeclaration(node) || ts.isMethodDeclaration(node)
+        ? node.name?.getText(source) ?? ''
+        : ''
+
+      const isMutation = /\b(create|update|delete|remove|save|modify|insert)\w*\b/i.test(name) ||
+                         /\b(DELETE|PUT|PATCH)\b/.test(name)
+      if (!isMutation) {
+        ts.forEachChild(node, visit)
+        return
+      }
+
+      const bodyText = node.getFullText(source)
+      const hasAuditLog =
+        /audit\.|logAudit|auditLog|\.audit\(|createAudit|writeAudit|trackEvent|analytics\./.test(bodyText) ||
+        /logger\.(info|audit|log)\s*\(/.test(bodyText)
+
+      if (!hasAuditLog && bodyText.length > 30) {
+        results.push(makeResult(source, node, 'missing-audit-log',
+          `Mutation function "${name || 'anonymous'}" has no audit logging.`,
+          'info',
+          'Add audit logging (e.g., audit.log(), createAudit()) to track this mutation.',
+        ))
+      }
+      return
+    }
+
+    ts.forEachChild(node, visit)
+  }
+
+  ts.forEachChild(source, visit)
+  return results
+}
+
+// --- Common Checks ---
+
+/**
+ * Check 16: Unused variable
+ * Detect VariableDeclaration never referenced.
+ */
+function checkUnusedVariable(
+  source: ts.SourceFile,
+): ASTCheckResult[] {
+  const results: ASTCheckResult[] = []
+
+  // Collect all declared identifiers
+  const declared = new Map<string, ts.Identifier>()
+  // Collect all referenced identifiers
+  const referenced = new Set<string>()
+
+  function collectDeclarations(node: ts.Node) {
+    if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name)) {
+      const name = node.name.text
+      if (!declared.has(name)) {
+        declared.set(name, node.name)
+      }
+    }
+    if (ts.isFunctionDeclaration(node) && node.name && ts.isIdentifier(node.name)) {
+      const name = node.name.text
+      if (!declared.has(name)) {
+        declared.set(name, node.name)
+      }
+    }
+    if (ts.isParameter(node) && ts.isIdentifier(node.name)) {
+      const name = node.name.text
+      if (!declared.has(name)) {
+        declared.set(name, node.name)
+      }
+    }
+    ts.forEachChild(node, collectDeclarations)
+  }
+
+  function collectReferences(node: ts.Node) {
+    // Identifiers that are NOT the left side of a declaration
+    if (ts.isIdentifier(node)) {
+      // Check if parent is a variable declaration (this is the declaration, not a reference)
+      const parent = node.parent
+      if (parent && ts.isVariableDeclaration(parent) && parent.name === node) return
+      if (parent && ts.isFunctionDeclaration(parent) && parent.name === node) return
+      if (parent && ts.isParameter(parent) && parent.name === node) return
+      if (parent && ts.isPropertyDeclaration(parent) && parent.name === node) return
+      if (parent && ts.isMethodDeclaration(parent) && parent.name === node) return
+      if (parent && ts.isPropertyAssignment(parent) && parent.name === node) return
+      if (parent && ts.isShorthandPropertyAssignment(parent)) return
+      // Skip imports
+      if (parent && ts.isImportSpecifier(parent)) return
+      if (parent && ts.isImportClause(parent)) return
+      // Skip JSX tags
+      if (parent && ts.isJsxOpeningLikeElement(parent)) return
+      if (parent && ts.isJsxClosingElement(parent)) return
+      referenced.add(node.text)
+    }
+    ts.forEachChild(node, collectReferences)
+  }
+
+  collectDeclarations(source)
+  collectReferences(source)
+
+  // Filter: declared but never referenced
+  // Skip exports, _, and common patterns
+  for (const [name, idNode] of declared) {
+    if (!referenced.has(name)) {
+      // Skip underscore-prefixed (convention for intentionally unused)
+      if (name.startsWith('_')) continue
+      // Skip exported
+      const declNode = idNode.parent
+      if (declNode && ts.isVariableDeclaration(declNode) && declNode.parent &&
+          ts.isVariableDeclarationList(declNode.parent) && declNode.parent.parent) {
+        const varStmt = declNode.parent.parent
+        if (ts.isVariableStatement(varStmt) &&
+            varStmt.modifiers?.some(m => m.kind === ts.SyntaxKind.ExportKeyword)) {
+          continue
+        }
+      }
+      results.push(makeResult(source, idNode, 'unused-variable',
+        `Variable "${name}" is declared but never used.`,
+        'warning',
+        `Remove the variable "${name}" or use it.`,
+      ))
+    }
+  }
+
+  return results
+}
+
+/**
+ * Check 17: Unused import
+ * Detect ImportDeclaration where imported names are never used.
+ */
+function checkUnusedImport(
+  source: ts.SourceFile,
+): ASTCheckResult[] {
+  const results: ASTCheckResult[] = []
+  const referenced = new Set<string>()
+
+  // Collect all references
+  function collect(node: ts.Node) {
+    if (ts.isIdentifier(node)) {
+      const parent = node.parent
+      // Skip if this is part of the import itself
+      if (parent && ts.isImportSpecifier(parent)) return
+      if (parent && ts.isImportClause(parent)) return
+      if (parent && ts.isImportDeclaration(parent)) return
+      if (parent && ts.isNamespaceImport(parent)) return
+      // Skip property names
+      if (parent && ts.isPropertyAssignment(parent) && parent.name === node) return
+      if (parent && ts.isShorthandPropertyAssignment(parent)) return
+      referenced.add(node.text)
+    }
+    ts.forEachChild(node, collect)
+  }
+
+  collect(source)
+
+  // Check each import declaration
+  function visitImports(node: ts.Node) {
+    if (ts.isImportDeclaration(node)) {
+      if (node.importClause) {
+        const clause = node.importClause
+        // Default import: import X from ...
+        if (clause.name && ts.isIdentifier(clause.name)) {
+          if (!referenced.has(clause.name.text) && !clause.name.text.startsWith('_')) {
+            results.push(makeResult(source, node, 'unused-import',
+              `Import "${clause.name.text}" is never used.`,
+              'warning',
+              `Remove the import or use "${clause.name.text}".`,
+            ))
+          }
+        }
+        // Named imports: import { X, Y } from ...
+        if (clause.namedBindings) {
+          if (ts.isNamedImports(clause.namedBindings)) {
+            for (const spec of clause.namedBindings.elements) {
+              const name = (spec.propertyName ?? spec.name).text
+              if (!referenced.has(name) && !name.startsWith('_')) {
+                results.push(makeResult(source, spec, 'unused-import',
+                  `Import "${name}" is never used.`,
+                  'warning',
+                  `Remove "${name}" from the import.`,
+                ))
+              }
+            }
+          }
+          // Namespace import: import * as X from ...
+          if (ts.isNamespaceImport(clause.namedBindings)) {
+            const name = clause.namedBindings.name.text
+            if (!referenced.has(name) && !name.startsWith('_')) {
+              results.push(makeResult(source, node, 'unused-import',
+                `Namespace import "${name}" is never used.`,
+                'warning',
+                `Remove the namespace import or use "${name}".`,
+              ))
+            }
+          }
+        }
+      }
+    }
+    ts.forEachChild(node, visitImports)
+  }
+
+  ts.forEachChild(source, visitImports)
+  return results
+}
+
+/**
+ * Check 18: Magic numbers
+ * Detect NumericLiteral with > 3 digits not in a const declaration.
+ */
+function checkMagicNumbers(
+  source: ts.SourceFile,
+): ASTCheckResult[] {
+  const results: ASTCheckResult[] = []
+
+  function visit(node: ts.Node) {
+    if (ts.isNumericLiteral(node)) {
+      const text = node.getText(source)
+      // Check for numbers with 4+ significant digits (ignoring leading zeros, decimals)
+      const digitsOnly = text.replace(/[^0-9]/g, '')
+      if (digitsOnly.length < 4) {
+        ts.forEachChild(node, visit)
+        return
+      }
+
+      const value = parseFloat(text)
+      // Skip 0, 1, -1, 100, 1000, etc. (common small numbers)
+      if (value <= 100 && value >= 0 && Number.isInteger(value)) {
+        ts.forEachChild(node, visit)
+        return
+      }
+
+      // Check if it's in a const/let/var declaration (naming it)
+      const parent = node.parent
+      let isInDeclaration = false
+      if (parent && ts.isVariableDeclaration(parent)) {
+        isInDeclaration = true
+      }
+      // Also skip if it's in a comment on the same line
+      if (!isInDeclaration) {
+        const { line } = indexToLineColumn(source, node.getStart(source))
+        const sourceLines = source.getFullText(source).split('\n')
+        if (line > 0 && line <= sourceLines.length) {
+          const lineText = sourceLines[line - 1] || ''
+          const beforeNum = lineText.slice(0, node.getStart(source) - source.getFullText(source).indexOf(node.getText(source)))
+          if (/\/\/|\/\*/.test(beforeNum)) {
+            ts.forEachChild(node, visit)
+            return
+          }
+        }
+      }
+
+      if (!isInDeclaration) {
+        results.push(makeResult(source, node, 'magic-number',
+          `Magic number ${text}. Consider defining a named constant.`,
+          'info',
+          `Define a const with a descriptive name (e.g., const TIMEOUT_MS = ${text}).`,
+        ))
+      }
+    }
+    ts.forEachChild(node, visit)
+  }
+
+  ts.forEachChild(source, visit)
+  return results
+}
+
+/**
+ * Check 19: Unreachable code
+ * Detect code after return/throw that's not in else/if.
+ */
+function checkUnreachableCode(
+  source: ts.SourceFile,
+): ASTCheckResult[] {
+  const results: ASTCheckResult[] = []
+
+  function visitBlockStatements(node: ts.Node) {
+    if (ts.isBlock(node)) {
+      const statements = node.statements
+      for (let i = 0; i < statements.length - 1; i++) {
+        const stmt = statements[i]
+        // Check if this statement unconditionally terminates
+        const terminates = ts.isReturnStatement(stmt) || ts.isThrowStatement(stmt) ||
+                          (ts.isExpressionStatement(stmt) &&
+                           ts.isCallExpression(stmt.expression) &&
+                           ts.isIdentifier(stmt.expression.expression) &&
+                           stmt.expression.expression.text === 'process' &&
+                           ts.isPropertyAccessExpression(stmt.expression) &&
+                           stmt.expression.name.text === 'exit')
+
+        if (terminates) {
+          const nextStmt = statements[i + 1]
+          // Skip if next is a label or empty statement
+          if (ts.isLabeledStatement(nextStmt) || ts.isEmptyStatement(nextStmt)) continue
+          // Skip if next is a function/class declaration (hoisted)
+          if (ts.isFunctionDeclaration(nextStmt) || ts.isClassDeclaration(nextStmt) ||
+              ts.isInterfaceDeclaration(nextStmt) || ts.isTypeAliasDeclaration(nextStmt)) continue
+          // Skip if next statement is an if/else after return (dead code in else branch is ok)
+          results.push(makeResult(source, nextStmt, 'unreachable-code',
+            'Code after return/throw statement is unreachable.',
+            'warning',
+            'Remove or restructure the code. This statement will never execute.',
+          ))
+        }
+      }
+    }
+    ts.forEachChild(node, visitBlockStatements)
+  }
+
+  ts.forEachChild(source, visitBlockStatements)
+  return results
+}
+
+/**
+ * Check 20: Implicit any
+ * Detect parameters or return types that resolve to 'any' (explicit :any).
+ * Note: Without the type checker, we can only detect explicit :any annotations.
+ */
+function checkImplicitAny(
+  source: ts.SourceFile,
+): ASTCheckResult[] {
+  const results: ASTCheckResult[] = []
+
+  function visit(node: ts.Node) {
+    // Explicit : any
+    if (node.kind === ts.SyntaxKind.AnyKeyword) {
+      // Check parent to determine context
+      const parent = node.parent
+      if (parent && ts.isParameter(parent) && ts.isIdentifier(parent.name)) {
+        results.push(makeResult(source, node, 'implicit-any',
+          `Parameter "${(parent.name as ts.Identifier).text}" has explicit 'any' type.`,
+          'warning',
+          `Replace 'any' with a specific type for "${(parent.name as ts.Identifier).text}".`,
+        ))
+      }
+      else if (parent && ts.isVariableDeclaration(parent)) {
+        results.push(makeResult(source, node, 'implicit-any',
+          'Variable declared with explicit "any" type.',
+          'warning',
+          'Replace "any" with a more specific type or use "unknown".',
+        ))
+      }
+      else if (parent && ts.isTypeReferenceNode(parent)) {
+        // Already handled by the any keyword
+      }
+      else {
+        results.push(makeResult(source, node, 'implicit-any',
+          'Explicit "any" type used.',
+          'warning',
+          'Replace "any" with a more specific type.',
+        ))
+      }
+    }
+    ts.forEachChild(node, visit)
+  }
+
+  ts.forEachChild(source, visit)
+  return results
+}
+
+// -- Check Registry
+
+type ASTCheckFn = (source: ts.SourceFile) => ASTCheckResult[]
+
+interface ASTCheckDef {
+  name: string
+  fn: ASTCheckFn
+  globs: string[]
+  severity: 'error' | 'warning' | 'info'
+  message: string
+}
+
+const AST_CHECKS: ASTCheckDef[] = [
+  {
+    name: 'hardcoded-color',
+    fn: checkHardcodedColor,
+    globs: ['**/*.{tsx,jsx,css}'],
+    severity: 'warning',
+    message: 'Hardcoded hex color found. Consider using a design token or CSS variable.',
+  },
+  {
+    name: 'missing-design-token',
+    fn: checkMissingDesignToken,
+    globs: ['**/*.{tsx,jsx,css}'],
+    severity: 'warning',
+    message: 'Known color value used directly instead of design token reference.',
+  },
+  {
+    name: 'form-without-validation',
+    fn: checkFormWithoutValidation,
+    globs: ['**/*.{tsx,jsx}'],
+    severity: 'error',
+    message: 'Form component without validation rules.',
+  },
+  {
+    name: 'async-without-try-catch',
+    fn: checkAsyncWithoutTryCatch,
+    globs: ['src/**/*.{ts,tsx}'],
+    severity: 'error',
+    message: 'Async function without try-catch block for error handling.',
+  },
+  {
+    name: 'missing-loading-state',
+    fn: checkMissingLoadingState,
+    globs: ['**/*.{tsx,jsx}'],
+    severity: 'warning',
+    message: 'Button with async onClick but no loading/disabled state.',
+  },
+  {
+    name: 'empty-state-missing',
+    fn: checkEmptyStateMissing,
+    globs: ['**/*.{tsx,jsx}'],
+    severity: 'info',
+    message: 'List/Table without Empty component or emptyText prop.',
+  },
+  {
+    name: 'success-feedback-missing',
+    fn: checkSuccessFeedbackMissing,
+    globs: ['src/**/*.{ts,tsx}'],
+    severity: 'warning',
+    message: 'Async mutation without user feedback (message.success/error).',
+  },
+  {
+    name: 'duplicate-component',
+    fn: checkDuplicateComponent,
+    globs: ['**/*.{tsx,jsx}'],
+    severity: 'info',
+    message: 'Similar JSX structures detected. Consider extracting a reusable component.',
+  },
+  {
+    name: 'missing-tenant-filter',
+    fn: checkMissingTenantFilter,
+    globs: ['src/**/*.{ts,tsx}'],
+    severity: 'error',
+    message: 'Database query without tenant_id filter.',
+  },
+  {
+    name: 'missing-pagination',
+    fn: checkMissingPagination,
+    globs: ['src/**/*.{ts,tsx}'],
+    severity: 'warning',
+    message: 'List endpoint without pagination parameters.',
+  },
+  {
+    name: 'error-code-inconsistent',
+    fn: checkErrorCodeInconsistency,
+    globs: ['src/**/*.{ts,tsx}'],
+    severity: 'info',
+    message: 'Error thrown without standard error code prefix.',
+  },
+  {
+    name: 'unhandled-rejection',
+    fn: checkUnhandledRejection,
+    globs: ['src/**/*.{ts,tsx}'],
+    severity: 'error',
+    message: 'Promise created without .catch() or try-catch.',
+  },
+  {
+    name: 'missing-input-validation',
+    fn: checkMissingInputValidation,
+    globs: ['src/**/*.{ts,tsx}'],
+    severity: 'warning',
+    message: 'Mutation endpoint without input validation.',
+  },
+  {
+    name: 'sql-injection-risk',
+    fn: checkSqlInjectionRisk,
+    globs: ['src/**/*.{ts,tsx}'],
+    severity: 'error',
+    message: 'SQL query built with string concatenation or template interpolation.',
+  },
+  {
+    name: 'missing-audit-log',
+    fn: checkMissingAuditLog,
+    globs: ['src/**/*.{ts,tsx}'],
+    severity: 'info',
+    message: 'Mutation operation without audit logging.',
+  },
+  {
+    name: 'unused-variable',
+    fn: checkUnusedVariable,
+    globs: ['**/*.{ts,tsx}'],
+    severity: 'warning',
+    message: 'Variable declared but never referenced.',
+  },
+  {
+    name: 'unused-import',
+    fn: checkUnusedImport,
+    globs: ['**/*.{ts,tsx}'],
+    severity: 'warning',
+    message: 'Import declared but never used.',
+  },
+  {
+    name: 'magic-number',
+    fn: checkMagicNumbers,
+    globs: ['**/*.{ts,tsx}'],
+    severity: 'info',
+    message: 'Magic number detected. Consider defining a named constant.',
+  },
+  {
+    name: 'unreachable-code',
+    fn: checkUnreachableCode,
+    globs: ['**/*.{ts,tsx}'],
+    severity: 'warning',
+    message: 'Code after return/throw is unreachable.',
+  },
+  {
+    name: 'implicit-any',
+    fn: checkImplicitAny,
+    globs: ['**/*.{ts,tsx}'],
+    severity: 'warning',
+    message: 'Explicit "any" type used. Consider a more specific type.',
+  },
+]
+
+// -- Glob matching (reuse pattern from regexScanner)
+
+function matchGlob(pattern: string, filePath: string): boolean {
+  const p = pattern.replace(/\\/g, '/')
+  const f = filePath.replace(/\\/g, '/')
+
+  let braceCount = 0
+  const braces: string[] = []
+  let temp = p.replace(/\{([^}]+)\}/g, (_match, inner) => {
+    const replacement = `__BRACE_${braceCount}__`
+    braces.push(`(${inner.replace(/,/g, '|')})`)
+    braceCount++
+    return replacement
+  })
+
+  temp = temp.replace(/[.+?^$()[\]\\]/g, '\\$&')
+  temp = temp
+    .replace(/\*\*\//g, '(.+/)?')
+    .replace(/\*/g, '[^/]*')
+
+  for (let i = 0; i < braces.length; i++) {
+    temp = temp.replace(`__BRACE_${i}__`, braces[i])
+  }
+
+  return new RegExp(`^${temp}$`).test(f)
+}
+
+async function walkDir(dir: string): Promise<string[]> {
+  const results: string[] = []
+  let entries: fs.Dirent[]
+  try {
+    entries = await fs.readdir(dir, { withFileTypes: true })
+  }
+  catch {
+    return []
+  }
+
+  for (const entry of entries) {
+    const fullPath = join(dir, entry.name)
+    if (entry.isDirectory()) {
+      if (shouldExcludeFile(fullPath + '/')) continue
+      results.push(...await walkDir(fullPath))
+    }
+    else if (entry.isFile()) {
+      results.push(fullPath)
+    }
+  }
+
+  return results
+}
+
+async function resolveGlobPattern(pattern: string): Promise<string[]> {
+  if (pattern.startsWith('/')) {
+    try {
+      const stat = await fs.stat(pattern)
+      if (stat.isFile()) return [pattern]
+      if (stat.isDirectory()) {
+        const files = await walkDir(pattern)
+        return files.filter(f => !shouldExcludeFile(f))
+      }
+    }
+    catch {
+      return []
+    }
+  }
+
+  const root = process.cwd()
+  const prefixMatch = pattern.match(/^([^{*]+)/)
+  const prefix = prefixMatch ? prefixMatch[1] : '.'
+  const searchDir = join(root, prefix)
+
+  const allFiles = await walkDir(searchDir)
+  const relFiles = allFiles.map(f => relative(root, f).replace(/\\/g, '/'))
+  return relFiles.filter(f => matchGlob(pattern, f)).map(f => join(root, f))
+}
+
+function resolvePaths(paths: string[]): string[] {
+  if (paths.length > 0) return paths
+  return ['src/**/*.{ts,tsx}']
+}
+
+function resolveChecks(checks: string[]): ASTCheckDef[] {
+  if (checks.length === 0) return AST_CHECKS
+  const names = new Set(checks)
+  return AST_CHECKS.filter(c => names.has(c.name))
+}
+
+// -- Core Scan Logic
+
+function getApplicableChecks(
+  filePath: string,
+  checks: ASTCheckDef[],
+): ASTCheckDef[] {
+  const relPath = relative(process.cwd(), filePath).replace(/\\/g, '/')
+  return checks.filter(check =>
+    check.globs.some(g => matchGlob(g, relPath)),
+  )
+}
+
+async function scanFile(
+  filePath: string,
+  checks: ASTCheckDef[],
+): Promise<ASTCheckResult[]> {
+  const content = await readFile(filePath)
+  if (content === null) return []
+
+  const results: ASTCheckResult[] = []
+  const applicableChecks = getApplicableChecks(filePath, checks)
+  if (applicableChecks.length === 0) return []
+
+  let source: ts.SourceFile
+  try {
+    source = parseSourceFile(filePath, content)
+  }
+  catch {
+    return []
+  }
+
+  for (const check of applicableChecks) {
+    if (shouldExcludeFile(filePath)) continue
+    try {
+      const findings = check.fn(source)
+      results.push(...findings)
+    }
+    catch {
+      // Skip files that fail a specific check
+    }
+  }
+
+  return results
+}
+
+/**
+ * Run AST-based code quality checks over the specified file paths.
+ *
+ * @param filePaths - Array of file paths or glob patterns to scan.
+ * @param checks - Array of check names to run. Empty array runs all 20 checks.
+ * @returns Array of AST check results sorted by file, line, column.
+ */
+export async function runASTCheck(
+  filePaths: string[],
+  checks: string[] = [],
+): Promise<ASTCheckResult[]> {
+  const checkDefs = resolveChecks(checks)
+  const paths = filePaths.length > 0 ? filePaths : ['src/**/*.{ts,tsx}']
+
+  // Collect all matching files
+  const fileSet = new Set<string>()
+  for (const pattern of paths) {
+    const files = await resolveGlobPattern(pattern)
+    for (const f of files) {
+      if (!shouldExcludeFile(f)) {
+        fileSet.add(f)
+      }
+    }
+  }
+
+  const allResults: ASTCheckResult[] = []
+  for (const file of fileSet) {
+    const results = await scanFile(file, checkDefs)
+    allResults.push(...results)
+  }
+
+  // Sort by file, then line, then column
+  allResults.sort((a, b) => {
+    if (a.file !== b.file) return a.file.localeCompare(b.file)
+    if (a.line !== b.line) return a.line - b.line
+    return a.column - b.column
+  })
+
+  return allResults
+}
+
+/**
+ * Return all available AST check definitions.
+ */
+export function getAvailableASTChecks(): Array<{
+  name: string
+  severity: 'error' | 'warning' | 'info'
+  message: string
+  globs: string[]
+}> {
+  return AST_CHECKS.map(c => ({
+    name: c.name,
+    severity: c.severity,
+    message: c.message,
+    globs: c.globs,
+  }))
+}

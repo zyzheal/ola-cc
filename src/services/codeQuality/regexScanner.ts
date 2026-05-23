@@ -146,6 +146,119 @@ const CHECKS: CheckDefinition[] = [
       return true
     },
   },
+  {
+    name: 'unused-import',
+    pattern: /^import .+ from ['"].+['"];$/gm,
+    globs: ['**/*.{ts,tsx}'],
+    severity: 'info',
+    message: 'Unused import detected.',
+    fix: 'Remove the import if it is not used, or use the imported value.',
+    filter: (content, index) => {
+      const lineStart = content.lastIndexOf('\n', index)
+      const lineEnd = content.indexOf('\n', index)
+      const line = content.slice(lineStart < 0 ? 0 : lineStart + 1, lineEnd < 0 ? undefined : lineEnd)
+      return line.trimStart().startsWith('import ')
+    },
+  },
+  {
+    name: 'any-type',
+    pattern: /: any\b/,
+    globs: ['**/*.{ts,tsx}'],
+    severity: 'warning',
+    message: "Use of 'any' type. Consider a more specific type.",
+    fix: 'Replace "any" with a more specific type or use "unknown".',
+    filter: (content, index) => {
+      const lineStart = content.lastIndexOf('\n', index)
+      const line = content.slice(lineStart < 0 ? 0 : lineStart + 1, content.indexOf('\n', index) < 0 ? undefined : content.indexOf('\n', index))
+      const beforeColon = line.slice(0, line.indexOf(': any'))
+      const commentIdx = beforeColon.indexOf('//')
+      if (commentIdx >= 0) return false
+      return true
+    },
+  },
+  {
+    name: 'console-error',
+    pattern: /console\.error\s*\(/,
+    globs: ['src/**/*.{ts,tsx}'],
+    severity: 'warning',
+    message: 'console.error in source code. Use a proper logging utility.',
+    fix: 'Replace console.error with a proper logging utility.',
+    filter: (content, index) => {
+      const lineStart = content.lastIndexOf('\n', index)
+      const line = content.slice(lineStart < 0 ? 0 : lineStart + 1, content.indexOf('\n', index) < 0 ? undefined : content.indexOf('\n', index))
+      const beforeError = line.slice(0, line.indexOf('console.error'))
+      const commentIdx = beforeError.indexOf('//')
+      if (commentIdx >= 0) return false
+      return true
+    },
+  },
+  {
+    name: 'missing-await',
+    pattern: /async function/,
+    globs: ['src/**/*.{ts,tsx}'],
+    severity: 'warning',
+    message: 'Async function without await. Verify this is intentional.',
+    fix: 'Add await if the function should wait for a Promise, or remove async if not needed.',
+    filter: (content, index) => {
+      const afterAsync = content.slice(index + 'async function'.length)
+      // Check for await within the function body (search up to next function def or EOF)
+      const nextFuncMatch = afterAsync.match(/(?:async\s+)?function\b/)
+      const searchEnd = nextFuncMatch ? nextFuncMatch.index! : afterAsync.length
+      const funcBody = afterAsync.slice(0, searchEnd)
+      // Flag only functions WITHOUT await (return true to keep the match)
+      if (funcBody.includes('await')) return false
+      return true
+    },
+  },
+  {
+    name: 'todo-comment',
+    pattern: /\/\/\s*TODO|\/\*\s*TODO/,
+    globs: ['**/*.{ts,tsx}'],
+    severity: 'info',
+    message: 'TODO comment found. Consider tracking in issue tracker.',
+    fix: 'Create an issue or task to track this TODO item.',
+  },
+  {
+    name: 'debug-breakpoint',
+    pattern: /debugger\s*;/,
+    globs: ['src/**/*.{ts,tsx}'],
+    severity: 'error',
+    message: 'Debugger statement found. Remove before production.',
+    fix: 'Remove the debugger statement before committing.',
+  },
+  {
+    name: 'eval-call',
+    pattern: /\beval\s*\(/,
+    globs: ['src/**/*.{ts,tsx}'],
+    severity: 'error',
+    message: 'eval() call found. This is a security risk.',
+    fix: 'Remove eval() and use safe alternatives like JSON.parse() or a proper parser.',
+    filter: (content, index) => {
+      const lineStart = content.lastIndexOf('\n', index) + 1
+      const lineEnd = content.indexOf('\n', index)
+      const line = content.slice(lineStart, lineEnd < 0 ? undefined : lineEnd)
+      const trimmed = line.trimStart()
+      if (trimmed.startsWith('//')) return false
+      return true
+    },
+  },
+  {
+    name: 'inner-html',
+    pattern: /\.innerHTML\s*=/,
+    globs: ['**/*.{tsx,jsx,html}'],
+    severity: 'warning',
+    message: 'Direct innerHTML assignment. Check for XSS vulnerability.',
+    fix: 'Use textContent for text, or sanitize HTML before assignment.',
+    filter: (content, index) => {
+      const lineStartIdx = content.lastIndexOf('\n', index) + 1
+      const lineEndIdx = content.indexOf('\n', index)
+      const line = content.slice(lineStartIdx, lineEndIdx < 0 ? undefined : lineEndIdx)
+      const matchOffset = index - lineStartIdx
+      const beforeMatch = line.slice(0, matchOffset)
+      if (beforeMatch.includes('//')) return false
+      return true
+    },
+  },
 ]
 
 // -- Exclusion Rules
