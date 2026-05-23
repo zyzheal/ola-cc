@@ -86,6 +86,7 @@ import {
 import type { ContentReplacementState } from '../../utils/toolResultStorage.js'
 import { createAgentId } from '../../utils/uuid.js'
 import { resolveAgentTools } from './agentToolUtils.js'
+import { type AgentClassification, getClassification } from './agentClassifications.js'
 import { type AgentDefinition, isBuiltInAgent } from './loadAgentsDir.js'
 
 /**
@@ -422,13 +423,16 @@ export async function* runAgent({
   // gitStatus (up to 40KB, explicitly labeled stale) is dead weight. If they
   // need git info they run `git status` themselves and get fresh data.
   // Saves ~1-3 Gtok/week fleet-wide.
+  // Also omit for agents classified as research/planning/review.
   const { gitStatus: _omittedGitStatus, ...systemContextNoGit } =
     baseSystemContext
-  const resolvedSystemContext =
+  const shouldOmitGitStatus =
     agentDefinition.agentType === 'Explore' ||
-    agentDefinition.agentType === 'Plan'
-      ? systemContextNoGit
-      : baseSystemContext
+    agentDefinition.agentType === 'Plan' ||
+    (classificationRef && classificationRef.omitSystemSections?.includes('git-status'))
+  const resolvedSystemContext = shouldOmitGitStatus
+    ? systemContextNoGit
+    : baseSystemContext
 
   // Override permission mode if agent defines one
   // However, don't override if parent is in bypassPermissions or acceptEdits mode - those should always take precedence
@@ -518,9 +522,32 @@ export async function* runAgent({
     }
   }
 
-  const resolvedTools = useExactTools
+  let resolvedTools = useExactTools
     ? availableTools
     : resolveAgentTools(agentDefinition, availableTools, isAsync).resolvedTools
+
+  // Apply classification-based tool filtering (context pruning)
+  const classification = getClassification(agentDefinition.agentType)
+  let classificationRef: AgentClassification | undefined
+  if (classification && !useExactTools) {
+    classificationRef = classification
+    const allowSet = new Set(classification.allowedTools)
+    const denySet = new Set(classification.deniedTools ?? [])
+    const filteredTools = resolvedTools.filter(t => {
+      const name = t.name.toLowerCase()
+      // Deny set takes precedence
+      if (denySet.has(name)) return false
+      // If allowedTools is non-empty, only allow tools in the set
+      if (allowSet.size > 0 && !allowSet.has(name)) return false
+      return true
+    })
+    if (filteredTools.length !== resolvedTools.length) {
+      logForDebugging(
+        `[Agent: ${agentDefinition.agentType}] Tool pruning via classification: ${resolvedTools.length} → ${filteredTools.length} tools`,
+      )
+    }
+    resolvedTools = filteredTools
+  }
 
   const additionalWorkingDirectories = Array.from(
     appState.toolPermissionContext.additionalWorkingDirectories.keys(),
