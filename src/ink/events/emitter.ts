@@ -1,6 +1,6 @@
 import { EventEmitter as NodeEventEmitter } from 'events'
 import { Event } from './event.js'
-import { routeEventToNats } from '../../utils/sdkEventQueue.js'
+import { routeEventToNats, type SdkEvent } from '../../utils/sdkEventQueue.js'
 
 // Events to forward to NATS
 const EVENTS_TO_ROUTE = [
@@ -12,6 +12,12 @@ const EVENTS_TO_ROUTE = [
   'goal-completed',
   'tool-executed',
 ]
+
+/** Common shape for Ink events that are routed to NATS */
+interface InkRoutableEvent {
+  taskId?: string
+  description?: string
+}
 
 // Similar to node's builtin EventEmitter, but is also aware of our `Event`
 // class, and so `emit` respects `stopImmediatePropagation()`.
@@ -40,12 +46,14 @@ export class EventEmitter extends NodeEventEmitter {
 
     // Forward to NATS if applicable (fire-and-forget)
     if (typeof type === 'string' && EVENTS_TO_ROUTE.includes(type)) {
-      routeEventToNats({
-        type: 'system',
-        subtype: type,
-        task_id: (args[0] as any)?.taskId ?? '',
-        description: (args[0] as any)?.description ?? '',
-      } as any).catch(() => {})
+      const inkEvent = args[0] as InkRoutableEvent | null
+      const natsEvent = {
+        type: 'system' as const,
+        subtype: type.replace(/-/g, '_') as SdkEvent['subtype'],
+        task_id: inkEvent?.taskId ?? '',
+        description: inkEvent?.description ?? '',
+      } satisfies { type: 'system'; subtype: string; task_id: string; description: string }
+      routeEventToNats(natsEvent as SdkEvent).catch((err) => { console.error('[ink:emitter] NATS event routing failed:', err); })
     }
 
     for (const listener of listeners) {

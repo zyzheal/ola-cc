@@ -614,6 +614,7 @@ export class StructuredIO {
           if (winner.decision) {
             // Hook decided — abort the pending SDK request.
             // Suppress the expected AbortError rejection from sdkPromise.
+            // Intentionally silent: expected AbortError from aborted SDK request
             sdkPromise.catch(() => {})
             hookAbortController.abort()
             return winner.decision

@@ -69,6 +69,7 @@ export function preconnectAnthropicApi(): void {
   // so a slow network doesn't hang the process; abort is fine since the real
   // request will handshake fresh if needed.
   // eslint-disable-next-line eslint-plugin-n/no-unsupported-features/node-builtins
+  // Intentionally silent: preconnect is best-effort for connection pooling
   void fetch(baseUrl, {
     method: 'HEAD',
     signal: AbortSignal.timeout(10_000),

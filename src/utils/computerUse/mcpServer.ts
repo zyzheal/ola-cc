@@ -34,6 +34,7 @@ async function tryGetInstalledAppNames(): Promise<string[] | undefined> {
     .finally(() => clearTimeout(timer))
   if (!installed) {
     // The enumeration continues in the background — swallow late rejections.
+    // Intentionally silent: enumeration continues in background after timeout
     void enumP.catch(() => {})
     logForDebugging(
       `[Computer Use MCP] app enumeration exceeded ${APP_ENUM_TIMEOUT_MS}ms or failed; tool description omits list`,

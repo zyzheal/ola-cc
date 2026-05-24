@@ -144,6 +144,7 @@ async function appendAsync(
   content: string,
 ): Promise<void> {
   if (needMkdir) {
+    // Intentionally silent: mkdir failure during debug log append is non-critical
     await mkdir(dir, { recursive: true }).catch(() => {})
   }
   await appendFile(path, content)
@@ -245,6 +246,7 @@ const updateLatestDebugLogSymlink = memoize(async (): Promise<void> => {
     const debugLogsDir = dirname(debugLogPath)
     const latestSymlinkPath = join(debugLogsDir, 'latest')
 
+    // Intentionally silent: symlink unlink failure during debug log update is non-critical
     await unlink(latestSymlinkPath).catch(() => {})
     await symlink(debugLogPath, latestSymlinkPath)
   } catch {

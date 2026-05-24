@@ -19,7 +19,7 @@ export function setReplBridgeHandle(h: ReplBridgeHandle | null): void {
   handle = h
   // Publish (or clear) our bridge session ID in the session record so other
   // local peers can dedup us out of their bridge list — local is preferred.
-  void updateSessionBridgeId(getSelfBridgeCompatId() ?? null).catch(() => {})
+  void updateSessionBridgeId(getSelfBridgeCompatId() ?? null).catch((err) => { console.error('[bridge:replBridgeHandle] update session bridge ID failed:', err); })
 }
 
 export function getReplBridgeHandle(): ReplBridgeHandle | null {

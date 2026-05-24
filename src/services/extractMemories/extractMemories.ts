@@ -579,6 +579,7 @@ export function initExtractMemories(): void {
   drainer = async (timeoutMs = 60_000) => {
     if (inFlightExtractions.size === 0) return
     await Promise.race([
+      // Intentionally silent: drainer ignores individual extraction failures
       Promise.all(inFlightExtractions).catch(() => {}),
       // eslint-disable-next-line no-restricted-syntax -- sleep() has no .unref(); timer must not block exit
       new Promise<void>(r => setTimeout(r, timeoutMs).unref()),

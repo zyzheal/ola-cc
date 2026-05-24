@@ -807,6 +807,7 @@ export function useManageMCPConnections(
           }
           if (s.type === 'connected') {
             s.client.onclose = undefined
+            // Intentionally silent: best-effort server cache clear during unmount
             void clearServerCache(s.name, s.config).catch(() => {})
           }
         }

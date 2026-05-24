@@ -68,6 +68,7 @@ function appendToFile(filePath: string, entries: string[]): void {
   if (entries.length === 0) return
   fs.mkdir(dirname(filePath), { recursive: true })
     .then(() => fs.appendFile(filePath, entries.join('\n') + '\n'))
+    // Intentionally silent: fire-and-forget debug dump
     .catch(() => {})
 }
 

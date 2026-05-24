@@ -82,7 +82,7 @@ export function PowerShellPermissionRequest(props: PermissionRequestProps): Reac
       if (prefixes.length > 0) {
         setEditablePrefix(`${prefixes[0]}:*`);
       }
-    }).catch(() => {});
+    }).catch(() => {}); // Intentionally silent: keep original description on error
     return () => {
       cancelled = true;
     };

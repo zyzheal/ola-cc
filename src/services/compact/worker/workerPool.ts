@@ -17,6 +17,7 @@ import {
   type CompactParams,
 } from './types.js'
 import type { CompactionResult } from '../compact.js'
+import type { Message } from '../../../types/message.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 
@@ -79,7 +80,7 @@ class CompactWorkerPool {
    * 执行压缩任务
    */
   async execute(
-    messages: unknown[],
+    messages: Message[],
     contextSnapshot: CompactContextSnapshot,
     params: CompactParams,
     onProgress?: (event: CompactProgressEvent) => void,
@@ -136,7 +137,7 @@ class CompactWorkerPool {
       const request: CompactWorkerRequest = {
         requestId,
         type: params.pivotIndex !== undefined ? 'partialCompact' : 'compact',
-        messages: messages as any,
+        messages,
         contextSnapshot,
         params,
       }
@@ -370,7 +371,7 @@ export function disposeWorkerPool(): void {
  * 使用 Worker 池执行压缩
  */
 export async function compactWithWorkerPool(
-  messages: unknown[],
+  messages: Message[],
   contextSnapshot: CompactContextSnapshot,
   params: CompactParams,
   onProgress?: (event: CompactProgressEvent) => void,

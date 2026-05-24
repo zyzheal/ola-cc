@@ -354,6 +354,7 @@ export async function extractZipToDirectory(
     if (mode && mode & 0o111) {
       // Swallow EPERM/ENOTSUP (NFS root_squash, some FUSE mounts) — losing +x
       // is the pre-PR behavior and better than aborting mid-extraction.
+      // Intentionally silent: chmod failure during extraction is non-critical
       await chmod(fullPath, mode & 0o777).catch(() => {})
     }
   }

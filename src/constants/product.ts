@@ -26,7 +26,7 @@ function getSettingsEnv(): Record<string, string> {
 
 function lazyEnv(name: string, defaultValue?: string): string {
   let value: string | undefined
-  return new Proxy({} as string, {
+  return new Proxy(Object.create(null), {
     get(_, prop) {
       if (value === undefined) {
         value = process.env[name] || getSettingsEnv()[name]
@@ -38,8 +38,12 @@ function lazyEnv(name: string, defaultValue?: string): string {
           )
         }
       }
+      // Dynamic property access on the lazily-resolved string value.
+      // The Proxy presents a string-like interface; actual property
+      // access (methods like charAt, toString, length, etc.) is
+      // resolved at runtime against the cached string.
       const v = value
-      const result = (v as any)[prop]
+      const result = Reflect.get(v as unknown as object, prop, v)
       return typeof result === 'function' ? result.bind(v) : result
     },
     getOwnPropertyDescriptor() {

@@ -132,6 +132,7 @@ export async function fetchOfficialMarketplaceFromGcs(
         // Only chmod when an exec bit is set — skip plain files to save syscalls.
         // Swallow EPERM/ENOTSUP (NFS root_squash, some FUSE mounts) — losing +x
         // is the pre-PR behavior and better than aborting mid-extraction.
+        // Intentionally silent: chmod failure during extraction is non-critical
         await chmod(dest, mode & 0o777).catch(() => {})
       }
     }

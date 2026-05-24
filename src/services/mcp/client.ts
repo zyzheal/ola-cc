@@ -1054,8 +1054,10 @@ export const connectToServer = memoize(
             `Connection timeout triggered after ${elapsed}ms (limit: ${getConnectionTimeoutMs()}ms)`,
           )
           if (inProcessServer) {
+            // Intentionally silent: best-effort close during timeout, failure is expected
             inProcessServer.close().catch(() => {})
           }
+          // Intentionally silent: best-effort close during timeout, failure is expected
           transport.close().catch(() => {})
           reject(
             new TelemetrySafeError_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS(
@@ -1145,8 +1147,10 @@ export const connectToServer = memoize(
           })
         }
         if (inProcessServer) {
+          // Intentionally silent: best-effort close during error recovery
           inProcessServer.close().catch(() => {})
         }
+        // Intentionally silent: best-effort close during error recovery
         transport.close().catch(() => {})
         if (stderrOutput) {
           logMCPError(name, `Server stderr: ${stderrOutput}`)
@@ -1627,6 +1631,7 @@ export const connectToServer = memoize(
       logMCPError(name, `Connection failed: ${errorMessage(error)}`)
 
       if (inProcessServer) {
+        // Intentionally silent: best-effort close on connection failure
         inProcessServer.close().catch(() => {})
       }
       return {

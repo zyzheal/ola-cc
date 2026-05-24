@@ -162,6 +162,7 @@ export async function tryAcquireSchedulerLock(
       `[ScheduledTasks] recovering stale scheduler lock from PID ${existing.pid}`,
     )
   }
+  // Intentionally silent: stale lock cleanup failure is non-critical
   await unlink(getLockPath(dir)).catch(() => {})
   if (await tryCreateExclusive(lock, dir)) {
     lastBlockedBy = undefined

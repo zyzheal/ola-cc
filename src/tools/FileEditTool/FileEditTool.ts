@@ -416,6 +416,7 @@ export const FileEditTool = buildTool({
           dynamicSkillDirTriggers?.add(dir)
         }
         // Don't await - let skill loading happen in the background
+        // Intentionally silent: background skill loading errors are non-critical
         addSkillDirectories(newSkillDirs).catch(() => {})
       }
 

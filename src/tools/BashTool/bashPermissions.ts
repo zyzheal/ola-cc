@@ -1521,6 +1521,7 @@ export function startSpeculativeClassifierCheck(
   )
   // Prevent unhandled rejection if the signal aborts before this promise is consumed.
   // The original promise (which may reject) is still stored in the Map for consumers to await.
+  // Intentionally silent: speculative check rejection is handled via the Map, not this catch
   promise.catch(() => {})
   speculativeChecks.set(command, promise)
   return true

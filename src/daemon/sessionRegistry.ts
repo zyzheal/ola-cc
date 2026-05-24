@@ -44,6 +44,7 @@ export async function updateSession(id: string, updates: Partial<SessionEntry>):
     await fs.rename(tmpPath, filePath)
   } catch {
     // Clean up temp file on failure
+    // Intentionally silent: best-effort cleanup of temp file on write failure
     await fs.unlink(tmpPath).catch(() => {})
   }
 }
@@ -81,6 +82,7 @@ export async function listSessions(): Promise<SessionEntry[]> {
 
 export async function removeSession(id: string): Promise<void> {
   const filePath = path.join(getSessionDir(), `${id}.json`)
+  // Intentionally silent: best-effort session file removal
   await fs.unlink(filePath).catch(() => {})
 }
 
