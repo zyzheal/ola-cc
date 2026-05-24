@@ -919,6 +919,16 @@ export class QueryEngine {
             break
           }
           this.mutableMessages.push(message)
+          // Goal retry messages are signals that must be visible in the local
+          // `messages` array so the post-loop messages.some() check can find them.
+          if (
+            message.subtype === 'goal_retry_trigger' ||
+            message.subtype === 'goal_retry_aborted' ||
+            message.subtype === 'goal_retry_progress' ||
+            message.subtype === 'goal_retry_status'
+          ) {
+            messages.push(message)
+          }
           // Yield compact boundary messages to SDK
           if (
             message.subtype === 'compact_boundary' &&

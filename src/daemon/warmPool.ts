@@ -6,6 +6,8 @@ import type { WarmWorkerAssign, WarmWorkerAck } from './protocol.js'
 import { logForDebugging } from '../utils/debug'
 
 const DEFAULT_WARM_POOL_SIZE = feature('DEV_FULL') ? 2 : 0
+const WARM_WORKER_STARTUP_TIMEOUT_MS = 10_000
+const WARM_WORKER_SHUTDOWN_WAIT_MS = 2_000
 
 interface WarmWorker {
   pid: number
@@ -189,9 +191,11 @@ class WarmPool {
         logForDebugging(`[warm-pool] worker slow to start, killing (PID: ${worker.pid})`)
         this.replenishing.delete(worker.pid)
         this.idleWorkers = this.idleWorkers.filter(w => w.pid !== worker.pid)
-        try { child.kill('SIGKILL') } catch {}
+        try { child.kill('SIGKILL') } catch (err) {
+          logForDebugging(`[warm-pool] failed to kill slow worker (PID: ${worker.pid}): ${err}`)
+        }
       }
-    }, 10000)
+    }, WARM_WORKER_STARTUP_TIMEOUT_MS)
   }
 
   /**
@@ -203,13 +207,15 @@ class WarmPool {
     for (const worker of workers) {
       try {
         worker.process.kill('SIGTERM')
-      } catch {}
+      } catch (err) {
+        logForDebugging(`[warm-pool] failed to kill worker during shutdown (PID: ${worker.pid}): ${err}`)
+      }
     }
     // Wait briefly for graceful exit
     await Promise.allSettled(
       workers.map(w => new Promise<void>(resolve => {
         w.process.on('exit', resolve)
-        setTimeout(resolve, 2000)
+        setTimeout(resolve, WARM_WORKER_SHUTDOWN_WAIT_MS)
       })),
     )
   }

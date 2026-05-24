@@ -128,11 +128,11 @@ export const PROTOCOL_MAP = {
   [OlaMessageType.PING]: 'both' as const,
   [OlaMessageType.PONG]: 'both' as const,
   [OlaMessageType.ERROR]: 'both' as const,
-} as const;
+} as const satisfies Record<string, 'ola' | 'mcp-chrome' | 'both'>;
 
 /**
  * 判断消息类型属于哪种协议
  */
 export function getProtocolForMessage(type: string): 'ola' | 'mcp-chrome' | 'both' | 'unknown' {
-  return (PROTOCOL_MAP as any)[type] || 'unknown';
+  return (PROTOCOL_MAP as Record<string, 'ola' | 'mcp-chrome' | 'both'>)[type] || 'unknown';
 }

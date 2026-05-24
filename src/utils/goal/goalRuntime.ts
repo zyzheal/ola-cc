@@ -61,7 +61,7 @@ export function finishTurnForGoal(
 	};
 
 	const todoListId = goal?.todoListId;
-	const goalTaskListId = (goal as any)?.goalTaskListId;
+	const goalTaskListId = goal?.goalTaskListId;
 
 	return processGoalRuntimeEvent(
 		{ type: "turn_finished", turnCompleted: true },

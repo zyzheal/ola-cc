@@ -23,6 +23,7 @@ import {
 } from '../../bootstrap/state.js'
 import { getOauthConfig } from '../../constants/oauth.js'
 import { isDebugToStdErr, logForDebugging } from '../../utils/debug.js'
+import { logError } from '../../utils/log.js'
 import {
   getAWSRegion,
   getVertexRegionForModel,
@@ -80,16 +81,28 @@ import {
 
 function createStderrLogger(): ClientOptions['logger'] {
   return {
+    // Errors go to stderr — require immediate attention
     error: (msg, ...args) =>
       // biome-ignore lint/suspicious/noConsole:: intentional console output -- SDK logger must use console
       console.error('[Anthropic SDK ERROR]', msg, ...args),
-    // biome-ignore lint/suspicious/noConsole:: intentional console output -- SDK logger must use console
-    warn: (msg, ...args) => console.error('[Anthropic SDK WARN]', msg, ...args),
-    // biome-ignore lint/suspicious/noConsole:: intentional console output -- SDK logger must use console
-    info: (msg, ...args) => console.error('[Anthropic SDK INFO]', msg, ...args),
-    debug: (msg, ...args) =>
+    // Warnings go to stderr but at a lower severity
+    warn: (msg, ...args) =>
       // biome-ignore lint/suspicious/noConsole:: intentional console output -- SDK logger must use console
-      console.error('[Anthropic SDK DEBUG]', msg, ...args),
+      console.error('[Anthropic SDK WARN]', msg, ...args),
+    // Info goes to stdout (only visible in debug mode to avoid noise)
+    info: (msg, ...args) => {
+      if (isDebugToStdErr()) {
+        // biome-ignore lint/suspicious/noConsole:: intentional console output -- SDK logger must use console
+        console.log('[Anthropic SDK INFO]', msg, ...args)
+      }
+    },
+    // Debug only in debug mode
+    debug: (msg, ...args) => {
+      if (isDebugToStdErr()) {
+        // biome-ignore lint/suspicious/noConsole:: intentional console output -- SDK logger must use console
+        console.log('[Anthropic SDK DEBUG]', msg, ...args)
+      }
+    },
   }
 }
 
@@ -146,10 +159,17 @@ export async function getAnthropicClient({
 
   const resolvedFetch = buildFetch(fetchOverride, source)
 
+  // Dynamic timeout with validation — prevents negative or unreasonably large values
+  const defaultTimeoutMs = 600 * 1000 // 10 minutes
+  const configuredTimeoutMs = parseInt(process.env.API_TIMEOUT_MS || String(defaultTimeoutMs), 10)
+  const timeoutMs = isNaN(configuredTimeoutMs) || configuredTimeoutMs <= 0
+    ? defaultTimeoutMs
+    : Math.min(configuredTimeoutMs, 3600 * 1000) // cap at 1 hour
+
   const ARGS = {
     defaultHeaders,
     maxRetries,
-    timeout: parseInt(process.env.API_TIMEOUT_MS || String(600 * 1000), 10),
+    timeout: timeoutMs,
     dangerouslyAllowBrowser: true,
     fetchOptions: getProxyFetchOptions({
       forAnthropicAPI: true,
@@ -411,8 +431,11 @@ function buildFetch(
       logForDebugging(
         `[API REQUEST] ${new URL(url).pathname}${id ? ` ${CLIENT_REQUEST_ID_HEADER}=${id}` : ''} source=${source ?? 'unknown'}`,
       )
-    } catch {
-      // never let logging crash the fetch
+    } catch (parseError) {
+      // Never let logging crash the fetch, but report errors for observability
+      if (parseError instanceof Error && parseError.message) {
+        logError(parseError)
+      }
     }
     return inner(input, { ...init, headers })
   }

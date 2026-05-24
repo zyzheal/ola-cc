@@ -111,6 +111,9 @@ interface OpenAIChatCompletionResponse {
     prompt_tokens: number
     completion_tokens: number
     total_tokens: number
+    prompt_tokens_details?: { cached_tokens?: number }
+    cache_tokens?: number
+    cached_tokens?: number
   }
   system_fingerprint?: string
 }
@@ -695,8 +698,8 @@ function logCacheUsage(response: OpenAIChatCompletionResponse): void {
     const details = usage.prompt_tokens_details as { cached_tokens?: number }
     if (details.cached_tokens) cacheDetails.push(`cached=${details.cached_tokens}`)
   }
-  if ('cache_tokens' in usage) cacheDetails.push(`cache_tokens=${(usage as any).cache_tokens}`)
-  if ('cached_tokens' in usage) cacheDetails.push(`cached_tokens=${(usage as any).cached_tokens}`)
+  if ('cache_tokens' in usage) cacheDetails.push(`cache_tokens=${usage.cache_tokens}`)
+  if ('cached_tokens' in usage) cacheDetails.push(`cached_tokens=${usage.cached_tokens}`)
 
   if (cacheDetails.length > 0) {
     logForDebugging(

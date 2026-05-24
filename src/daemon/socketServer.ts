@@ -19,8 +19,12 @@ export function createDaemonSocketServer(handlers: {
 }): net.Server {
   const socketPath = getSocketPath()
 
-  // Remove stale socket
-  try { fs.unlinkSync(socketPath) } catch {}
+  // Remove stale socket — only ignore ENOENT (file doesn't exist), log other errors
+  try { fs.unlinkSync(socketPath) } catch (e: unknown) {
+    if (e && typeof e === 'object' && 'code' in e && (e as NodeJS.ErrnoException).code !== 'ENOENT') {
+      console.error(`[daemon] Failed to remove stale socket ${socketPath}:`, e)
+    }
+  }
 
   const server = net.createServer(socket => {
     let buffer = ''

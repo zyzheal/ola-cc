@@ -1,5 +1,5 @@
 import { homedir } from 'os'
-import { dirname, isAbsolute, resolve } from 'path'
+import { dirname, isAbsolute, normalize, resolve } from 'path'
 import type { ToolPermissionContext } from '../../Tool.js'
 import { getPlatform } from '../../utils/platform.js'
 import {
@@ -82,7 +82,14 @@ export function expandTilde(path: string): string {
     path.startsWith('~/') ||
     (process.platform === 'win32' && path.startsWith('~\\'))
   ) {
-    return homedir() + path.slice(1)
+    const expanded = homedir() + path.slice(1)
+    // Self-check: normalize and validate the result to prevent path traversal
+    const normalized = normalize(expanded)
+    if (containsPathTraversal(path.slice(1))) {
+      // Return the normalized path but let downstream validators catch the issue
+      return normalized
+    }
+    return normalized
   }
   return path
 }

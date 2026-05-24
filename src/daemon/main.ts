@@ -176,7 +176,11 @@ export async function daemonMain(args: string[] = []): Promise<void> {
       return
     } catch {
       // Stale PID file, clean up
-      try { fs.unlinkSync(pidFile) } catch {}
+      try { fs.unlinkSync(pidFile) } catch (e: unknown) {
+        if (e && typeof e === 'object' && 'code' in e && (e as NodeJS.ErrnoException).code !== 'ENOENT') {
+          console.error(`[daemon] Failed to remove stale PID file ${pidFile}:`, e)
+        }
+      }
     }
   } catch {
     // No PID file, proceed to start
@@ -192,7 +196,11 @@ export async function daemonMain(args: string[] = []): Promise<void> {
     } catch {
       console.log('Daemon is not running.')
       // Clean up stale PID file
-      try { fs.unlinkSync(pidFile) } catch {}
+      try { fs.unlinkSync(pidFile) } catch (e: unknown) {
+        if (e && typeof e === 'object' && 'code' in e && (e as NodeJS.ErrnoException).code !== 'ENOENT') {
+          console.error(`[daemon] Failed to remove stale PID file ${pidFile}:`, e)
+        }
+      }
     }
     return
   }
@@ -219,7 +227,9 @@ export async function daemonMain(args: string[] = []): Promise<void> {
     server.listen(getSocketPath(), () => {
       try {
         fs.chmodSync(getSocketPath(), 0o600)
-      } catch {}
+      } catch (e: unknown) {
+        console.error(`[daemon] Failed to chmod socket ${getSocketPath()}:`, e)
+      }
       fs.writeFileSync(pidFile, String(process.pid))
       console.log(`Daemon started (PID: ${process.pid})`)
       console.log(`Socket: ${getSocketPath()}`)

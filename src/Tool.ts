@@ -12,12 +12,55 @@ import type { Command } from './commands.js'
 import type { CanUseToolFn } from './hooks/useCanUseTool.js'
 import type { ThinkingConfig } from './utils/thinking.js'
 
-export type ToolInputJSONSchema = {
-  [x: string]: unknown
+/**
+ * JSON Schema type definitions for tool input validation.
+ * Replaces loose `{ [x: string]: unknown }` with strict JSON Schema Draft 7 types.
+ */
+export type JSONSchemaPrimitive =
+  | { type: 'string'; enum?: string[]; pattern?: string; minLength?: number; maxLength?: number; description?: string }
+  | { type: 'number' | 'integer'; minimum?: number; maximum?: number; exclusiveMinimum?: number; exclusiveMaximum?: number; enum?: number[]; description?: string }
+  | { type: 'boolean'; description?: string }
+  | { type: 'null' }
+
+export type JSONSchemaArray = {
+  type: 'array'
+  items?: JSONSchemaRef
+  minItems?: number
+  maxItems?: number
+  uniqueItems?: boolean
+  description?: string
+}
+
+export type JSONSchemaObject = {
   type: 'object'
-  properties?: {
-    [x: string]: unknown
-  }
+  properties?: Record<string, JSONSchemaRef>
+  required?: string[]
+  additionalProperties?: boolean | JSONSchemaRef
+  minProperties?: number
+  maxProperties?: number
+  description?: string
+}
+
+export type JSONSchemaMultiType = {
+  type: ('string' | 'number' | 'integer' | 'boolean' | 'array' | 'object' | 'null')[]
+  description?: string
+}
+
+export type JSONSchemaRef =
+  | JSONSchemaPrimitive
+  | JSONSchemaArray
+  | JSONSchemaObject
+  | JSONSchemaMultiType
+  | { $ref: string }
+
+export type ToolInputJSONSchema = {
+  type: 'object'
+  properties?: Record<string, JSONSchemaRef>
+  required?: string[]
+  additionalProperties?: boolean
+  $schema?: string
+  title?: string
+  description?: string
 }
 
 import type { Notification } from './context/notifications.js'
