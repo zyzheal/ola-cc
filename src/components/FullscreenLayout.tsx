@@ -482,7 +482,9 @@ function _temp2(url) {
   if (url.startsWith("file:")) {
     try {
       openPath(fileURLToPath(url));
-    } catch {}
+    } catch (e) {
+      console.error('[FullscreenLayout] Failed to open file path:', e)
+    }
   } else {
     openBrowser(url);
   }

@@ -18,8 +18,8 @@ import { SYNTHETIC_OUTPUT_TOOL_NAME } from './tools/SyntheticOutputTool/Syntheti
 let REPLTool = null
 let SleepTool = null
 let SendUserFileTool = null
-try { REPLTool = require('./tools/REPLTool/REPLTool.js').REPLTool } catch {}
-try { SleepTool = require('./tools/SleepTool/SleepTool.js').SleepTool } catch {}
+try { REPLTool = require('./tools/REPLTool/REPLTool.js').REPLTool } catch (e) { console.error('[tools] Failed to load REPLTool:', e) }
+try { SleepTool = require('./tools/SleepTool/SleepTool.js').SleepTool } catch (e) { console.error('[tools] Failed to load SleepTool:', e) }
 const cronTools = [
   require('./tools/ScheduleCronTool/CronCreateTool.js').CronCreateTool,
   require('./tools/ScheduleCronTool/CronDeleteTool.js').CronDeleteTool,
@@ -27,14 +27,14 @@ const cronTools = [
 ]
 const RemoteTriggerTool = require('./tools/RemoteTriggerTool/RemoteTriggerTool.js').RemoteTriggerTool
 const MonitorTool = require('./tools/MonitorTool/MonitorTool.js').MonitorTool
-try { SendUserFileTool = require('./tools/SendUserFileTool/SendUserFileTool.js').SendUserFileTool } catch {}
+try { SendUserFileTool = require('./tools/SendUserFileTool/SendUserFileTool.js').SendUserFileTool } catch (e) { console.error('[tools] Failed to load SendUserFileTool:', e) }
 // Optional tools that may not exist
 let SuggestBackgroundPRTool = null
 let PushNotificationTool = null
 let SubscribePRTool = null
-try { SuggestBackgroundPRTool = require('./tools/SuggestBackgroundPRTool/SuggestBackgroundPRTool.js').SuggestBackgroundPRTool } catch {}
-try { PushNotificationTool = require('./tools/PushNotificationTool/PushNotificationTool.js').PushNotificationTool } catch {}
-try { SubscribePRTool = require('./tools/SubscribePRTool/SubscribePRTool.js').SubscribePRTool } catch {}
+try { SuggestBackgroundPRTool = require('./tools/SuggestBackgroundPRTool/SuggestBackgroundPRTool.js').SuggestBackgroundPRTool } catch (e) { console.error('[tools] Failed to load SuggestBackgroundPRTool:', e) }
+try { PushNotificationTool = require('./tools/PushNotificationTool/PushNotificationTool.js').PushNotificationTool } catch (e) { console.error('[tools] Failed to load PushNotificationTool:', e) }
+try { SubscribePRTool = require('./tools/SubscribePRTool/SubscribePRTool.js').SubscribePRTool } catch (e) { console.error('[tools] Failed to load SubscribePRTool:', e) }
 /* eslint-enable custom-rules/no-process-env-top-level, @typescript-eslint/no-require-imports */
 import { TaskOutputTool } from './tools/TaskOutputTool/TaskOutputTool.js'
 import { WebSearchTool } from './tools/WebSearchTool/WebSearchTool.js'
@@ -79,18 +79,18 @@ let WorkflowTool = null
 try {
   require('./tools/WorkflowTool/bundled/index.js').initBundledWorkflows()
   WorkflowTool = require('./tools/WorkflowTool/WorkflowTool.js').WorkflowTool
-} catch {}
+} catch (e) { console.error('[tools] Failed to load WorkflowTool:', e) }
 // Optional tools that may not exist
 let TerminalCaptureTool = null
 let WebBrowserTool = null
 let SnipTool = null
 let CtxInspectTool = null
 let ListPeersTool = null
-try { TerminalCaptureTool = require('./tools/TerminalCaptureTool/TerminalCaptureTool.js').TerminalCaptureTool } catch {}
-try { WebBrowserTool = require('./tools/WebBrowserTool/WebBrowserTool.js').WebBrowserTool } catch {}
-try { SnipTool = require('./tools/SnipTool/SnipTool.js').SnipTool } catch {}
-try { CtxInspectTool = require('./tools/CtxInspectTool/CtxInspectTool.js').CtxInspectTool } catch {}
-try { ListPeersTool = require('./tools/ListPeersTool/ListPeersTool.js').ListPeersTool } catch {}
+try { TerminalCaptureTool = require('./tools/TerminalCaptureTool/TerminalCaptureTool.js').TerminalCaptureTool } catch (e) { console.error('[tools] Failed to load TerminalCaptureTool:', e) }
+try { WebBrowserTool = require('./tools/WebBrowserTool/WebBrowserTool.js').WebBrowserTool } catch (e) { console.error('[tools] Failed to load WebBrowserTool:', e) }
+try { SnipTool = require('./tools/SnipTool/SnipTool.js').SnipTool } catch (e) { console.error('[tools] Failed to load SnipTool:', e) }
+try { CtxInspectTool = require('./tools/CtxInspectTool/CtxInspectTool.js').CtxInspectTool } catch (e) { console.error('[tools] Failed to load CtxInspectTool:', e) }
+try { ListPeersTool = require('./tools/ListPeersTool/ListPeersTool.js').ListPeersTool } catch (e) { console.error('[tools] Failed to load ListPeersTool:', e) }
 /* eslint-enable custom-rules/no-process-env-top-level, @typescript-eslint/no-require-imports */
 import type { ToolPermissionContext } from './Tool.js'
 import { getDenyRuleForTool } from './utils/permissions/permissions.js'

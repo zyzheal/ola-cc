@@ -23,6 +23,7 @@ import {
   ERROR_MESSAGE_USER_ABORT,
   type RecompactionInfo,
 } from './compact.js'
+import { compactWithOrchestrator } from './compactOrchestrator.js'
 import { runPostCompactCleanup } from './postCompactCleanup.js'
 import { trySessionMemoryCompaction } from './sessionMemoryCompact.js'
 
@@ -381,14 +382,15 @@ export async function autoCompactIfNeeded(
   }
 
   try {
-    const compactionResult = await compactConversation(
+    const compactionResult = await compactWithOrchestrator(
       messages,
       toolUseContext,
-      cacheSafeParams,
-      true, // Suppress user questions for autocompact
-      undefined, // No custom instructions for autocompact
-      true, // isAutoCompact
-      recompactionInfo,
+      {
+        cacheSafeParams,
+        suppressFollowUpQuestions: true,
+        isAutoCompact: true,
+        recompactionInfo,
+      },
     )
 
     // Reset lastSummarizedMessageId since legacy compaction replaces all messages

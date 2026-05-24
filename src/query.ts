@@ -5,6 +5,7 @@ import type {
 } from "@anthropic-ai/sdk/resources/index.mjs";
 import type { CanUseToolFn } from "./hooks/useCanUseTool.js";
 import { FallbackTriggeredError, CannotRetryError } from "./services/api/withRetry.js";
+import { getRetryConfig } from "./commands/goal/types.js";
 import {
 	calculateTokenWarningState,
 	isAutoCompactEnabled,
@@ -903,12 +904,12 @@ async function* queryLoop(
 						}));
 					},
 					getGoalTasks: () => {
-						const goalTaskListId = (appState.goal as any)?.goalTaskListId;
+						const goalTaskListId = appState.goal?.goalTaskListId;
 						if (!goalTaskListId) return undefined;
 						return toolUseContext.getAppState().goalTasks?.[goalTaskListId];
 					},
 					updateGoalTasks: (tasks) => {
-						const goalTaskListId = (appState.goal as any)?.goalTaskListId;
+						const goalTaskListId = appState.goal?.goalTaskListId;
 						if (!goalTaskListId) return;
 						toolUseContext.setAppState((prev) => ({
 							...prev,
@@ -1379,11 +1380,14 @@ async function* queryLoop(
 			const appState = toolUseContext.getAppState();
 			const goal = appState.goal as Goal | undefined;
 
+			// Use retryConfig from goal, or fallback to default config if not set
+			const retryConfig = goal?.retryConfig ?? getRetryConfig({});
+
 			if (
 				error instanceof CannotRetryError &&
 				goal &&
 				goal.status === ThreadGoalStatus.Active &&
-				goal.retryConfig?.enabled
+				retryConfig.enabled
 			) {
 				// Check for permanent errors (401/403) - should not retry
 				const originalError = error.originalError;
@@ -1398,7 +1402,6 @@ async function* queryLoop(
 					// Let it propagate as normal error
 				} else {
 					// Implement full fallback retry loop with heartbeat
-					const retryConfig = goal.retryConfig;
 					const startTime = Date.now();
 					const maxRetryTimeMs = retryConfig.maxRetryHours * 3600000;
 					let retryNumber = (goal.retryCount || 0) + 1;
@@ -2142,12 +2145,12 @@ async function* queryLoop(
 							}));
 						},
 						getGoalTasks: () => {
-							const goalTaskListId = (appState.goal as any)?.goalTaskListId;
+							const goalTaskListId = appState.goal?.goalTaskListId;
 							if (!goalTaskListId) return undefined;
 							return appState.goalTasks?.[goalTaskListId];
 						},
 						updateGoalTasks: (tasks) => {
-							const goalTaskListId = (appState.goal as any)?.goalTaskListId;
+							const goalTaskListId = appState.goal?.goalTaskListId;
 							if (!goalTaskListId) return;
 							toolUseContext.setAppState((prev) => ({
 								...prev,

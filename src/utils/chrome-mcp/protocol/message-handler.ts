@@ -9,7 +9,14 @@ import { Logger } from '../utils/logger';
 import { RequestTracker } from './request-tracker';
 import { ToolNameMapper } from '../tools/name-mapper';
 import { OlaMessageType, McpChromeMessageType, getProtocolForMessage } from '../constants/message-types';
-import type { ChromeMcpMessage, ToolCallRequest, ToolCallResponse } from '../types';
+import type { ChromeMcpMessage, OlaMessage, McpChromeMessage, ToolCallRequest, ToolCallResponse } from '../types';
+
+/** Extract payload from a ChromeMcpMessage, handling both OlaMessage (params) and McpChromeMessage (payload) */
+function getMessagePayload(message: ChromeMcpMessage): unknown {
+  if ('payload' in message) return (message as McpChromeMessage).payload
+  if ('params' in message) return (message as OlaMessage).params
+  return undefined
+}
 
 /** 消息处理器回调 */
 export type MessageHandlerCallback = {
@@ -173,7 +180,7 @@ export class MessageHandler {
     this.logger.info('START message received');
     
     if (this.callback?.onStart) {
-      await this.callback.onStart((message as any).payload);
+      await this.callback.onStart(getMessagePayload(message));
     }
     
     return {
@@ -216,9 +223,8 @@ export class MessageHandler {
   
   /** 处理错误消息 */
   private handleError(message: ChromeMcpMessage): MessageProcessResult {
-    this.logger.error(
-      `Error message received: ${(message as any).error || (message as any).payload}`
-    );
+    const errMsg = (message as ChromeMcpMessage).error || getMessagePayload(message)
+    this.logger.error(`Error message received: ${errMsg}`);
     
     return {
       success: false,
@@ -228,7 +234,7 @@ export class MessageHandler {
   
   /** 处理 OLA 工具请求 */
   private async handleOlaToolRequest(message: ChromeMcpMessage): Promise<MessageProcessResult> {
-    const olaMsg = message as any;
+    const olaMsg = message as OlaMessage;
     const methodName = olaMsg.method;
     
     if (!methodName) {
@@ -277,7 +283,7 @@ export class MessageHandler {
     this.logger.debug('OLA tool response received');
     
     if (this.callback?.onToolResponse) {
-      this.callback.onToolResponse(message as any);
+      this.callback.onToolResponse(message as ToolCallResponse);
     }
     
     return {
@@ -314,11 +320,11 @@ export class MessageHandler {
   
   /** 处理 mcp-chrome 工具调用 */
   private async handleMcpChromeToolCall(message: ChromeMcpMessage): Promise<MessageProcessResult> {
-    const mcpMsg = message as any;
+    const mcpMsg = message as McpChromeMessage;
     const requestId = mcpMsg.requestId;
     const payload = mcpMsg.payload || {};
-    const toolName = payload.name || mcpMsg.method;
-    const toolArgs = payload.args || mcpMsg.params || {};
+    const toolName = (payload as Record<string, unknown>)?.name || mcpMsg.method;
+    const toolArgs = (payload as Record<string, unknown>)?.args || mcpMsg.params || {};
     
     if (!toolName) {
       return {
@@ -387,16 +393,16 @@ export class MessageHandler {
   
   /** 处理 mcp-chrome 工具响应 */
   private handleMcpChromeToolResponse(message: ChromeMcpMessage): MessageProcessResult {
-    const mcpMsg = message as any;
+    const mcpMsg = message as McpChromeMessage;
     const requestId = mcpMsg.responseToRequestId;
-    const payload = mcpMsg.payload;
-    
+    const msgPayload = mcpMsg.payload;
+
     this.logger.debug(`mcp-chrome tool response: requestId=${requestId}`);
-    
-    if (payload?.status === 'error') {
-      this.requestTracker.rejectResponse(requestId, payload.error || 'Unknown error');
+
+    if ((msgPayload as Record<string, unknown>)?.status === 'error') {
+      this.requestTracker.rejectResponse(requestId, (msgPayload as Record<string, Record<string, unknown>>)?.error || 'Unknown error');
     } else {
-      this.requestTracker.resolveResponse(requestId, payload);
+      this.requestTracker.resolveResponse(requestId, msgPayload);
     }
     
     return {
@@ -407,7 +413,7 @@ export class MessageHandler {
   
   /** 处理数据处理请求 */
   private handleProcessData(message: ChromeMcpMessage): MessageProcessResult {
-    const mcpMsg = message as any;
+    const mcpMsg = message as McpChromeMessage;
     const requestId = mcpMsg.requestId;
     
     this.logger.debug('PROCESS_DATA received');

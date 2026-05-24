@@ -111,6 +111,9 @@ interface OpenAIChatCompletionResponse {
     prompt_tokens: number
     completion_tokens: number
     total_tokens: number
+    prompt_tokens_details?: { cached_tokens?: number }
+    cache_tokens?: number
+    cached_tokens?: number
   }
   system_fingerprint?: string
 }
@@ -628,6 +631,172 @@ function convertMessagesToOpenAI(
 }
 
 /**
+ * Sanitize a nested JSON Schema property for OpenAI tool schema compatibility.
+ *
+ * OpenAI-compatible APIs don't support the full JSON Schema spec. This
+ * function strips unsupported keywords and normalizes types.
+ */
+function sanitizeNestedSchema(schema: unknown): unknown {
+  if (!schema || typeof schema !== 'object') {
+    return schema
+  }
+
+  const result = { ...(schema as Record<string, unknown>) }
+
+  // Convert 'integer' to 'number' for OpenAI compatibility
+  if (result.type === 'integer') {
+    result.type = 'number'
+  }
+
+  // Normalize type: if it's an array, take the first element (OpenAI requires single string type)
+  if (Array.isArray(result.type)) {
+    result.type = result.type[0]
+    if (result.type === 'integer') result.type = 'number'
+    if (result.type === 'null') result.type = 'string' // fallback for nullable fields
+  }
+
+  // Remove polymorphism
+  delete result.anyOf
+  delete result.oneOf
+  delete result.allOf
+
+  // Remove unsupported JSON Schema keywords
+  delete result.$ref
+  delete result.$defs
+  delete result.$schema
+  delete result.definitions
+  delete result.const
+  delete result.if
+  delete result.then
+  delete result.else
+  delete result.contains
+  delete result.propertyNames
+  delete result.patternProperties
+  delete result.additionalItems
+
+  // Handle malformed required field (non-array → delete)
+  if (result.required !== undefined && !Array.isArray(result.required)) {
+    delete result.required
+  }
+
+  // Filter required to only include keys that exist in properties (consistency with top-level)
+  if (Array.isArray(result.required)) {
+    const props = result.properties
+    if (props && typeof props === 'object') {
+      result.required = result.required.filter((k) => typeof k === 'string' && k in props)
+    }
+  }
+
+  // Recurse into object properties (skip arrays — they belong in items, not properties)
+  if (result.properties && typeof result.properties === 'object' && !Array.isArray(result.properties)) {
+    const properties = result.properties as Record<string, unknown>
+    for (const [key, value] of Object.entries(properties)) {
+      if (value && typeof value === 'object' && !Array.isArray(value)) {
+        properties[key] = sanitizeNestedSchema(value)
+      }
+    }
+  }
+
+  // Recurse into array items
+  if (result.type === 'array' && result.items && typeof result.items === 'object') {
+    result.items = sanitizeNestedSchema(result.items)
+  }
+
+  // Recurse into additionalProperties
+  if (result.additionalProperties && typeof result.additionalProperties === 'object') {
+    result.additionalProperties = sanitizeNestedSchema(result.additionalProperties)
+  }
+
+  return result
+}
+
+/**
+ * Sanitize a top-level tool JSON Schema for OpenAI API compatibility.
+ * OpenAI requires that tool schemas have type: 'object'.
+ *
+ * This function:
+ * - Forces type: 'object' (top-level tool schemas must be objects)
+ * - Converts 'integer' to 'number' for nested schemas
+ * - Removes required fields that don't have matching properties
+ * - Adds missing properties as {type: 'string'} for required fields
+ * - Removes anyOf/oneOf/allOf (not supported in tool schemas)
+ * - Normalizes nested schemas recursively
+ */
+function sanitizeSchemaForOpenAI(schema: unknown): Record<string, unknown> {
+  if (!schema || typeof schema !== 'object') {
+    return { type: 'object', properties: {} }
+  }
+
+  const obj = schema as Record<string, unknown>
+  const result = { ...obj }
+
+  // Ensure type is a single string (top-level tool schemas must be type: 'object')
+  // If type is an array, take the first element
+  if (Array.isArray(result.type)) {
+    result.type = result.type[0]
+  }
+  result.type = 'object'
+
+  // Ensure properties exists and is an object
+  if (!result.properties || typeof result.properties !== 'object') {
+    result.properties = {}
+  }
+
+  // Remove anyOf/oneOf/allOf — OpenAI tool schemas don't support polymorphism
+  delete result.anyOf
+  delete result.oneOf
+  delete result.allOf
+
+  // Remove unsupported JSON Schema keywords
+  delete result.$ref
+  delete result.$defs
+  delete result.$schema
+  delete result.definitions
+  delete result.const
+  delete result.if
+  delete result.then
+  delete result.else
+  delete result.contains
+  delete result.propertyNames
+  delete result.patternProperties
+  delete result.additionalItems
+
+  // Handle malformed required field (non-array → delete)
+  if (result.required !== undefined && !Array.isArray(result.required)) {
+    delete result.required
+  }
+
+  const properties = result.properties as Record<string, unknown>
+  const required = result.required
+
+  if (Array.isArray(required)) {
+    // Ensure all required fields have properties
+    for (const key of required) {
+      if (typeof key === 'string' && !(key in properties)) {
+        warn(`Schema has required field "${key}" not in properties — adding as {type: 'string'}`)
+        properties[key] = { type: 'string' }
+      }
+    }
+    // Remove required fields that aren't strings
+    result.required = required.filter((k) => typeof k === 'string')
+  }
+
+  // Recursively sanitize nested properties (skip arrays — they belong in items, not properties)
+  for (const [key, value] of Object.entries(properties)) {
+    if (value && typeof value === 'object' && !Array.isArray(value)) {
+      properties[key] = sanitizeNestedSchema(value)
+    }
+  }
+
+  // Sanitize additionalProperties if present
+  if (result.additionalProperties && typeof result.additionalProperties === 'object') {
+    result.additionalProperties = sanitizeNestedSchema(result.additionalProperties)
+  }
+
+  return result
+}
+
+/**
  * Convert Anthropic-style tools to OpenAI function calling format.
  */
 function convertToolsToOpenAI(
@@ -644,7 +813,7 @@ function convertToolsToOpenAI(
     function: {
       name: tool.name,
       description: tool.description || '',
-      parameters: tool.input_schema || { type: 'object', properties: {} },
+      parameters: sanitizeSchemaForOpenAI(tool.input_schema),
     },
   }))
 }
@@ -787,10 +956,10 @@ function logCacheUsage(response: OpenAIChatCompletionResponse): void {
   }
   // vLLM and other backends may use custom fields
   if ('cache_tokens' in usage) {
-    cacheDetails.push(`cache_tokens=${(usage as any).cache_tokens}`)
+    cacheDetails.push(`cache_tokens=${usage.cache_tokens}`)
   }
   if ('cached_tokens' in usage) {
-    cacheDetails.push(`cached_tokens=${(usage as any).cached_tokens}`)
+    cacheDetails.push(`cached_tokens=${usage.cached_tokens}`)
   }
 
   if (cacheDetails.length > 0) {

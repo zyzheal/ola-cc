@@ -445,5 +445,7 @@ export async function reinitialize1PEventLoggingIfConfigChanged(): Promise<void>
     return
   }
 
-  void oldProvider.shutdown().catch(() => {})
+  void oldProvider.shutdown().catch((err) => {
+    logError(err as Error, { context: '1P event logging old provider shutdown' })
+  })
 }
