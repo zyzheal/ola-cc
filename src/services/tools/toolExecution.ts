@@ -108,6 +108,9 @@ import {
   processToolResultBlock,
 } from '../../utils/toolResultStorage.js'
 import {
+  normalizeToolInputTypes,
+} from '../../utils/toolInputNormalizer.js'
+import {
   extractDiscoveredToolNames,
   isToolSearchEnabledOptimistic,
   isToolSearchToolAvailable,
@@ -663,8 +666,15 @@ async function checkPermissionsAndCallTool(
     progress: ToolProgress<ToolProgressData> | ProgressMessage<HookProgress>,
   ) => void,
 ): Promise<MessageUpdateLazy[]> {
+  // Normalize input types for cross-provider compatibility.
+  // Non-Claude models (Qwen, Llama, etc.) frequently emit tool parameters
+  // with incorrect types (e.g. "[]" string instead of [] array, "true"
+  // string instead of true boolean). This preprocessor runs before Zod
+  // validation to fix common type mismatches.
+  const normalizedInput = normalizeToolInputTypes(input)
+
   // Validate input types with zod (surprisingly, the model is not great at generating valid input)
-  const parsedInput = tool.inputSchema.safeParse(input)
+  const parsedInput = tool.inputSchema.safeParse(normalizedInput)
   if (!parsedInput.success) {
     let errorContent = formatZodValidationError(tool.name, parsedInput.error)
 
