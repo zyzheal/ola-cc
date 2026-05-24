@@ -373,6 +373,7 @@ export function gracefulShutdownSync(
     })
     // Prevent unhandled rejection: forceExit re-throws in test mode,
     // which would escape the .catch() handler above as a new rejection.
+    // Intentionally silent: test-mode forceExit re-throw is handled by test harness
     .catch(() => {})
 }
 

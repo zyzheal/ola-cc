@@ -86,6 +86,7 @@ export function enqueueSdkEvent(event: SdkEvent): void {
   queue.push(event)
 
   // Also route to NATS if available (fire-and-forget)
+  // Intentionally silent: fire-and-forget NATS routing
   routeEventToNats(event).catch(() => {})
 }
 
@@ -144,6 +145,7 @@ export async function initEventRouter(): Promise<void> {
 
 export async function routeEventToNats(event: SdkEvent): Promise<void> {
   // Initialize lazily
+  // Intentionally silent: lazy NATS router init failure is non-critical
   if (!eventRouterInitPromise) {
     initEventRouter().catch(() => {})
   }
@@ -158,7 +160,7 @@ export async function routeEventToNats(event: SdkEvent): Promise<void> {
     uuid: randomUUID(),
     session_id: getSessionId(),
     timestamp: Date.now(),
-  }).catch(() => {})
+  }).catch((err) => { console.error('[sdkEventQueue] NATS event routing failed:', err); })
 }
 
 export function getEventRouter(): import('../services/eventBus/EventRouter.js').EventRouter | null {

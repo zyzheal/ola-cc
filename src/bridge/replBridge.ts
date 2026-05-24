@@ -467,7 +467,7 @@ export async function initBridgeCore(
         '[bridge:repl] Session creation failed, deregistering environment',
       )
       logEvent('tengu_bridge_repl_session_failed', {})
-      await api.deregisterEnvironment(environmentId).catch(() => {})
+      await api.deregisterEnvironment(environmentId).catch((err) => { console.error('[bridge:repl] deregister environment failed:', err); })
       onStateChange?.('failed', 'Session creation failed')
       return null
     }
@@ -656,7 +656,7 @@ export async function initBridgeCore(
       const workIdBeingCleared = currentWorkId
       await api
         .stopWork(environmentId, workIdBeingCleared, false)
-        .catch(() => {})
+        .catch((err) => { console.error('[bridge:repl] stop work failed:', err); })
       // When doReconnect runs concurrently with the poll loop (ws_closed
       // handler case — void-called, unlike the awaited onEnvironmentLost
       // path), onWorkReceived can fire during the stopWork await and set
@@ -711,7 +711,7 @@ export async function initBridgeCore(
       logForDebugging(
         '[bridge:repl] Reconnect aborted after env registration, cleaning up',
       )
-      await api.deregisterEnvironment(environmentId).catch(() => {})
+      await api.deregisterEnvironment(environmentId).catch((err) => { console.error('[bridge:repl] deregister environment failed:', err); })
       return false
     }
 
@@ -751,7 +751,7 @@ export async function initBridgeCore(
       logForDebugging(
         '[bridge:repl] Reconnect aborted after archive, cleaning up',
       )
-      await api.deregisterEnvironment(environmentId).catch(() => {})
+      await api.deregisterEnvironment(environmentId).catch((err) => { console.error('[bridge:repl] deregister environment failed:', err); })
       return false
     }
 
@@ -788,7 +788,7 @@ export async function initBridgeCore(
     currentSessionId = newSessionId
     // Re-publish to the PID file so peer dedup (peerRegistry.ts) picks up the
     // new ID — setReplBridgeHandle only fires at init/teardown, not reconnect.
-    void updateSessionBridgeId(toCompatSessionId(newSessionId)).catch(() => {})
+    void updateSessionBridgeId(toCompatSessionId(newSessionId)).catch((err) => { console.error('[bridge:repl] update session bridge ID failed:', err); })
     // Reset per-session transport state IMMEDIATELY after the session swap,
     // before any await. If this runs after `await writeBridgePointer` below,
     // there's a window where handle.bridgeSessionId already returns session B
@@ -2146,7 +2146,7 @@ async function startWorkPollLoop({
         logEvent('tengu_bridge_repl_work_secret_failed', {})
         // Can't ack (needs the JWT we failed to decode). stopWork uses OAuth.
         // Prevents XAUTOCLAIM re-delivering this poisoned item every cycle.
-        await api.stopWork(envId, work.id, false).catch(() => {})
+        await api.stopWork(envId, work.id, false).catch((err) => { console.error('[bridge:repl] stop work failed:', err); })
         continue
       }
 

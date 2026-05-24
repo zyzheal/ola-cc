@@ -2,10 +2,18 @@
  * Worker 中的模拟 ToolUseContext
  * 用于在 Worker 进程内执行压缩时提供必要的上下文
  */
-import type { ToolUseContext } from '../../../Tool.js'
+import type { ToolUseContext, Tools } from '../../../Tool.js'
+import type { QuerySource } from '../../../constants/querySource.js'
 import type { AppState } from '../../../state/AppStateStore.js'
-import type { FileStateCache } from '../../../utils/fileStateCache.js'
+import { createFileStateCacheWithSizeLimit, type FileStateCache } from '../../../utils/fileStateCache.js'
+import type { AgentDefinitionsResult } from '../../../tools/AgentTool/loadAgentsDir.js'
+import type { AgentId } from '../../../types/ids.js'
 import type { CompactContextSnapshot, CompactProgressEvent } from './types.js'
+
+/** Extended context type with worker marker */
+interface WorkerToolUseContext extends ToolUseContext {
+  isWorkerContext: true
+}
 
 /**
  * 在 Worker 中创建简化的 ToolUseContext
@@ -16,25 +24,30 @@ import type { CompactContextSnapshot, CompactProgressEvent } from './types.js'
 export function createMockContext(
   snapshot: CompactContextSnapshot,
   onProgress: (event: CompactProgressEvent) => void,
-): ToolUseContext {
+): WorkerToolUseContext {
   // 创建最小化的 AppState（仅包含 compact 需要的部分）
   const mockAppState = createMinimalAppState()
+
+  // 从序列化快照中重建类型化的 options 字段
+  const tools = snapshot.options.tools as unknown as Tools
+  const agentDefinitions = snapshot.options.agentDefinitions as unknown as AgentDefinitionsResult
+  const querySource = snapshot.options.querySource as QuerySource | undefined
 
   return {
     options: {
       commands: [],
       debug: false,
       mainLoopModel: snapshot.options.mainLoopModel,
-      tools: snapshot.options.tools as any,
+      tools,
       verbose: false,
       thinkingConfig: { type: 'disabled' },
       mcpClients: [],
       mcpResources: {},
       isNonInteractiveSession: snapshot.options.isNonInteractiveSession ?? true,
-      agentDefinitions: snapshot.options.agentDefinitions as any,
+      agentDefinitions,
       customSystemPrompt: snapshot.options.customSystemPrompt,
       appendSystemPrompt: snapshot.options.appendSystemPrompt,
-      querySource: snapshot.options.querySource as any,
+      querySource,
     },
     // Worker 中使用模拟的 AbortController
     abortController: new AbortController(),
@@ -62,7 +75,7 @@ export function createMockContext(
     discoveredSkillNames: new Set(),
     // 标识这是 Worker 上下文
     isWorkerContext: true,
-    agentId: snapshot.agentId,
+    agentId: snapshot.agentId as AgentId | undefined,
     agentType: snapshot.agentType,
     messages: [],
   }
@@ -113,26 +126,12 @@ function createMinimalAppState(): AppState {
  * 创建空的文件状态缓存
  */
 function createEmptyFileStateCache(): FileStateCache {
-  const cache = new Map<string, unknown>()
-
-  return {
-    get: (key: string) => cache.get(key),
-    set: (key: string, value: unknown) => cache.set(key, value),
-    has: (key: string) => cache.has(key),
-    delete: (key: string) => cache.delete(key),
-    clear: () => cache.clear(),
-    size: cache.size,
-    keys: () => Array.from(cache.keys()),
-    values: () => Array.from(cache.values()),
-    entries: () => Array.from(cache.entries()),
-    forEach: (callback: (value: unknown, key: string, map: Map<string, unknown>) => void) =>
-      cache.forEach((value, key) => callback(value, key, cache)),
-  }
+  return createFileStateCacheWithSizeLimit(0)
 }
 
 /**
  * 检查是否为 Worker 上下文
  */
 export function isWorkerContext(context: ToolUseContext): boolean {
-  return (context as any).isWorkerContext === true
+  return 'isWorkerContext' in context && context.isWorkerContext === true
 }

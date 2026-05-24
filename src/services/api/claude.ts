@@ -1590,6 +1590,7 @@ async function* queryModel(
     cleanupStream(stream)
     stream = undefined
     if (streamResponse) {
+      // Intentionally silent: stream body cancel failure during resource cleanup
       streamResponse.body?.cancel().catch(() => {})
       streamResponse = undefined
     }

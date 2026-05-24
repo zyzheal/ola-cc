@@ -117,6 +117,7 @@ export async function checkComputerUseLock(): Promise<CheckResult> {
   logForDebugging(
     `Recovering stale computer-use lock from session ${existing.sessionId} (PID ${existing.pid})`,
   )
+  // Intentionally silent: stale lock cleanup failure is non-critical
   await unlink(getLockPath()).catch(() => {})
   return { kind: 'free' }
 }
@@ -165,6 +166,7 @@ export async function tryAcquireComputerUseLock(): Promise<AcquireResult> {
 
   // Corrupt/unparseable — treat as stale (can't extract a blocking ID).
   if (!existing) {
+    // Intentionally silent: best-effort removal of corrupt lock file
     await unlink(getLockPath()).catch(() => {})
     if (await tryCreateExclusive(lock)) {
       registerLockCleanup()
@@ -186,6 +188,7 @@ export async function tryAcquireComputerUseLock(): Promise<AcquireResult> {
   logForDebugging(
     `Recovering stale computer-use lock from session ${existing.sessionId} (PID ${existing.pid})`,
   )
+  // Intentionally silent: stale lock cleanup failure is non-critical
   await unlink(getLockPath()).catch(() => {})
   if (await tryCreateExclusive(lock)) {
     registerLockCleanup()

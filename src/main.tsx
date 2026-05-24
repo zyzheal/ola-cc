@@ -1942,6 +1942,7 @@ async function run(): Promise<CommanderCommand> {
     const agentDefsPromise = worktreeEnabled ? null : getAgentDefinitionsWithOverrides(preSetupCwd);
     // Suppress transient unhandledRejection if these reject during the
     // ~28ms setupPromise await before Promise.all joins them below.
+    // Intentionally silent: these promises are joined in Promise.all below
     commandsPromise?.catch(() => {});
     agentDefsPromise?.catch(() => {});
     await setupPromise
@@ -2462,6 +2463,7 @@ async function run(): Promise<CommanderCommand> {
     const hookMessages: Awaited<NonNullable<typeof hooksPromise>> = [];
     // Suppress transient unhandledRejection — the prefetch warms the
     // memoized connectToServer cache but nobody awaits it in interactive.
+    // Intentionally silent: MCP prefetch is fire-and-forget
     mcpPromise.catch(() => {});
     const mcpClients: Awaited<typeof mcpPromise>['clients'] = [];
     const mcpTools: Awaited<typeof mcpPromise>['tools'] = [];
@@ -2612,6 +2614,7 @@ async function run(): Promise<CommanderCommand> {
       // Kick SessionStart hooks now so the subprocess spawn overlaps with
       // MCP connect + plugin init + print.ts import below.
       const sessionStartHooksPromise = options.continue || options.resume || teleport || setupTrigger ? undefined : processSessionStartHooks('startup');
+      // Intentionally silent: session start hook failure is non-critical
       sessionStartHooksPromise?.catch(() => {});
       profileCheckpoint('before_validateForceLoginOrg');
       // Validate org restriction for non-interactive sessions
@@ -2766,6 +2769,7 @@ async function run(): Promise<CommanderCommand> {
             for (const c of headlessStore.getState().mcp.clients) {
               if (!suppressed.has(c.name) || c.type !== 'connected') continue;
               c.client.onclose = undefined;
+              // Intentionally silent: best-effort server cache clear during shutdown
               void clearServerCache(c.name, c.config).catch(() => {});
             }
             headlessStore.setState(prev => {

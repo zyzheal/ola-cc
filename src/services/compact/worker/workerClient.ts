@@ -17,6 +17,7 @@ import {
   type CompactParams,
 } from './types.js'
 import type { CompactionResult } from '../compact.js'
+import type { Message } from '../../../types/message.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 
@@ -31,7 +32,7 @@ const REQUEST_TIMEOUT_MS = 120_000
  * 在 Worker 中执行压缩
  */
 export async function compactInWorker(
-  messages: unknown[],
+  messages: Message[],
   contextSnapshot: CompactContextSnapshot,
   params: CompactParams,
   onProgress?: (event: CompactProgressEvent) => void,
@@ -109,7 +110,7 @@ export async function compactInWorker(
     const request: CompactWorkerRequest = {
       requestId,
       type: params.pivotIndex !== undefined ? 'partialCompact' : 'compact',
-      messages: messages as any,
+      messages,
       contextSnapshot,
       params,
     }

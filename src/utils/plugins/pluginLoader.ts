@@ -2395,6 +2395,7 @@ async function loadPluginFromMarketplaceEntry(
       logForDebugging(
         `Failed to extract plugin ZIP ${pluginPath}, deleting corrupt file: ${error}`,
       )
+      // Intentionally silent: best-effort removal of corrupt plugin ZIP
       await rm(pluginPath, { force: true }).catch(() => {})
       throw error
     }

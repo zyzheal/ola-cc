@@ -169,6 +169,7 @@ export function Onboarding({
           }]} onChange={value => {
             if (value === 'install') {
               // Errors already logged in setupTerminal, just swallow and proceed
+              // Intentionally silent: setupTerminal errors are logged internally
               void setupTerminal(theme).catch(() => {}).finally(goToNextStep);
             } else {
               goToNextStep();

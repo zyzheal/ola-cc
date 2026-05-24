@@ -324,7 +324,7 @@ export async function initReplBridge(
     void updateBridgeSessionTitle(bridgeSessionId, derived, {
       baseUrl,
       getAccessToken: getBridgeAccessToken,
-    }).catch(() => {})
+    }).catch((err) => { console.error('[bridge:initReplBridge] title update failed:', err); })
   }
   // Fire-and-forget Haiku generation with post-await guards. Re-checks /rename
   // (sessionStorage), v1 env-lost (lastBridgeSessionId), and same-session

@@ -530,6 +530,7 @@ export async function cleanupNpmCacheForAnthropicPackages(): Promise<void> {
       durationMs: Date.now() - startTime,
     })
   } finally {
+    // Intentionally silent: best-effort unlock on error
     await lockfile.unlock(markerPath, { realpath: false }).catch(() => {})
   }
 }
@@ -568,6 +569,7 @@ export async function cleanupOldVersionsThrottled(): Promise<void> {
   } catch (error) {
     logError(error as Error)
   } finally {
+    // Intentionally silent: best-effort unlock on error or completion
     await lockfile.unlock(markerPath, { realpath: false }).catch(() => {})
   }
 }

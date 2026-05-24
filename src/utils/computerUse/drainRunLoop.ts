@@ -67,6 +67,7 @@ export async function drainRunLoop<T>(fn: () => Promise<T>): Promise<T> {
     // Attaching a no-op catch swallows it; the timeout error is what surfaces.
     // fn() sits inside try so a synchronous throw (e.g. NAPI argument
     // validation) still reaches release() — otherwise the pump leaks.
+    // Intentionally silent: timeout race — late rejection from fn() is orphaned
     const work = fn()
     work.catch(() => {})
     const timeout = withResolvers<never>()

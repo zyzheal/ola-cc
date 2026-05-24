@@ -467,12 +467,14 @@ export class NativeHost {
     stdin.on('end', () => {
       this.logger.info('stdin ended - Chrome extension disconnected');
       buffer = null;
+      // Intentionally silent: stop during disconnection is best-effort
       this.stop().catch(() => {});
     });
 
     stdin.on('error', err => {
       this.logger.error(`stdin error: ${err}`);
       buffer = null;
+      // Intentionally silent: stop during error recovery is best-effort
       this.stop().catch(() => {});
     });
   }
@@ -511,6 +513,7 @@ export class NativeHost {
         } catch {
           // 进程已退出，删除过期 Socket
           const socketFile = join(socketDir, file);
+          // Intentionally silent: stale socket cleanup failure is non-critical
           await unlink(socketFile).catch(() => {});
           this.logger.debug(`Removed stale socket: ${socketFile}`);
         }

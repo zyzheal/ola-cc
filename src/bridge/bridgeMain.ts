@@ -2066,7 +2066,7 @@ export async function bridgeMain(args: string[]): Promise<void> {
     await Promise.race([
       Promise.all([shutdown1PEventLogging(), shutdownDatadog()]),
       sleep(500, undefined, { unref: true }),
-    ]).catch(() => {})
+    ]).catch((err) => { console.error('[bridgeMain] shutdown flush failed:', err); })
     // biome-ignore lint/suspicious/noConsole: intentional error output
     console.error(
       'Error: Multi-session Remote Control is not enabled for your account yet.',

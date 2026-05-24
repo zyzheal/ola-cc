@@ -68,7 +68,7 @@ export async function call(
         updateBridgeSessionTitle(bridgeSessionId, newName, {
           baseUrl: getBridgeBaseUrlOverride(),
           getAccessToken: tokenOverride ? () => tokenOverride : undefined,
-        }).catch(() => {}),
+        }).catch((err) => { console.error('[commands:rename] bridge title update failed:', err); }),
     )
   }
 

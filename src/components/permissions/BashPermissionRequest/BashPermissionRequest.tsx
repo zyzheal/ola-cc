@@ -188,7 +188,7 @@ function BashPermissionRequestInner({
         setClassifierDescription(generic);
         setInitialClassifierDescriptionEmpty(false);
       }
-    }).catch(() => {}); // Keep original on error
+    }).catch(() => {}); // Intentionally silent: keep original on error
     return () => abortController.abort();
   }, [command, description]);
 
@@ -247,7 +247,7 @@ function BashPermissionRequestInner({
       if (prefixes.length > 0) {
         setEditablePrefix(`${prefixes[0]}:*`);
       }
-    }).catch(() => {}); // Keep sync prefix on tree-sitter failure
+    }).catch(() => {}); // Intentionally silent: keep sync prefix on tree-sitter failure
     return () => {
       cancelled = true;
     };

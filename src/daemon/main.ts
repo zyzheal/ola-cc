@@ -122,6 +122,7 @@ async function handleRequest(req: DaemonRequest): Promise<DaemonResponse> {
         child.stderr?.pipe(fs.createWriteStream(logPath, { flags: 'a' }))
 
         child.on('exit', code => {
+          // Intentionally silent: session status update failure is non-critical
           updateSession(id, {
             status: code === 0 ? 'completed' : 'failed',
             exitCode: code ?? -1,

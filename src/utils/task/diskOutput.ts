@@ -82,6 +82,7 @@ export function getTaskOutputPath(taskId: string): string {
 const _pendingOps = new Set<Promise<unknown>>()
 function track<T>(p: Promise<T>): Promise<T> {
   _pendingOps.add(p)
+  // Intentionally silent: pending op rejection is tracked via _pendingOps Set
   void p.finally(() => _pendingOps.delete(p)).catch(() => {})
   return p
 }

@@ -197,6 +197,7 @@ export async function countConcurrentSessions(): Promise<number> {
       // or CLAUDE_CONFIG_DIR), a Windows PID won't be probeable from WSL
       // and we'd falsely delete a live session's file. This is just
       // telemetry so conservative undercount is acceptable.
+      // Intentionally silent: stale session file cleanup failure is non-critical
       void unlink(join(dir, file)).catch(() => {})
     }
   }

@@ -1033,7 +1033,7 @@ function startGlobalConfigFreshnessWatcher(): void {
           }
           lastReadFileStats = { mtime: curr.mtimeMs, size: curr.size }
         })
-        .catch(() => {})
+        .catch((err) => { console.error('[config] config file read failed:', err); })
     },
   )
   registerCleanup(async () => {
