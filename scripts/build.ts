@@ -273,7 +273,8 @@ globalThis.feature = globalThis.feature || __BUN_FEATURE_FALLBACK__;
 `
 
   // Prepend shebang and polyfill (shebang must be first line)
-  cliContent = '#!/usr/bin/env node\n' + bunPolyfill + cliContent
+  // Increase Node.js heap limit to 8GB to prevent OOM in long sessions.
+  cliContent = '#!/usr/bin/env node --max-old-space-size=8192\n' + bunPolyfill + cliContent
 
   // Remove any duplicate shebang from original content
   cliContent = cliContent.replace(/(#!\/usr\/bin\/env node\r?\n)(#!\/usr\/bin\/env node\r?\n)/, '$1')

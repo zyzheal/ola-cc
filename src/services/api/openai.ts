@@ -32,6 +32,26 @@
  * 4. Cache usage is logged to stderr when available in the response.
  */
 import { randomUUID } from 'crypto'
+import { ProxyCreditExhaustedError, PROXY_CREDIT_ERROR_PATTERNS } from './errors.js'
+
+/**
+ * Check if an HTTP error response body indicates proxy credit exhaustion.
+ */
+function isProxyCreditExhaustedBody(body: string): boolean {
+  return PROXY_CREDIT_ERROR_PATTERNS.some(p => body.includes(p))
+}
+
+/**
+ * Wrap a non-OK response as the appropriate error type.
+ * Detects proxy credit exhaustion and returns a typed error
+ * instead of a generic OpenAIHttpError.
+ */
+function createErrorFromResponse(status: number, body: string): Error {
+  if (isProxyCreditExhaustedBody(body)) {
+    return new ProxyCreditExhaustedError(body.slice(0, 2000), status, body)
+  }
+  return new OpenAIHttpError(status, `OpenAI API error ${status}: ${body.slice(0, 500)}`)
+}
 
 // Types for the OpenAI-compatible adapter
 export interface OpenAICompatibleClientOptions {
@@ -253,18 +273,12 @@ async function fetchWithRetry(
       // For non-retriable errors (4xx except 429), fail immediately
       if (!isRetriableError(response.status)) {
         const errorText = await response.text().catch(() => '')
-        throw new OpenAIHttpError(
-          response.status,
-          `OpenAI API error ${response.status}: ${errorText.slice(0, 500)}`,
-        )
+        throw createErrorFromResponse(response.status, errorText)
       }
 
       // For retriable errors, buffer the error text for the last attempt
       const errorText = await response.text().catch(() => '')
-      lastError = new OpenAIHttpError(
-        response.status,
-        `OpenAI API error ${response.status}: ${errorText.slice(0, 500)}`,
-      )
+      lastError = createErrorFromResponse(response.status, errorText)
 
       if (attempt < maxRetries) {
         const delay = calculateBackoff(attempt, baseDelay, maxDelay)
@@ -1155,9 +1169,7 @@ export function createOpenAICompatibleClient(options: OpenAICompatibleClientOpti
 
             if (!response.ok) {
               const errorText = await response.text().catch(() => '')
-              throw new Error(
-                `OpenAI API error ${response.status}: ${errorText.slice(0, 500)}`,
-              )
+              throw createErrorFromResponse(response.status, errorText)
             }
 
             const data = (await response.json()) as OpenAIChatCompletionResponse
@@ -1251,9 +1263,7 @@ export function createOpenAICompatibleClient(options: OpenAICompatibleClientOpti
 
           if (!fetchResponse.ok) {
             const errorText = await fetchResponse.text().catch(() => '')
-            throw new Error(
-              `OpenAI API error ${fetchResponse.status}: ${errorText.slice(0, 500)}`,
-            )
+            throw createErrorFromResponse(fetchResponse.status, errorText)
           }
 
           // Create the streaming response object

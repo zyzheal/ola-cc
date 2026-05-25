@@ -154,6 +154,59 @@ export function isMediaSizeErrorMessage(msg: AssistantMessage): boolean {
 export const CREDIT_BALANCE_TOO_LOW_ERROR_MESSAGE = 'Credit balance is too low'
 export const PROXY_CREDIT_EXHAUSTED_ERROR_MESSAGE =
   '代理额度不足 · 请充值或切换代理端点'
+
+/**
+ * Shared patterns for detecting proxy gateway credit exhaustion errors.
+ * Single source of truth — consumed by both isProxyCreditExhaustedMessage
+ * (errors.ts) and createErrorFromResponse (openai.ts).
+ */
+export const PROXY_CREDIT_ERROR_PATTERNS = [
+  'NotEnoughCvError',
+  'code: 11210',
+  '"code":"11210"',
+  '代理额度不足',
+  'quota is exhausted',
+  'insufficient quota',
+  '余额不足',
+  '额度不足',
+] as const
+
+/**
+ * Dedicated error type for proxy gateway credit exhaustion.
+ * Thrown by the OpenAI-compatible client (openai.ts) when it detects
+ * proxy quota errors in the HTTP response. Using a typed error instead
+ * of string matching eliminates false positives and makes the error
+ * path explicit across withRetry, query.ts, and getAssistantMessageFromError.
+ */
+export class ProxyCreditExhaustedError extends Error {
+  constructor(
+    message: string,
+    public readonly httpStatus?: number,
+    public readonly rawResponse?: string,
+  ) {
+    super(message)
+    this.name = 'ProxyCreditExhaustedError'
+  }
+}
+
+/**
+ * Detect proxy gateway credit exhaustion errors from any error type.
+ * Primary path: instanceof ProxyCreditExhaustedError (zero false positives).
+ * Fallback: string matching for Anthropic API errors that can't be wrapped
+ * at the OpenAI shim layer.
+ *
+ * Covers:
+ * - ProxyCreditExhaustedError typed instances
+ * - Xunfei (讯飞) NotEnoughCvError (code 11210)
+ * - moma / other proxy Chinese error messages (代理额度不足)
+ * - Generic proxy quota/balance errors
+ */
+export function isProxyCreditExhaustedMessage(error: unknown): boolean {
+  if (error instanceof ProxyCreditExhaustedError) return true
+  if (!(error instanceof Error)) return false
+  const msg = error.message
+  return PROXY_CREDIT_ERROR_PATTERNS.some(p => msg.includes(p))
+}
 export const INVALID_API_KEY_ERROR_MESSAGE = 'Not logged in · Please run /login'
 export const INVALID_API_KEY_ERROR_MESSAGE_EXTERNAL =
   'Invalid API key · Fix external API key'
@@ -783,13 +836,9 @@ export function getAssistantMessageFromError(
   }
 
   // Proxy gateway credit exhaustion — e.g. Xunfei (讯飞) NotEnoughCvError
-  // (code 11210). This is a permanent condition; retrying won't help.
-  if (
-    error instanceof Error &&
-    (error.message.includes('NotEnoughCvError') ||
-     error.message.includes('code: 11210') ||
-     error.message.includes('"code":"11210"'))
-  ) {
+  // (code 11210) or moma "代理额度不足". This is a permanent condition;
+  // retrying won't help until the user tops up credits.
+  if (isProxyCreditExhaustedMessage(error)) {
     return createAssistantAPIErrorMessage({
       content: PROXY_CREDIT_EXHAUSTED_ERROR_MESSAGE,
       error: 'billing_error',
@@ -1133,13 +1182,8 @@ export function classifyAPIError(error: unknown): string {
     return 'credit_balance_low'
   }
 
-  // Proxy gateway credit exhaustion (Xunfei/讯飞 code 11210)
-  if (
-    error instanceof Error &&
-    (error.message.includes('NotEnoughCvError') ||
-     error.message.includes('code: 11210') ||
-     error.message.includes('"code":"11210"'))
-  ) {
+  // Proxy gateway credit exhaustion (Xunfei/讯飞 code 11210, moma 代理额度不足)
+  if (isProxyCreditExhaustedMessage(error)) {
     return 'proxy_credit_exhausted'
   }
 

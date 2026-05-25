@@ -559,6 +559,28 @@ export function extractDiscoveredToolNames(messages: Message[]): Set<string> {
       continue
     }
 
+    // Assistant messages contain tool_use blocks — if a deferred tool was
+    // actually invoked, its schema must have been sent to the API. After
+    // compaction the tool_reference is gone, but the tool_use remains, so
+    // we can recover the discovered set from it.
+    if (msg.type === 'assistant' && msg.message?.content) {
+      const content = msg.message.content
+      if (Array.isArray(content)) {
+        for (const block of content) {
+          if (
+            typeof block === 'object' &&
+            block !== null &&
+            'type' in block &&
+            block.type === 'tool_use' &&
+            'name' in block &&
+            typeof block.name === 'string'
+          ) {
+            discoveredTools.add(block.name)
+          }
+        }
+      }
+    }
+
     // Only user messages contain tool_result blocks (responses to tool_use)
     if (msg.type !== 'user') continue
 
