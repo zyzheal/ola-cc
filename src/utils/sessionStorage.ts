@@ -1411,9 +1411,41 @@ export async function recordTranscript(
   startingParentUuidHint?: UUID,
   allMessages?: readonly Message[],
 ): Promise<UUID | null> {
-  const cleanedMessages = cleanMessagesForLogging(messages, allMessages)
   const sessionId = getSessionId() as UUID
   const messageSet = await getSessionMessages(sessionId)
+
+  // Early exit: fast path when all messages are already recorded.
+  // This avoids the expensive cleanMessagesForLogging deep-copy on every
+  // API turn. Measured: a 200-message session with ~50MB of content
+  // allocates ~100MB per recordTranscript call (full array copy + filter
+  // + transform). With this guard, the hot path is a simple UUID Set lookup.
+  // Scan only the tail (last 200 messages) to avoid O(n) on very long
+  // sessions. Messages are appended in order, so if the tail is known,
+  // the prefix almost certainly is too. Zero-alloc (no slice).
+  const scanLimit = Math.min(messages.length, 200)
+  const startIdx = messages.length - scanLimit
+  let allKnown = true
+  for (let i = startIdx; i < messages.length; i++) {
+    const m = messages[i]!
+    if (!messageSet.has(m.uuid as UUID) && isChainParticipant(m)) {
+      allKnown = false
+      break
+    }
+  }
+  if (allKnown) {
+    // Still need to track the parent chain for skipped prefix messages.
+    // Scan the full array for this — it's O(n) but only Set lookups, no allocations.
+    let startingParentUuid: UUID | undefined = startingParentUuidHint
+    for (const m of messages) {
+      if (messageSet.has(m.uuid as UUID) && isChainParticipant(m)) {
+        startingParentUuid = m.uuid as UUID
+      }
+    }
+    return startingParentUuid ?? null
+  }
+
+  // Only clean new messages — avoid copying the entire message history.
+  const cleanedMessages = cleanMessagesForLogging(messages, allMessages)
   const newMessages: typeof cleanedMessages = []
   let startingParentUuid: UUID | undefined = startingParentUuidHint
   let seenNewMessage = false

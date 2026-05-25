@@ -44,7 +44,7 @@ import {
   checkMockRateLimitError,
   isMockRateLimitError,
 } from '../rateLimitMocking.js'
-import { REPEATED_529_ERROR_MESSAGE } from './errors.js'
+import { REPEATED_529_ERROR_MESSAGE, isProxyCreditExhaustedMessage } from './errors.js'
 import { extractConnectionErrorDetails } from './errorUtils.js'
 
 const abortError = () => new APIUserAbortError()
@@ -371,6 +371,12 @@ export async function* withRetry<T>(
         throw new CannotRetryError(error, retryContext)
       }
 
+      // Proxy credit exhaustion is a permanent condition — no retry regardless
+      // of error type (OpenAI shim throws plain Error, not APIError).
+      if (isProxyCreditExhaustedMessage(error)) {
+        throw new CannotRetryError(error, retryContext)
+      }
+
       // AWS/GCP errors aren't always APIError, but can be retried
       const handledCloudAuthError =
         handleAwsCredentialError(error) || handleGcpCredentialError(error)
@@ -628,30 +634,6 @@ function isOAuthTokenRevokedError(error: unknown): boolean {
   )
 }
 
-/**
- * Detect proxy gateway credit exhaustion errors. These are permanent
- * conditions — retrying won't help until the user tops up credits.
- *
- * Covers:
- * - Xunfei (讯飞) NotEnoughCvError (code 11210)
- * - Similar proxy gateway credit/balance errors
- */
-function isProxyCreditExhaustedError(error: APIError): boolean {
-  const msg = error.message ?? ''
-  // Xunfei proxy: code 11210, NotEnoughCvError
-  if (msg.includes('NotEnoughCvError') || msg.includes('code: 11210')) {
-    return true
-  }
-  // Generic proxy credit exhaustion patterns
-  if (
-    msg.includes('code: 11210') ||
-    (msg.includes('"code":"11210"') && msg.includes('one_api_error'))
-  ) {
-    return true
-  }
-  return false
-}
-
 function isBedrockAuthError(error: unknown): boolean {
   if (isEnvTruthy(process.env.OLA_CC_USE_BEDROCK)) {
     // AWS libs reject without an API call if .aws holds a past Expiration value
@@ -724,9 +706,9 @@ function shouldRetry(error: APIError): boolean {
   }
 
   // Proxy credit/balance errors are permanent conditions — retrying won't help.
-  // Covers Xunfei (讯飞) NotEnoughCvError (code 11210) and similar proxy
-  // gateway credit exhaustion errors.
-  if (isProxyCreditExhaustedError(error)) {
+  // Covers Xunfei (讯飞) NotEnoughCvError (code 11210), moma proxy, and similar
+  // proxy gateway credit exhaustion errors.
+  if (isProxyCreditExhaustedMessage(error)) {
     return false
   }
 

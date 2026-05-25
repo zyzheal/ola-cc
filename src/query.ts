@@ -46,6 +46,8 @@ import { sleep } from "./utils/sleep.js";
 import {
 	PROMPT_TOO_LONG_ERROR_MESSAGE,
 	isPromptTooLongMessage,
+	isProxyCreditExhaustedMessage,
+	PROXY_CREDIT_EXHAUSTED_ERROR_MESSAGE,
 } from "./services/api/errors.js";
 import { logAntError, logForDebugging } from "./utils/debug.js";
 import {
@@ -1382,6 +1384,18 @@ async function* queryLoop(
 
 			// Use retryConfig from goal, or fallback to default config if not set
 			const retryConfig = goal?.retryConfig ?? getRetryConfig({});
+
+			// Proxy credit exhaustion — permanent error that should NOT trigger goal
+			// retry loop. Surface the error silently and let the user switch providers
+			// or top up credits. The next query with a different provider will work.
+			// CannotRetryError.message = errorMessage(originalError) which preserves
+			// the original error text, so the string matching catches wrapped errors too.
+			if (isProxyCreditExhaustedMessage(error)) {
+				yield createAssistantAPIErrorMessage({
+					content: PROXY_CREDIT_EXHAUSTED_ERROR_MESSAGE,
+				});
+				return { reason: "proxy_credit_exhausted" };
+			}
 
 			if (
 				error instanceof CannotRetryError &&
