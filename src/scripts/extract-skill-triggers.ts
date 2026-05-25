@@ -12,7 +12,7 @@ import { join } from 'path'
 import { parseFrontmatter } from '../utils/frontmatterParser.js'
 
 const SUPERPOWERS_SKILLS_DIR = process.env.SUPERPOWERS_SKILLS_DIR ??
-  join(process.env.HOME ?? '', '.claude/plugins/cache/claude-plugins-official/superpowers/5.0.7/skills')
+  join(process.env.HOME ?? '', '.ola-cc/plugins/cache/claude-plugins-official/superpowers/5.0.7/skills')
 
 // Stopwords to filter out — common English/Chinese words that add no discrimination value
 const STOPWORDS = new Set([
