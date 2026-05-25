@@ -8,7 +8,7 @@ import type {
   BetaStopReason,
 } from '@anthropic-ai/sdk/resources/beta/messages/messages.mjs'
 import { AFK_MODE_BETA_HEADER } from 'src/constants/betas.js'
-import type { SDKAssistantMessageError } from 'src/entrypoints/agentSdkTypes.js'
+import type { SDKAssistantMessageError } from 'shims/claude-agent-sdk/sdk.d.ts'
 import type {
   AssistantMessage,
   Message,
@@ -108,7 +108,7 @@ export function getPromptTooLongTokenGap(
     return undefined
   }
   const { actualTokens, limitTokens } = parsePromptTooLongTokenCounts(
-    msg.errorDetails,
+    msg.errorDetails as string,
   )
   if (actualTokens === undefined || limitTokens === undefined) {
     return undefined
@@ -148,10 +148,12 @@ export function isMediaSizeErrorMessage(msg: AssistantMessage): boolean {
   return (
     msg.isApiErrorMessage === true &&
     msg.errorDetails !== undefined &&
-    isMediaSizeError(msg.errorDetails)
+    isMediaSizeError(msg.errorDetails as string)
   )
 }
 export const CREDIT_BALANCE_TOO_LOW_ERROR_MESSAGE = 'Credit balance is too low'
+export const PROXY_CREDIT_EXHAUSTED_ERROR_MESSAGE =
+  '代理额度不足 · 请充值或切换代理端点'
 export const INVALID_API_KEY_ERROR_MESSAGE = 'Not logged in · Please run /login'
 export const INVALID_API_KEY_ERROR_MESSAGE_EXTERNAL =
   'Invalid API key · Fix external API key'
@@ -338,7 +340,8 @@ function logToolUseToolResultMismatch(
         }
         case 'attachment':
           if ('attachment' in msg) {
-            preNormalizedSeq.push(`attachment:${msg.attachment.type}`)
+            const attachment = msg.attachment as { type?: string }
+            preNormalizedSeq.push(`attachment:${attachment.type ?? 'unknown'}`)
           }
           break
         case 'system':
@@ -778,6 +781,21 @@ export function getAssistantMessageFromError(
       error: 'billing_error',
     })
   }
+
+  // Proxy gateway credit exhaustion — e.g. Xunfei (讯飞) NotEnoughCvError
+  // (code 11210). This is a permanent condition; retrying won't help.
+  if (
+    error instanceof Error &&
+    (error.message.includes('NotEnoughCvError') ||
+     error.message.includes('code: 11210') ||
+     error.message.includes('"code":"11210"'))
+  ) {
+    return createAssistantAPIErrorMessage({
+      content: PROXY_CREDIT_EXHAUSTED_ERROR_MESSAGE,
+      error: 'billing_error',
+    })
+  }
+
   // "Organization has been disabled" — commonly a stale ANTHROPIC_API_KEY
   // from a previous employer/project overriding subscription auth. Only handle
   // the env-var case; apiKeyHelper and /login-managed keys mean the active
@@ -839,9 +857,7 @@ export function getAssistantMessageFromError(
         ? `Authentication failed · Check your API key and endpoint: ${error.message.slice(0, 200)}`
         : isExternalSource
           ? INVALID_API_KEY_ERROR_MESSAGE_EXTERNAL
-          : source === 'none'
-            ? 'Authentication failed · Check your API key'
-            : INVALID_API_KEY_ERROR_MESSAGE,
+          : INVALID_API_KEY_ERROR_MESSAGE,
     })
   }
 
@@ -1115,6 +1131,16 @@ export function classifyAPIError(error: unknown): string {
       .includes(CREDIT_BALANCE_TOO_LOW_ERROR_MESSAGE.toLowerCase())
   ) {
     return 'credit_balance_low'
+  }
+
+  // Proxy gateway credit exhaustion (Xunfei/讯飞 code 11210)
+  if (
+    error instanceof Error &&
+    (error.message.includes('NotEnoughCvError') ||
+     error.message.includes('code: 11210') ||
+     error.message.includes('"code":"11210"'))
+  ) {
+    return 'proxy_credit_exhausted'
   }
 
   // Authentication errors

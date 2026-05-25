@@ -628,6 +628,30 @@ function isOAuthTokenRevokedError(error: unknown): boolean {
   )
 }
 
+/**
+ * Detect proxy gateway credit exhaustion errors. These are permanent
+ * conditions — retrying won't help until the user tops up credits.
+ *
+ * Covers:
+ * - Xunfei (讯飞) NotEnoughCvError (code 11210)
+ * - Similar proxy gateway credit/balance errors
+ */
+function isProxyCreditExhaustedError(error: APIError): boolean {
+  const msg = error.message ?? ''
+  // Xunfei proxy: code 11210, NotEnoughCvError
+  if (msg.includes('NotEnoughCvError') || msg.includes('code: 11210')) {
+    return true
+  }
+  // Generic proxy credit exhaustion patterns
+  if (
+    msg.includes('code: 11210') ||
+    (msg.includes('"code":"11210"') && msg.includes('one_api_error'))
+  ) {
+    return true
+  }
+  return false
+}
+
 function isBedrockAuthError(error: unknown): boolean {
   if (isEnvTruthy(process.env.OLA_CC_USE_BEDROCK)) {
     // AWS libs reject without an API call if .aws holds a past Expiration value
@@ -696,6 +720,13 @@ function handleGcpCredentialError(error: unknown): boolean {
 function shouldRetry(error: APIError): boolean {
   // Never retry mock errors - they're from /mock-limits command for testing
   if (isMockRateLimitError(error)) {
+    return false
+  }
+
+  // Proxy credit/balance errors are permanent conditions — retrying won't help.
+  // Covers Xunfei (讯飞) NotEnoughCvError (code 11210) and similar proxy
+  // gateway credit exhaustion errors.
+  if (isProxyCreditExhaustedError(error)) {
     return false
   }
 

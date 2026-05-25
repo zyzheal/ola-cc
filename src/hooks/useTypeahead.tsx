@@ -374,6 +374,8 @@ export function useTypeahead({
   } = useNotifications();
   const thinkingToggleShortcut = useShortcutDisplay('chat:thinkingToggle', 'Chat', 'alt+t');
   const [suggestionType, setSuggestionType] = useState<SuggestionType>('none');
+  const suggestionTypeRef = useRef(suggestionType);
+  suggestionTypeRef.current = suggestionType;
 
   // Compute max column width from ALL commands once (not filtered results)
   // This prevents layout shift when filtering
@@ -642,7 +644,7 @@ export function useTypeahead({
       if (hashMatch && hasSlackMcpServer(store.getState().mcp.clients)) {
         debouncedFetchSlackChannels(hashMatch[2]!);
         return;
-      } else if (suggestionType === 'slack-channel') {
+      } else if (suggestionTypeRef.current === 'slack-channel') {
         debouncedFetchSlackChannels.cancel();
         clearSuggestions();
       }
@@ -786,7 +788,7 @@ export function useTypeahead({
       }
       return;
     }
-    if (suggestionType === 'command') {
+    if (suggestionTypeRef.current === 'command') {
       // If we had command suggestions but the input no longer starts with '/'
       // we need to clear the suggestions. However, we should not return
       // because there may be relevant @ symbol and file suggestions.
@@ -800,12 +802,12 @@ export function useTypeahead({
         commandArgumentHint: undefined
       } : prev);
     }
-    if (suggestionType === 'custom-title') {
+    if (suggestionTypeRef.current === 'custom-title') {
       // If we had custom-title suggestions but the input is no longer /resume
       // we need to clear the suggestions.
       clearSuggestions();
     }
-    if (suggestionType === 'agent' && suggestionsRef.current.some((s: SuggestionItem) => s.id?.startsWith('dm-'))) {
+    if (suggestionTypeRef.current === 'agent' && suggestionsRef.current.some((s: SuggestionItem) => s.id?.startsWith('dm-'))) {
       // If we had team member suggestions but the input no longer has @
       // we need to clear the suggestions.
       const hasAt = value.substring(0, effectiveCursorOffset).match(/(^|\s)@([\w-]*)$/);
@@ -855,7 +857,7 @@ export function useTypeahead({
     }
 
     // If we have active file suggestions or the input changed, check for file suggestions
-    if (suggestionType === 'file') {
+    if (suggestionTypeRef.current === 'file') {
       const completionToken = extractCompletionToken(value, effectiveCursorOffset, true);
       if (completionToken) {
         const searchToken = extractSearchToken(completionToken);
@@ -872,7 +874,7 @@ export function useTypeahead({
     }
 
     // Clear shell suggestions if not in bash mode OR if input has changed
-    if (suggestionType === 'shell') {
+    if (suggestionTypeRef.current === 'shell') {
       const inputSnapshot = (suggestionsRef.current[0]?.metadata as {
         inputSnapshot?: string;
       })?.inputSnapshot;
@@ -881,7 +883,7 @@ export function useTypeahead({
         clearSuggestions();
       }
     }
-  }, [suggestionType, commands, setSuggestionsState, clearSuggestions, debouncedFetchFileSuggestions, debouncedFetchSlackChannels, mode, suppressSuggestions,
+  }, [commands, setSuggestionsState, clearSuggestions, debouncedFetchFileSuggestions, debouncedFetchSlackChannels, mode, suppressSuggestions,
   // Note: using suggestionsRef instead of suggestions to avoid recreating
   // this callback when only selectedSuggestion changes (not the suggestions list)
   allCommandsMaxWidth]);
