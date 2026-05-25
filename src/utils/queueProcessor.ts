@@ -1,4 +1,5 @@
 import type { QueuedCommand } from '../types/textInputTypes.js'
+import type { QueryGuard } from './QueryGuard.js'
 import {
   dequeue,
   dequeueAllMatching,
@@ -8,6 +9,7 @@ import {
 
 type ProcessQueueParams = {
   executeInput: (commands: QueuedCommand[]) => Promise<void>
+  queryGuard: QueryGuard
 }
 
 type ProcessQueueResult = {
@@ -51,6 +53,7 @@ function isSlashCommand(cmd: QueuedCommand): boolean {
  */
 export function processQueueIfReady({
   executeInput,
+  queryGuard,
 }: ProcessQueueParams): ProcessQueueResult {
   // This processor runs on the REPL main thread between turns. Skip anything
   // addressed to a subagent — an unfiltered peek() returning a subagent
@@ -69,6 +72,11 @@ export function processQueueIfReady({
   // Bash commands need per-command error isolation, exit codes, and progress UI.
   if (isSlashCommand(next) || next.mode === 'bash') {
     const cmd = dequeue(isMainThread)!
+    // Reserve the guard IMMEDIATELY after dequeue — before the async
+    // executeInput chain starts. This closes the race window where
+    // React's useEffect could fire processQueueIfReady again before
+    // the downstream executeUserInput reaches queryGuard.reserve().
+    queryGuard.reserve()
     void executeInput([cmd])
     return { processed: true }
   }
@@ -82,6 +90,8 @@ export function processQueueIfReady({
     return { processed: false }
   }
 
+  // Reserve the guard immediately after dequeue.
+  queryGuard.reserve()
   void executeInput(commands)
   return { processed: true }
 }
