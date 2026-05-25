@@ -50,14 +50,14 @@ export function useQueueProcessor({
     if (hasActiveLocalJsxUI) return
     if (queueSnapshot.length === 0) return
 
-    // Reservation is now owned by handlePromptSubmit (inside executeUserInput's
-    // try block). The sync chain executeQueuedInput → handlePromptSubmit →
-    // executeUserInput → queryGuard.reserve() runs before the first real await,
-    // so by the time React re-runs this effect (due to the dequeue-triggered
-    // snapshot change), isQueryActive is already true (dispatching) and the
-    // guard above returns early. handlePromptSubmit's finally releases the
-    // reservation via cancelReservation() (no-op if onQuery already ran end()).
-    processQueueIfReady({ executeInput: executeQueuedInput })
+    // Reservation is now owned by processQueueIfReady — the guard is
+    // reserved IMMEDIATELY after dequeue, before the async executeInput
+    // chain starts. This closes the race window where React's useEffect
+    // could fire processQueueIfReady again before the downstream
+    // executeUserInput reaches queryGuard.reserve(). The downstream
+    // executeUserInput's reserve() call becomes a no-op since the guard
+    // is already in dispatching/running state.
+    processQueueIfReady({ executeInput: executeQueuedInput, queryGuard })
   }, [
     queueSnapshot,
     isQueryActive,
