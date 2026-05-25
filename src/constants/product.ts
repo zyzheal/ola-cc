@@ -39,11 +39,9 @@ function lazyEnv(name: string, defaultValue?: string): string {
         }
       }
       // Dynamic property access on the lazily-resolved string value.
-      // The Proxy presents a string-like interface; actual property
-      // access (methods like charAt, toString, length, etc.) is
-      // resolved at runtime against the cached string.
+      // Use direct property access which auto-boxes primitives to String objects.
       const v = value
-      const result = Reflect.get(v as unknown as object, prop, v)
+      const result = (v as any)[prop]
       return typeof result === 'function' ? result.bind(v) : result
     },
     getOwnPropertyDescriptor() {

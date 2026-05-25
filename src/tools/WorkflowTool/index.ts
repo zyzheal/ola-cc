@@ -89,7 +89,8 @@ export const WorkflowTool = buildTool({
     }
   },
   name: 'Workflow',
-  description: 'Execute a declarative YAML workflow with fan-out, join, pipeline, and conditional stages. Use dry_run: true to validate without executing.',
+  description: async () => 'Execute a declarative YAML workflow with fan-out, join, pipeline, and conditional stages. Use dry_run: true to validate without executing.',
+  prompt: async () => 'Execute a declarative YAML workflow with fan-out, join, pipeline, and conditional stages. Use dry_run: true to validate without executing.',
   inputSchema,
   outputSchema,
 })

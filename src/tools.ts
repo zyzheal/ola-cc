@@ -80,17 +80,6 @@ try {
   require('./tools/WorkflowTool/bundled/index.js').initBundledWorkflows()
   WorkflowTool = require('./tools/WorkflowTool/WorkflowTool.js').WorkflowTool
 } catch (e) { console.error('[tools] Failed to load WorkflowTool:', e) }
-// Optional tools that may not exist
-let TerminalCaptureTool = null
-let WebBrowserTool = null
-let SnipTool = null
-let CtxInspectTool = null
-let ListPeersTool = null
-try { TerminalCaptureTool = require('./tools/TerminalCaptureTool/TerminalCaptureTool.js').TerminalCaptureTool } catch (e) { console.error('[tools] Failed to load TerminalCaptureTool:', e) }
-try { WebBrowserTool = require('./tools/WebBrowserTool/WebBrowserTool.js').WebBrowserTool } catch (e) { console.error('[tools] Failed to load WebBrowserTool:', e) }
-try { SnipTool = require('./tools/SnipTool/SnipTool.js').SnipTool } catch (e) { console.error('[tools] Failed to load SnipTool:', e) }
-try { CtxInspectTool = require('./tools/CtxInspectTool/CtxInspectTool.js').CtxInspectTool } catch (e) { console.error('[tools] Failed to load CtxInspectTool:', e) }
-try { ListPeersTool = require('./tools/ListPeersTool/ListPeersTool.js').ListPeersTool } catch (e) { console.error('[tools] Failed to load ListPeersTool:', e) }
 /* eslint-enable custom-rules/no-process-env-top-level, @typescript-eslint/no-require-imports */
 import type { ToolPermissionContext } from './Tool.js'
 import { getDenyRuleForTool } from './utils/permissions/permissions.js'
@@ -171,13 +160,11 @@ export function getAllBaseTools(): Tools {
     EnterPlanModeTool,
     ConfigTool,
     TungstenTool,
-    WebBrowserTool,
     TaskCreateTool,
     TaskGetTool,
     TaskUpdateTool,
     TaskListTool,
     OverflowTestTool,
-    TerminalCaptureTool,
     LSPTool,
     EnterWorktreeTool,
     ExitWorktreeTool,
@@ -193,7 +180,6 @@ export function getAllBaseTools(): Tools {
     MonitorTool,
     BriefTool,
     SendUserFileTool,
-    SnipTool,
     TestingPermissionTool,
     ListMcpResourcesTool,
     ReadMcpResourceTool,
@@ -202,8 +188,6 @@ export function getAllBaseTools(): Tools {
     ...(SuggestBackgroundPRTool ? [SuggestBackgroundPRTool] : []),
     ...(PushNotificationTool ? [PushNotificationTool] : []),
     ...(SubscribePRTool ? [SubscribePRTool] : []),
-    ...(CtxInspectTool ? [CtxInspectTool] : []),
-    ...(ListPeersTool ? [ListPeersTool] : []),
     UpdateGoalTool,
   ].filter(Boolean)
 }
