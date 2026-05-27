@@ -219,8 +219,6 @@ function isNumericParameter(key: string): boolean {
     // TaskOutputTool
     'wait_up_to',
     'waitUpTo',
-    'task_id',
-    'taskId',
     // Network/ports
     'port',
     // Array/list indices
