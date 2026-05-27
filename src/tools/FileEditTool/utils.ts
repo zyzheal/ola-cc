@@ -93,6 +93,45 @@ export function findActualString(
 }
 
 /**
+ * When old_string is not found, return a helpful hint showing the closest
+ * matching text in the file. This helps the LLM auto-correct by seeing what
+ * the file actually contains near where it expected to edit.
+ *
+ * Uses longest-common-substring to find the best match, then returns ~200 chars
+ * of surrounding context from the file.
+ */
+export function getClosestMatchContext(
+  fileContent: string,
+  searchString: string,
+): string {
+  const normalizedSearch = normalizeQuotes(searchString)
+  const normalizedFile = normalizeQuotes(fileContent)
+
+  const searchLen = normalizedSearch.length
+  if (searchLen === 0) return ''
+
+  // Find the longest prefix of the search string that appears in the file
+  for (let len = Math.min(searchLen, 100); len >= 10; len -= 5) {
+    const prefix = normalizedSearch.substring(0, len)
+    const pos = normalizedFile.indexOf(prefix)
+    if (pos !== -1) {
+      // Return context around the match
+      const ctxBefore = 150
+      const ctxAfter = 150
+      const start = Math.max(0, pos - ctxBefore)
+      const end = Math.min(fileContent.length, pos + len + ctxAfter)
+      const context = fileContent.substring(start, end)
+      const pre = start > 0 ? '...' : ''
+      const suf = end < fileContent.length ? '...' : ''
+      return `${pre}${context}${suf}`
+    }
+  }
+
+  // No meaningful match — return first 200 chars of file
+  return fileContent.substring(0, Math.min(200, fileContent.length))
+}
+
+/**
  * When old_string matched via quote normalization (curly quotes in file,
  * straight quotes from model), apply the same curly quote style to new_string
  * so the edit preserves the file's typography.

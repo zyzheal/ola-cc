@@ -73,6 +73,7 @@ import {
 import {
   areFileEditsInputsEquivalent,
   findActualString,
+  getClosestMatchContext,
   getPatchForEdit,
   preserveQuoteStyle,
 } from './utils.js'
@@ -316,10 +317,12 @@ export const FileEditTool = buildTool({
     // Use findActualString to handle quote normalization
     const actualOldString = findActualString(file, old_string)
     if (!actualOldString) {
+      // Provide closest match context to help the model auto-correct
+      const context = getClosestMatchContext(file, old_string)
       return {
         result: false,
         behavior: 'ask',
-        message: `String to replace not found in file.\nString: ${old_string}`,
+        message: `String to replace not found in file.\nString: ${old_string}\n\nClosest match in file:\n${context}\n\nRead the file again to get the current content, then retry with an accurate old_string.`,
         meta: {
           isFilePathAbsolute: String(isAbsolute(file_path)),
         },
