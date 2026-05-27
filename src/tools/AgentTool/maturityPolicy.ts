@@ -111,13 +111,13 @@ export function getNextMaturityHint(
 
   switch (current) {
     case 'draft':
-      if (executionCount < p.tested.minRuns - executionCount + 1) {
+      if (executionCount < p.tested.minRuns) {
         const needed = p.tested.minRuns - executionCount
         return t.draftNeedsRuns(needed)
       }
       return t.draftNeedsAvg(p.tested.minAvg)
     case 'tested':
-      if (executionCount < p.hardened.minRuns - executionCount + 1) {
+      if (executionCount < p.hardened.minRuns) {
         const needed = p.hardened.minRuns - executionCount
         return t.testedNeedsRuns(needed, p.hardened.minAvg)
       }

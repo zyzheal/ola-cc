@@ -113,6 +113,37 @@ export interface TelemetryEntry {
   errors: string[]
   edgeCases: string[]
   repairTriggered: boolean
+  /** Step-level execution trace (ASAEF Axiom 3: 可观测即诊断力) */
+  steps?: TraceStep[]
+}
+
+/**
+ * Step-level trace record (Meta-Harness trace.jsonl format)
+ *
+ * Each step records: tool call, inputs, outputs, timing, and outcome.
+ * Enables failure indexing, correlation, and replay (Axiom 3 requirements).
+ */
+export interface TraceStep {
+  /** Step number in the skill workflow */
+  step: number
+  /** Step name from SKILL.md workflow */
+  stepName: string
+  /** Tool name called (e.g., 'singularity', 'Read', 'Edit') */
+  tool: string
+  /** Tool call input parameters */
+  toolInput: Record<string, unknown>
+  /** Tool call output (truncated to 500 chars for storage efficiency) */
+  toolOutput: string
+  /** Step start time (ISO-8601) */
+  startedAt: string
+  /** Step end time (ISO-8601) */
+  endedAt: string
+  /** Step duration in ms */
+  duration_ms: number
+  /** Step outcome: success, failure, or skipped */
+  outcome: 'success' | 'failure' | 'skipped'
+  /** Error message if outcome is failure */
+  error?: string
 }
 
 export interface RegistryEntry {
@@ -336,6 +367,7 @@ export class TelemetryWriter {
       filesCreated?: string[]
       filesModified?: string[]
       duration_ms?: number
+      steps?: TraceStep[]
     } = {},
   ): string {
     ensureDataDirs()
@@ -365,6 +397,7 @@ export class TelemetryWriter {
       errors: options.error ? [options.error] : [],
       edgeCases: options.edgeCase ? [options.edgeCase] : [],
       repairTriggered: false,
+      steps: options.steps ?? undefined,
     }
 
     fs.writeFileSync(filepath, JSON.stringify(entry, null, 2))

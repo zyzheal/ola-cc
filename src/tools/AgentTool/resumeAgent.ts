@@ -6,9 +6,10 @@ import { isCoordinatorMode } from '../../coordinator/coordinatorMode.js'
 import type { CanUseToolFn } from '../../hooks/useCanUseTool.js'
 import type { ToolUseContext } from '../../Tool.js'
 import { registerAsyncAgent } from '../../tasks/LocalAgentTask/LocalAgentTask.js'
-// Lazy import to prevent potential circular dependency with tools.ts
-const getAssembleToolPool =
-  () => (require('../../tools.js') as typeof import('../../tools.js')).assembleToolPool;
+// Use registration-based approach to break circular dependency with tools.ts
+// (see AgentTool.tsx registerAssembleToolPool for details)
+import { getRegisteredAssembleToolPool } from './AgentTool.js'
+const getAssembleToolPool = getRegisteredAssembleToolPool;
 import { asAgentId } from '../../types/ids.js'
 import { runWithAgentContext } from '../../utils/agentContext.js'
 import { runWithCwdOverride } from '../../utils/cwd.js'

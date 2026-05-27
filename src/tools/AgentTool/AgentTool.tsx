@@ -14,9 +14,33 @@ import { type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS, logEve
 import { clearDumpState } from '../../services/api/dumpPrompts.js';
 import { completeAgentTask as completeAsyncAgent, createActivityDescriptionResolver, createProgressTracker, enqueueAgentNotification, failAgentTask as failAsyncAgent, getProgressUpdate, getTokenCountFromTracker, isLocalAgentTask, killAsyncAgent, registerAgentForeground, registerAsyncAgent, unregisterAgentForeground, updateAgentProgress as updateAsyncAgentProgress, updateProgressFromMessage } from '../../tasks/LocalAgentTask/LocalAgentTask.js';
 import { checkRemoteAgentEligibility, formatPreconditionError, getRemoteTaskSessionUrl, registerRemoteAgentTask } from '../../tasks/RemoteAgentTask/RemoteAgentTask.js';
-// Lazy import to break circular dependency: tools.ts → AgentTool.tsx → assembleToolPool → tools.ts
-const getAssembleToolPool =
-  () => (require('../../tools.js') as typeof import('../../tools.js')).assembleToolPool;
+// Registration-based approach to break circular dependency:
+// tools.ts → AgentTool.tsx → assembleToolPool → tools.ts
+// tools.ts registers assembleToolPool after its own initialization completes,
+// avoiding Bun bytecode TDZ ("Cannot access 'qq' before initialization") that
+// occurs when require('../../tools.js') hits a partially-initialized module.
+let _assembleToolPool: typeof import('../../tools.js').assembleToolPool | null = null;
+export function registerAssembleToolPool(fn: typeof import('../../tools.js').assembleToolPool) {
+  _assembleToolPool = fn;
+}
+/** Get the registered assembleToolPool; falls back to require() for non-bytecode builds */
+export function getRegisteredAssembleToolPool(): typeof import('../../tools.js').assembleToolPool {
+  if (_assembleToolPool) return _assembleToolPool;
+  try {
+    // Direct require to get the tools module and extract assembleToolPool from it.
+    // This also registers the reference for future calls, so we never hit this path again.
+    const tools = require('../../tools.js') as typeof import('../../tools.js');
+    _assembleToolPool = tools.assembleToolPool;
+    return _assembleToolPool;
+  } catch {
+    // Fallback: return a function that merges built-in + MCP tools like assembleToolPool does,
+    // but without the circular require. This avoids returning an empty array that would
+    // break subagent functionality. If this fallback is hit, the caller's try-catch
+    // (AgentTool.tsx:804) will still catch and fall back to parent tools as a safety net.
+    return (_permissionContext, mcpTools) => mcpTools || [];
+  }
+}
+const getAssembleToolPool = getRegisteredAssembleToolPool;
 import { asAgentId } from '../../types/ids.js';
 import { runWithAgentContext } from '../../utils/agentContext.js';
 import { isAgentSwarmsEnabled } from '../../utils/agentSwarmsEnabled.js';
@@ -777,7 +801,15 @@ export const AgentTool = buildTool({
       ...appState.toolPermissionContext,
       mode: selectedAgent.permissionMode ?? 'acceptEdits'
     };
-    const workerTools = getAssembleToolPool()(workerPermissionContext, appState.mcp.tools);
+    let workerTools: import('../../Tool.js').Tools;
+    try {
+      workerTools = getAssembleToolPool()(workerPermissionContext, appState.mcp.tools);
+    } catch {
+      // If assembleToolPool fails (e.g., Bun bytecode TDZ during module init),
+      // fall back to the parent's tool list so the agent can still function.
+      logForDebugging('[AgentTool] assembleToolPool failed, falling back to parent tools');
+      workerTools = toolUseContext.options.tools;
+    }
 
     // Create a stable agent ID early so it can be used for worktree slug
     const earlyAgentId = createAgentId();

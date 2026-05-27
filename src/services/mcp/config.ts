@@ -1237,6 +1237,10 @@ export async function getClaudeCodeMcpConfigs(
     localServers,
   )
 
+  // CodeGraph is now a native tool (codegraphTool), not an MCP server.
+  // The MCP auto-discovery block has been removed since codegraphTool
+  // handles initialization and syncing internally via CodegraphManager.
+
   // Apply policy filtering to merged configs
   const filtered: Record<string, ScopedMcpServerConfig> = {}
 

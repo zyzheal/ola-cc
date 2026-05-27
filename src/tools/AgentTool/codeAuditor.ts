@@ -41,7 +41,7 @@ export async function checkSyntax(
   code: string,
   fileType: 'ts' | 'tsx' | 'js' | 'jsx',
 ): Promise<AuditResult> {
-  // 简化版语法检查：尝试 TypeScript/JavaScript 解析
+  // 简化版语法检查：使用 TypeScript AST 解析并提取语法错误
   if (fileType === 'ts' || fileType === 'tsx') {
     try {
       // 使用动态 import 避免编译错误
@@ -53,7 +53,15 @@ export async function checkSyntax(
         true,
         fileType === 'tsx' ? ts.ScriptKind.TSX : ts.ScriptKind.TS,
       )
+      // 提取语法诊断信息 — createSourceFile 会在 parseDiagnostics 中记录语法错误
       const diagnostics: ts.Diagnostic[] = []
+      // 使用 flattenDiagnosticsFromSourceFile 获取源文件的语法错误
+      // createSourceFile 的 parseDiagnostics 属性包含语法解析错误
+      if (sourceFile.parseDiagnostics && sourceFile.parseDiagnostics.length > 0) {
+        for (const diag of sourceFile.parseDiagnostics) {
+          diagnostics.push(diag)
+        }
+      }
       // 只检查语法错误，不做类型检查
       return {
         checkId: 'syntax',
@@ -62,7 +70,7 @@ export async function checkSyntax(
         isCritical: true,
         details:
           diagnostics.length > 0
-            ? `语法错误: ${diagnostics.map((d) => d.messageText).join(', ')}`
+            ? `语法错误: ${diagnostics.map((d) => typeof d.messageText === 'string' ? d.messageText : (d.messageText as ts.DiagnosticMessageChain).messageText).join(', ')}`
             : '语法检查通过',
       }
     } catch {
@@ -77,13 +85,32 @@ export async function checkSyntax(
     }
   }
 
-  // JS 文件：尝试 JSON 解析（简单检查）
+  // JS 文件：去除字符串和注释后做括号/花括号平衡检查
+  // 步骤1: 去除字符串字面量（单引号、双引号、模板字符串）
+  let stripped = code
+    .replace(/`(?:[^`\\]|\\.)*`/g, '')   // 模板字符串
+    .replace(/"(?:[^"\\]|\\.)*"/g, '')    // 双引号字符串
+    .replace(/'(?:[^'\\]|\\.)*'/g, '')    // 单引号字符串
+  // 步骤2: 去除注释
+  stripped = stripped
+    .replace(/\/\*[\s\S]*?\*\//g, '')     // 块注释
+    .replace(/\/\/.*$/gm, '')              // 行注释
+  // 步骤3: 括号平衡检查
+  const openBraces = (stripped.match(/\{/g) || []).length
+  const closeBraces = (stripped.match(/\}/g) || []).length
+  const openParens = (stripped.match(/\(/g) || []).length
+  const closeParens = (stripped.match(/\)/g) || []).length
+  const balanceIssues: string[] = []
+  if (openBraces !== closeBraces) balanceIssues.push(`花括号不平衡 ({${openBraces} vs }${closeBraces})`)
+  if (openParens !== closeParens) balanceIssues.push(`括号不平衡 (${openParens} vs )${closeParens})`)
   return {
     checkId: 'syntax',
     checkName: 'Syntax & Format',
-    passed: true,
+    passed: balanceIssues.length === 0,
     isCritical: true,
-    details: 'JS 语法检查跳过（需要 TypeScript）',
+    details: balanceIssues.length > 0
+      ? `JS 语法检查: ${balanceIssues.join(', ')}`
+      : 'JS 语法检查通过（括号平衡）',
   }
 }
 
