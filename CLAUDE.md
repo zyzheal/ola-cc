@@ -111,6 +111,12 @@ Context compression lives in `src/services/compact/`:
 - `EvolutionEngine.ts` — ASAEF 8阶段确定性状态机（P0→P1→P2→P3→P4→P5→P6→P7→P8），Layer Promotion (L1→L2→L3)，Early Stopping
 - `storage.ts` — JSONL append-only 持久化 + 防污染 train/test split
 
+**Design Constraint 技能生态** (`ola-plugins/`):
+- 5技能协作: `docs-navigator`(导航) → `design-constraint`(入口+自适应检查) → `design-doc-reviewer`(文档评审) / `code-design-analyzer`(代码分析) / `task-decomposer`(任务拆分)
+- `docs-navigator` (P51): 大型项目文档导航，生成 INDEX.md 索引 + P0/P1/P2优先级 + 阅读路径
+- `design-constraint` (P52): 项目类型感知 (8种)，7+8维度自适应检查，CI/CD按文件存在性门控
+- 详见 `docs/agent-evolution-system.md` 第四节和 `ola-plugins/` 下各 SKILL.md
+
 **Skill 层** (`~/.ola-cc/skills/orion-*/`):
 - 10个 orion-* skills: assessor, creating, crystallizing, dashboard, deep-audit, gap-detect, repairing, reviewing, scoring, using
 - 用户通过 `/orion-*` 命令触发，Skill 调用 TypeScript API

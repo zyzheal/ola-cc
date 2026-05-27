@@ -200,6 +200,7 @@ export function SpinnerAnimationRow({
   const thinkingShimmerColor = toRGBColor(interpolateColor(THINKING_INACTIVE, THINKING_INACTIVE_SHIMMER, thinkingOpacity));
 
   // === Build status parts ===
+
   const parts = [...(spinnerSuffix ? [<Text dimColor key="suffix">
             {spinnerSuffix}
           </Text>] : []), ...(showTimer ? [<Text dimColor key="elapsedTime">
@@ -222,6 +223,8 @@ export function SpinnerAnimationRow({
           <Text dimColor>(</Text>
           <Byline>{parts}</Byline>
           <Text dimColor>)</Text>
+        </> : !foregroundedTeammate ? <>
+          <Text dimColor>(working…)</Text>
         </> : null;
   return <Box ref={viewportRef} flexDirection="row" flexWrap="wrap" marginTop={1} width="100%">
       <SpinnerGlyph frame={frame} messageColor={messageColor} stalledIntensity={overrideColor ? 0 : stalledIntensity} reducedMotion={reducedMotion} time={time} />

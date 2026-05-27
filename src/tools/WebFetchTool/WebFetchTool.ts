@@ -18,8 +18,9 @@ import {
   type FetchedContent,
   getURLMarkdownContent,
   isPreapprovedUrl,
-  MAX_MARKDOWN_LENGTH,
 } from './utils.js'
+import { ERROR_MESSAGES, USER_ACTIONS, LIMITS } from './constants.js'
+const MAX_MARKDOWN_LENGTH = LIMITS.MAX_MARKDOWN_LENGTH
 
 const inputSchema = lazySchema(() =>
   z.strictObject({
@@ -211,7 +212,39 @@ ${DESCRIPTION}`
   ) {
     const start = Date.now()
 
-    const response = await getURLMarkdownContent(url, abortController)
+    const response = await getURLMarkdownContent(url, abortController, true)
+
+    // Check if we need user confirmation for domain check failure
+    if (typeof response === 'object' && 'status' in response && response.status === 'requires_confirmation') {
+      const domain = response.domain
+      const category = domainPreferenceManager.getDomainCategory(domain)
+      const previousPreference = domainPreferenceManager.getDomainPreference(domain)
+      const suggestion = domainPreferenceManager.getSuggestion(domain)
+
+      const message = ERROR_MESSAGES.WEBFETCH_CONFIRMATION_REQUIRED(
+        domain,
+        category,
+        previousPreference?.action
+      )
+      const options = ERROR_MESSAGES.WEBFETCH_OPTIONS_INSTRUCTIONS(
+        url,
+        domain,
+        suggestion ? `建议: ${suggestion}` : undefined
+      )
+
+      const output: Output = {
+        bytes: Buffer.byteLength(message + options),
+        code: 403,
+        codeText: 'Domain Check Requires Confirmation',
+        result: message + '\n\n' + options,
+        durationMs: Date.now() - start,
+        url,
+      }
+
+      return {
+        data: output,
+      }
+    }
 
     // Check if we got a redirect to a different host
     if ('type' in response && response.type === 'redirect') {
