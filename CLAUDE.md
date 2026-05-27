@@ -102,14 +102,15 @@ Context compression lives in `src/services/compact/`:
 
 混合架构: TypeScript 算法基础设施 + Markdown Skill 工作流。
 
-**TypeScript 层** (`src/tools/AgentTool/` + `src/services/singularity/`):
+**TypeScript 层** (`src/tools/AgentTool/` + `src/services/singularity/` + `src/tools/SingularityTool/`):
+- `SingularityTool.ts` — TS→Skill 集成桥梁，将所有 singularity API 包装为 Tool 暴露给 model/Skill 调用（34个操作：score_*, telemetry_*, registry_*, rubric_*, maturity_*, learning_*, audit_run, evolve_*, storage_*, whitelist_*, evolve_diverse_strategies, evolve_surgical_check, evals_check, evals_validate）。**命名说明**：主文档设计为 `agentDetector` model tool 入口，实际实现为 `singularity` tool，功能上合并了评分/遥测/注册表/门控/审计等全部API，比原设计更全面（原7ops→实际34ops）。`agentDetector` 仍保留为独立检测工具（`agentDetectorTool`）。
 - `codeAuditor.ts` — 5项静态代码审计（Syntax/Hallucinated API/Infinite Loop/Dead Code/Complexity），4项LLM审计已迁移至 `orion-deep-audit` skill
 - `rubricEvaluator.ts` — ASAEF 5维 AND 门控 + 论文 `Score(v)=w1*passRate-w2*normCost-w3*overfitRisk` 综合评分
 - `maturityPolicy.ts` — draft→tested→hardened→crystallized 4级成熟度（支持环境变量覆盖 + 中英文提示）
 - `LearningSystem.ts` — ExecutionRecord 双缓冲区 + contrastAnalysis(winners\losers) + JSONL 持久化
 - `AgentAnalyzer.ts` — EmbodiSkill 四类型反思（Discovery/Optimization/Defect/Lapse）+ CONSOLIDATEREVISIONS 批量合并
-- `EvolutionEngine.ts` — ASAEF 8阶段确定性状态机（P0→P1→P2→P3→P4→P5→P6→P7→P8），Layer Promotion (L1→L2→L3)，Early Stopping
-- `storage.ts` — JSONL append-only 持久化 + 防污染 train/test split
+- `EvolutionEngine.ts` — ASAEF 8阶段确定性状态机（P0→P1→P2→P3→P4→P5→P6→P7→P8），Layer Promotion (L1→L2→L3)，Early Stopping，DiverseStrategies (K=4)，SurgicalPatch约束 (15%/30行)，Git worktree隔离 (P0DefaultExecutor)
+- `storage.ts` — JSONL append-only 持久化 + 防污染 train/test split + workspace白名单校验 (isWhitelistedPath/validateWhitelistedPath)
 
 **Design Constraint 技能生态** (`ola-plugins/`):
 - 5技能协作: `docs-navigator`(导航) → `design-constraint`(入口+自适应检查) → `design-doc-reviewer`(文档评审) / `code-design-analyzer`(代码分析) / `task-decomposer`(任务拆分)
@@ -118,8 +119,9 @@ Context compression lives in `src/services/compact/`:
 - 详见 `docs/agent-evolution-system.md` 第四节和 `ola-plugins/` 下各 SKILL.md
 
 **Skill 层** (`~/.ola-cc/skills/orion-*/`):
-- 10个 orion-* skills: assessor, creating, crystallizing, dashboard, deep-audit, gap-detect, repairing, reviewing, scoring, using
+- 16个 orion-* skills: assessor(P54), alerts, analytics, archive, batch, creating, crystallizing, dashboard, deep-audit, gap-detect, repairing, reviewing, rollback, scoring, using, workflow
 - 用户通过 `/orion-*` 命令触发，Skill 调用 TypeScript API
+- ASAEF 四公理全覆盖：GT契约(evals.json)→orion-creating, 演化即控制流→EvolutionEngine, 可观测即诊断力→TelemetryWriter+TraceStep+blind replay, 分层即成本理性→L1→L2→L3
 
 **设计原则:** 需要程序化调用的逻辑→TypeScript；需要用户判断的交互→Skill。详见 `docs/agent-evolution-system.md`。
 
@@ -267,6 +269,7 @@ Safety checks (`checkPathSafetyForAutoEdit` in `src/utils/permissions/filesystem
 | `src/state/AppStateStore.ts` | Central application state management |
 | `src/bootstrap/state.ts` | Session-level state management |
 | `src/tools/AgentTool/` | Agent evolution system: `codeAuditor.ts` (5项静态审计), `rubricEvaluator.ts` (5维AND门控+论文评分), `maturityPolicy.ts` (成熟度模型), `LearningSystem.ts` (执行记录+对比分析), `AgentAnalyzer.ts` (四类型反思) |
+| `src/tools/SingularityTool/` | TS→Skill 集成桥梁: `SingularityTool.ts` (34个singularity API操作 + whitelist白名单 + DiverseStrategies + GT契约evals验证) |
 | `src/services/singularity/EvolutionEngine.ts` | ASAEF 8阶段进化状态机 (P0→P8, Layer Promotion, Early Stopping) |
 | `src/services/singularity/storage.ts` | ExecutionRecord JSONL 持久化 + 防污染 train/test split |
 

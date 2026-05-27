@@ -1,7 +1,9 @@
 // biome-ignore-all assist/source/organizeImports: ANT-ONLY import markers must not be reordered
 import { type Tool, type Tools } from './Tool.js'
-import { AgentTool } from './tools/AgentTool/AgentTool.js'
+import { AgentTool, registerAssembleToolPool } from './tools/AgentTool/AgentTool.js'
 import { agentDetectorTool } from './tools/AgentTool/AgentDetectorTool.js'
+import { singularityTool } from './tools/SingularityTool/SingularityTool.js'
+import { codegraphTool } from './tools/CodegraphTool/CodegraphTool.js'
 import { SkillTool } from './tools/SkillTool/SkillTool.js'
 import { BashTool } from './tools/BashTool/BashTool.js'
 import { FileEditTool } from './tools/FileEditTool/FileEditTool.js'
@@ -154,6 +156,8 @@ export function getAllBaseTools(): Tools {
   return [
     AgentTool,
     agentDetectorTool,
+    singularityTool,
+    codegraphTool,
     TaskOutputTool,
     getShellTool(),
     GlobTool,
@@ -299,3 +303,9 @@ export function getMergedTools(
   const builtInTools = getTools(permissionContext)
   return [...builtInTools, ...mcpTools]
 }
+
+// Register assembleToolPool with AgentTool after this module finishes initializing,
+// so AgentTool.call() never needs to require('../../tools.js') during runtime.
+// This avoids Bun bytecode TDZ ("Cannot access 'qq' before initialization") that
+// occurs when AgentTool's lazy require hits a partially-initialized tools.ts module.
+registerAssembleToolPool(assembleToolPool)

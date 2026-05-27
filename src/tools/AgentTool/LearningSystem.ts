@@ -62,6 +62,10 @@ export interface LearningConfig {
   enablePatternLearning: boolean
   maxExecutionHistory?: number           // 执行历史最大条数（内存）
   enablePersistence?: boolean             // Phase 4: 是否持久化到 JSONL
+  /** 对比分析：胜者最低分数阈值（默认 70） */
+  winnerThreshold?: number
+  /** 对比分析：败者最高分数阈值（默认 50） */
+  loserThreshold?: number
 }
 
 // 学习系统主类
@@ -81,6 +85,8 @@ export class LearningSystem {
       enablePatternLearning: true,
       maxExecutionHistory: 200,
       enablePersistence: false,
+      winnerThreshold: 70,
+      loserThreshold: 50,
       ...config
     }
     this.records = []
@@ -167,8 +173,10 @@ export class LearningSystem {
       .filter(r => r.skill === skill)
       .slice(-windowSize)
 
-    const winners = relevant.filter(r => r.outcome === 'success' && r.score >= 70)
-    const losers = relevant.filter(r => r.outcome === 'failure' || r.score < 50)
+    const winnerThreshold = this.config.winnerThreshold ?? 70
+    const loserThreshold = this.config.loserThreshold ?? 50
+    const winners = relevant.filter(r => r.outcome === 'success' && r.score >= winnerThreshold)
+    const losers = relevant.filter(r => r.outcome === 'failure' || r.score < loserThreshold)
 
     if (winners.length === 0 || losers.length === 0) {
       return {

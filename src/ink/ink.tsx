@@ -1607,6 +1607,9 @@ export default class Ink {
       originalConsoleLog('[DEBUG]', format(...args));
     };
     const toError = (...args: unknown[]) => {
+      // Filter harmless React Compiler useMemoCache size mismatch warnings
+      const msg = args.map(a => typeof a === 'string' ? a : '').join(' ');
+      if (msg.includes('useMemoCache') && msg.includes('previous cache')) return;
       // Use original console.error to avoid infinite recursion
       originalConsoleError('[ERROR]', format(...args));
     };

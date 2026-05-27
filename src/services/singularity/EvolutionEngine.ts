@@ -81,6 +81,8 @@ export class EvolutionEngine {
   private config: EvolutionConfig
   private executors: Map<EvolutionPhase, PhaseExecutor>
   private noImprovementCount: number = 0
+  /** P0 创建的 git worktree 路径（用于隔离进化过程） */
+  private workspacePath: string | null = null
 
   constructor(
     skill: string,
@@ -98,6 +100,10 @@ export class EvolutionEngine {
       context: {},
     }
     this.executors = executors ?? new Map()
+    // 注册默认 P0 执行器：创建 git worktree 隔离 workspace
+    if (!this.executors.has(EvolutionPhase.P0_PREPARE)) {
+      this.executors.set(EvolutionPhase.P0_PREPARE, new P0DefaultExecutor())
+    }
   }
 
   /** 获取当前状态 */
@@ -197,6 +203,9 @@ export class EvolutionEngine {
   }
 
   private defaultNextPhase(current: EvolutionPhase): EvolutionPhase {
+    // ASAEF 设计约束: 禁止跨阶段跳跃
+    // 如果无执行器注册，当前阶段被视为"pass-through"，
+    // 但仍然严格按顺序推进到下一个阶段
     const order: EvolutionPhase[] = [
       EvolutionPhase.P0_PREPARE,
       EvolutionPhase.P1_REVIEW,
@@ -209,7 +218,11 @@ export class EvolutionEngine {
       EvolutionPhase.P8_LOOP,
     ]
     const idx = order.indexOf(current)
-    return idx >= 0 && idx < order.length - 1 ? order[idx + 1] : current
+    if (idx < 0 || idx >= order.length - 1) {
+      // P8 是最终阶段，返回自身表示循环结束
+      return current
+    }
+    return order[idx + 1]
   }
 
   private shouldTerminate(): boolean {
@@ -238,6 +251,34 @@ export class EvolutionEngine {
     }
     this.noImprovementCount = 0
   }
+
+  /** 获取 workspace 路径（P0 创建的隔离环境） */
+  getWorkspacePath(): string | null {
+    return this.workspacePath ?? (this.state.context.workspacePath as string | null)
+  }
+
+  /** 清理 workspace（进化结束后删除 worktree 或目录） */
+  cleanupWorkspace(): void {
+    const wsPath = this.getWorkspacePath()
+    if (!wsPath) return
+    try {
+      const wsType = this.state.context.workspaceType as string
+      if (wsType === 'worktree') {
+        // git worktree 需要用 git 命令清理
+        const { execSync } = require('child_process')
+        try {
+          execSync(`git worktree remove "${wsPath}" --force`, { stdio: 'pipe' })
+        } catch {
+          // force remove failed, fallback to manual cleanup
+          fs.rmSync(wsPath, { recursive: true, force: true })
+        }
+      } else {
+        fs.rmSync(wsPath, { recursive: true, force: true })
+      }
+    } catch {
+      // cleanup failed silently — workspace may have been manually removed
+    }
+  }
 }
 
 // ============================================
@@ -249,6 +290,141 @@ export const LAYER_COST: Record<1 | 2 | 3, string> = {
   1: '毫秒级 — 修改 description/metadata',
   2: '秒级 — 修改 body/instruction 逻辑',
   3: '分钟级 — 修改 scripts/ 或工具链',
+}
+
+// ============================================
+// DiverseStrategies — SkillEvolver K=4 变异策略
+// ============================================
+
+/**
+ * 策略类型枚举（来自 SkillEvolver 论文算法）
+ *
+ * NOT temperature sampling — fundamentally different repair approaches.
+ * Each strategy addresses the same weakness with a different philosophy.
+ */
+export enum StrategyType {
+  CONSERVATIVE = 'conservative',   // Add missing documentation/declarations
+  STRUCTURAL = 'structural',       // Reorganize workflow to surface the weakness
+  DEFENSIVE = 'defensive',         // Add fallback/error handling guidance
+  CREATIVE = 'creative',           // Merge the fix into the main flow
+}
+
+export interface DiverseStrategy {
+  type: StrategyType
+  name: string
+  description: string
+  approach: string
+  /** Which Layer this strategy best aligns with */
+  preferredLayer: 1 | 2 | 3
+  /** Which rubric dimension this strategy targets */
+  targetDimensions: string[]
+  /** Estimated lines of change */
+  estimatedLines: number
+}
+
+/**
+ * 生成 K=4 多样化修复策略
+ *
+ * 基于 SkillEvolver DiverseStrategies 算法：
+ * 每次迭代生成 4 个截然不同的候选策略，而非温度采样。
+ * 策略必须在**方法**上不同（不仅仅是措辞差异）。
+ *
+ * @param weakDimensions - 低分维度列表
+ * @param currentLayer - 当前变异层级 (L1/L2/L3)
+ * @returns 4 个多样化策略
+ */
+export function generateDiverseStrategies(
+  weakDimensions: string[],
+  currentLayer: 1 | 2 | 3,
+): DiverseStrategy[] {
+  const strategies: DiverseStrategy[] = []
+
+  // S1: Conservative — 添加缺失的内容
+  strategies.push({
+    type: StrategyType.CONSERVATIVE,
+    name: 'conservative-addition',
+    description: 'Add missing documentation, declarations, or edge case listings',
+    approach: `For dimensions ${weakDimensions.join(', ')}: add a dedicated section listing the missing elements without changing the existing workflow logic`,
+    preferredLayer: 1,
+    targetDimensions: weakDimensions,
+    estimatedLines: 5 + weakDimensions.length * 2,
+  })
+
+  // S2: Structural — 重新组织workflow
+  strategies.push({
+    type: StrategyType.STRUCTURAL,
+    name: 'structural-reorganization',
+    description: 'Reorganize workflow steps to surface weak areas earlier',
+    approach: `Rearrange workflow so that ${weakDimensions.join(', ')} considerations are checked at each step, not just at the end`,
+    preferredLayer: 2,
+    targetDimensions: weakDimensions,
+    estimatedLines: 10 + weakDimensions.length * 3,
+  })
+
+  // S3: Defensive — 添加防御性处理
+  strategies.push({
+    type: StrategyType.DEFENSIVE,
+    name: 'defensive-fallback',
+    description: 'Add fallback paths and error recovery guidance',
+    approach: `For each step where ${weakDimensions.join(', ')} could fail, add explicit "what if X fails?" branches with recovery actions`,
+    preferredLayer: 2,
+    targetDimensions: weakDimensions,
+    estimatedLines: 8 + weakDimensions.length * 4,
+  })
+
+  // S4: Creative — 融入主线逻辑
+  strategies.push({
+    type: StrategyType.CREATIVE,
+    name: 'creative-embedding',
+    description: 'Merge fixes into the primary workflow flow',
+    approach: `Instead of adding separate sections for ${weakDimensions.join(', ')}, embed the handling directly into existing workflow steps so it feels natural`,
+    preferredLayer: weakDimensions.includes('correctness') ? 2 : 1,
+    targetDimensions: weakDimensions,
+    estimatedLines: 6 + weakDimensions.length * 3,
+  })
+
+  // Diversity check: 如果2+策略太相似，标记警告
+  const approaches = strategies.map(s => s.approach.substring(0, 30))
+  const uniqueApproaches = new Set(approaches)
+  if (uniqueApproaches.size < 3) {
+    // 重新生成以确保多样性（此处简化为标记，实际应由LLM重新提议）
+    strategies[3].approach = `Radically different approach: instead of incremental fixes, propose a fundamentally different workflow sequence that inherently avoids ${weakDimensions.join(', ')} failures`
+    strategies[3].name = 'creative-radical'
+  }
+
+  // Layer alignment: 根据当前层级排序优先策略
+  strategies.sort((a, b) => {
+    const aScore = a.preferredLayer === currentLayer ? 0 : Math.abs(a.preferredLayer - currentLayer)
+    const bScore = b.preferredLayer === currentLayer ? 0 : Math.abs(b.preferredLayer - currentLayer)
+    return aScore - bScore
+  })
+
+  return strategies
+}
+
+/**
+ * 检查策略是否与SurgicalPatch约束兼容
+ *
+ * @param strategy - 候选策略
+ * @param totalLines - SKILL.md 总行数
+ * @param maxChangeRatio - 最大改动比例 (默认0.15)
+ * @param maxAbsoluteLines - 最大绝对改动行数 (默认30)
+ */
+export function checkSurgicalPatchConstraint(
+  strategy: DiverseStrategy,
+  totalLines: number,
+  maxChangeRatio = 0.15,
+  maxAbsoluteLines = 30,
+): { withinBudget: boolean; budgetLines: number; actualEstimate: number } {
+  const budgetLines = Math.min(
+    Math.floor(totalLines * maxChangeRatio),
+    maxAbsoluteLines,
+  )
+  return {
+    withinBudget: strategy.estimatedLines <= budgetLines,
+    budgetLines,
+    actualEstimate: strategy.estimatedLines,
+  }
 }
 
 /** 获取某阶段的中文描述 */
@@ -265,4 +441,90 @@ export function getPhaseDescription(phase: EvolutionPhase): string {
     [EvolutionPhase.P8_LOOP]: '循环 — Stuck Detection → Layer Promotion → Early Stopping',
   }
   return descriptions[phase] ?? '未知阶段'
+}
+
+// ============================================
+// 默认 P0 执行器 — Git worktree 隔离
+// ============================================
+
+import * as fs from 'fs'
+import * as os from 'os'
+import * as path from 'path'
+
+/**
+ * P0 默认执行器：创建 git worktree 作为进化隔离 workspace
+ *
+ * ASAEF 设计约束：进化过程在独立 git worktree 中运行，
+ * 防止修改污染主项目。P4(提交) 在 worktree 内 commit，
+ * P6(门控) DISCARD 时直接删除 worktree（git worktree remove）。
+ */
+export class P0DefaultExecutor implements PhaseExecutor {
+  async execute(state: EvolutionState, config?: EvolutionConfig): Promise<PhaseResult> {
+    const skill = state.skill
+    const baseDir = path.join(os.homedir(), '.ola-cc', 'singularity', 'evolve-workspaces')
+    const workspaceDir = path.join(baseDir, `${skill}-iter${state.iteration}`)
+
+    // 确保 workspace 目录存在
+    fs.mkdirSync(baseDir, { recursive: true })
+
+    // 尝试创建 git worktree（如果主仓库可用）
+    let workspaceCreated = false
+    let workspaceType: 'worktree' | 'directory' = 'directory'
+
+    try {
+      // 检查是否有 git 仓库
+      const gitDir = findGitRoot()
+      if (gitDir) {
+        // 创建 git worktree 作为隔离环境
+        const branchName = `evolve/${skill}/iter${state.iteration}`
+        const { execSync } = require('child_process')
+        try {
+          execSync(`git worktree add "${workspaceDir}" -b "${branchName}"`, {
+            cwd: gitDir,
+            stdio: 'pipe',
+          })
+          workspaceType = 'worktree'
+          workspaceCreated = true
+        } catch {
+          // worktree 创建失败（分支已存在等），退化为普通目录
+          fs.mkdirSync(workspaceDir, { recursive: true })
+          workspaceCreated = true
+        }
+      } else {
+        // 无 git 仓库，使用普通目录（非隔离模式）
+        fs.mkdirSync(workspaceDir, { recursive: true })
+        workspaceCreated = true
+      }
+    } catch {
+      // 任何失败都回退到普通目录
+      fs.mkdirSync(workspaceDir, { recursive: true })
+      workspaceCreated = true
+    }
+
+    return {
+      nextPhase: EvolutionPhase.P1_REVIEW,
+      context: {
+        workspacePath: workspaceDir,
+        workspaceType,
+        workspaceCreated,
+        isolated: workspaceType === 'worktree',
+      },
+    }
+  }
+}
+
+/**
+ * 从当前工作目录向上查找 git 根目录
+ */
+function findGitRoot(): string | null {
+  let current = process.cwd()
+  for (let i = 0; i < 20; i++) {
+    if (fs.existsSync(path.join(current, '.git'))) {
+      return current
+    }
+    const parent = path.dirname(current)
+    if (parent === current) break
+    current = parent
+  }
+  return null
 }

@@ -6,6 +6,9 @@
  * - 追加写入（append-only）
  * - 支持按时间范围和数量裁剪
  * - 原子写入防损坏
+ *
+ * Anti-contamination Layer 2: workspace whitelist
+ * 进化过程只能写入白名单路径，防止污染主项目文件
  */
 
 import * as fs from 'fs'
@@ -13,6 +16,64 @@ import * as path from 'path'
 import * as os from 'os'
 
 const STORAGE_DIR = path.join(os.homedir(), '.ola-cc', 'singularity', 'execution-history')
+
+// ============================================
+// 防污染 Layer 2: workspace 白名单
+// ============================================
+
+/**
+ * 进化引擎允许写入的路径白名单
+ *
+ * ASAEF 设计约束：进化过程中只允许修改白名单路径内的文件，
+ * 任何试图写入白名单外路径的操作都被拒绝。
+ * 这防止进化引擎意外修改主项目代码或配置。
+ */
+const WORKSPACE_WHITELIST: string[] = [
+  // singularity 数据目录（评分、遥测、注册表）
+  path.join(os.homedir(), '.ola-cc', 'singularity'),
+  // skill 定义目录（SKILL.md 及 references/）
+  path.join(os.homedir(), '.ola-cc', 'skills'),
+  // 进化 workspace 目录（P0 创建的隔离环境）
+  path.join(os.homedir(), '.ola-cc', 'singularity', 'evolve-workspaces'),
+  // config 文件
+  path.join(os.homedir(), '.ola-cc', 'singularity', 'config.json'),
+]
+
+/**
+ * 检查路径是否在白名单内
+ *
+ * @param filePath - 要写入的文件路径
+ * @returns 是否允许写入
+ */
+export function isWhitelistedPath(filePath: string): boolean {
+  const resolved = path.resolve(filePath)
+  return WORKSPACE_WHITELIST.some(whitelistDir => {
+    // 检查路径是否在白名单目录下（包括子目录）
+    return resolved.startsWith(whitelistDir + path.sep) || resolved === whitelistDir
+  })
+}
+
+/**
+ * 验证写入路径并抛出错误（用于强制校验）
+ *
+ * @param filePath - 要写入的文件路径
+ * @throws 如果路径不在白名单内
+ */
+export function validateWhitelistedPath(filePath: string): void {
+  if (!isWhitelistedPath(filePath)) {
+    throw new Error(
+      `Anti-contamination violation: path "${filePath}" is outside workspace whitelist. ` +
+      `Evolution engine can only write to: ${WORKSPACE_WHITELIST.join(', ')}`
+    )
+  }
+}
+
+/**
+ * 获取当前白名单配置（用于展示和调试）
+ */
+export function getWhitelist(): string[] {
+  return [...WORKSPACE_WHITELIST]
+}
 
 /**
  * 确保存储目录存在

@@ -35,6 +35,8 @@ export interface RubricConfig {
   minDelta: number            // >= 0.05
   triggerF1Floor: number      // >= 0.85
   maxCostRatio: number        // <= 1.2x
+  /** 基线通过率（用于 passRateDelta fallback，默认 0.5 随机猜测基线） */
+  baselinePassRate?: number
 }
 
 // ============================================
@@ -46,14 +48,16 @@ const DEFAULT_CONFIG: RubricConfig = {
   minDelta: 0.05,
   triggerF1Floor: 0.85,
   maxCostRatio: 1.2,
+  baselinePassRate: 0.5,
 }
 
 export function getRubricConfig(): RubricConfig {
   return {
-    holdoutFloor: parseFloat(process.env.RUBRIC_HOLDOUT_FLOOR || String(DEFAULT_CONFIG.holdoutFloor)),
-    minDelta: parseFloat(process.env.RUBRIC_MIN_DELTA || String(DEFAULT_CONFIG.minDelta)),
-    triggerF1Floor: parseFloat(process.env.RUBRIC_TRIGGER_F1 || String(DEFAULT_CONFIG.triggerF1Floor)),
-    maxCostRatio: parseFloat(process.env.RUBRIC_MAX_COST_RATIO || String(DEFAULT_CONFIG.maxCostRatio)),
+    holdoutFloor: parseFloat(process.env.RUBRIC_HOLDOUT_FLOOR ?? String(DEFAULT_CONFIG.holdoutFloor)),
+    minDelta: parseFloat(process.env.RUBRIC_MIN_DELTA ?? String(DEFAULT_CONFIG.minDelta)),
+    triggerF1Floor: parseFloat(process.env.RUBRIC_TRIGGER_F1 ?? String(DEFAULT_CONFIG.triggerF1Floor)),
+    maxCostRatio: parseFloat(process.env.RUBRIC_MAX_COST_RATIO ?? String(DEFAULT_CONFIG.maxCostRatio)),
+    baselinePassRate: parseFloat(process.env.RUBRIC_BASELINE_PASS_RATE ?? String(DEFAULT_CONFIG.baselinePassRate)),
   }
 }
 
@@ -75,6 +79,8 @@ export interface QualityInput {
   testResults?: { passed: boolean; name: string; regression: boolean }[]
   /** 触发准确率（可选，外部评分系统提供） */
   triggerAccuracy?: number
+  /** passRate 改进幅度（可选，相比基线方法的通过率提升） */
+  passRateDelta?: number
 }
 
 /**
@@ -93,9 +99,11 @@ export function evaluateQuality(quality: QualityInput, config?: RubricConfig): G
     : 1.0
 
   // 2. min_delta: 相比基线的改进幅度
-  const delta = quality.baselineTokens > 0
-    ? (quality.tokenBudget! - quality.tokensUsed) / quality.baselineTokens
-    : 0
+  // 设计文档定义: passRate 的改进幅度 (新方法passRate - 基线passRate)
+  // 如果外部提供了 passRateDelta，直接使用
+  // 否则使用配置的基线通过率（默认 0.5 随机猜测基线）
+  const baselinePassRate = cfg.baselinePassRate ?? 0.5
+  const delta = quality.passRateDelta ?? Math.max(0, passRate - baselinePassRate)
 
   // 3. trigger_f1: 触发准确率
   const triggerF1 = quality.triggerAccuracy ?? 1.0
@@ -190,6 +198,7 @@ export function calculateComprehensiveScore(
  * 从 GateResult 计算综合评分
  *
  * 将 5 维 AND 门控输出映射为论文综合评分
+ * overfitRisk: 回归失败数越多风险越高
  */
 export function gateToComprehensiveScore(gate: GateResult): number {
   const passRate = gate.dimensions.holdout_floor.passed
@@ -198,9 +207,12 @@ export function gateToComprehensiveScore(gate: GateResult): number {
   const costRatio = gate.dimensions.cost_budget.passed
     ? (gate.dimensions.cost_budget.value as number)
     : 2.0 // 超预算时惩罚
+  // overfitRisk: 回归失败越多，过拟合风险越高
+  // 每个回归失败贡献 0.05 的过拟合风险（论文定义: dropout 测试的性能下降幅度）
   const regressions = gate.dimensions.regression_check.passed
     ? 0
-    : (gate.dimensions.regression_check.value as string[]).length * 10
+    : (gate.dimensions.regression_check.value as string[]).length
+  const overfitRisk = regressions * 0.05
 
-  return calculateComprehensiveScore(passRate, costRatio, regressions / 100)
+  return calculateComprehensiveScore(passRate, costRatio, overfitRisk)
 }
