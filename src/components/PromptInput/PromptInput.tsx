@@ -1128,26 +1128,31 @@ function PromptInput({
   // Track if prompt suggestion should be shown (computed later with terminal width).
   // Hidden in teammate view — suggestion is leader-context only.
   const showPromptSuggestion = mode === 'prompt' && suggestions.length === 0 && promptSuggestion && !viewingAgentTaskId;
-  if (showPromptSuggestion) {
-    markShown();
-  }
+  useEffect(() => {
+    if (showPromptSuggestion) {
+      markShown();
+    }
+  }, [showPromptSuggestion, markShown]);
 
   // If suggestion was generated but can't be shown due to timing, log suppression.
   // Exclude teammate view: markShown() is gated above, so shownAt stays 0 there —
   // but that's not a timing failure, the suggestion is valid when returning to leader.
-  if (promptSuggestionState.text && !promptSuggestion && promptSuggestionState.shownAt === 0 && !viewingAgentTaskId) {
-    logSuggestionSuppressed('timing', promptSuggestionState.text);
-    setAppState(prev => ({
-      ...prev,
-      promptSuggestion: {
-        text: null,
-        promptId: null,
-        shownAt: 0,
-        acceptedAt: 0,
-        generationRequestId: null
-      }
-    }));
-  }
+  const shouldSuppressSuggestion = promptSuggestionState.text && !promptSuggestion && promptSuggestionState.shownAt === 0 && !viewingAgentTaskId;
+  useEffect(() => {
+    if (shouldSuppressSuggestion) {
+      logSuggestionSuppressed('timing', promptSuggestionState.text);
+      setAppState(prev => ({
+        ...prev,
+        promptSuggestion: {
+          text: null,
+          promptId: null,
+          shownAt: 0,
+          acceptedAt: 0,
+          generationRequestId: null
+        }
+      }));
+    }
+  }, [shouldSuppressSuggestion, setAppState]);
   function onImagePaste(image: string, mediaType?: string, filename?: string, dimensions?: ImageDimensions, sourcePath?: string) {
     logEvent('tengu_paste_image', {});
     onModeChange('prompt');
