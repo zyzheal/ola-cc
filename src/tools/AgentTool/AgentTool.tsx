@@ -36,6 +36,7 @@ import { enqueueSdkEvent } from '../../utils/sdkEventQueue.js';
 import { writeAgentMetadata } from '../../utils/sessionStorage.js';
 import { sleep } from '../../utils/sleep.js';
 import { buildEffectiveSystemPrompt } from '../../utils/systemPrompt.js';
+import { getTaskListId as getTaskListIdForAgent, updateTask as updateTaskForAgent } from '../../utils/tasks.js';
 import { asSystemPrompt } from '../../utils/systemPromptType.js';
 import { getTaskOutputPath } from '../../utils/task/diskOutput.js';
 import { getParentSessionId, isTeammate } from '../../utils/teammate.js';
@@ -409,8 +410,7 @@ export const AgentTool = buildTool({
     // Fire-and-forget V2 task status sync when task_id is provided
     const syncV2Task = (status: 'in_progress' | 'completed' | 'failed') => {
       if (!v2TaskId) return;
-      const { updateTask, getTaskListId } = require('../../utils/tasks.js') as typeof import('../../utils/tasks.js');
-      updateTask(getTaskListId(), v2TaskId, { status }).catch(() => {});
+      updateTaskForAgent(getTaskListIdForAgent(), v2TaskId, { status }).catch(() => {});
     };
 
     // Sync to in_progress immediately when agent starts
@@ -904,7 +904,6 @@ export const AgentTool = buildTool({
         // They are killed explicitly via chat:killAgents.
         toolUseId: toolUseContext.toolUseId
       });
-
       // Register name → agentId for SendMessage routing. Post-registerAsyncAgent
       // so we don't leave a stale entry if spawn fails. Sync agents skipped —
       // coordinator is blocked, so SendMessage routing doesn't apply.
