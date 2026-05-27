@@ -165,13 +165,20 @@ function scoreTool(
 // -- Session-level tool order freeze (prefix caching optimization)
 
 /** Session-level cache for prefix caching providers (DeepSeek). */
-const frozenToolOrder = new Map<string, Tools>()
+const frozenToolOrder = new Map<string, { tools: Tools; hash: number }>()
+
+/** Compute a hash of tool names to detect tool set changes (MCP connect/disconnect). */
+function hashTools(tools: Tools): number {
+  let h = 0
+  for (const t of tools) h = ((h << 5) - h + t.name.length) | 0
+  return h
+}
 
 function getToolsForPrefixCache(tools: Tools): Tools {
   const key = getSessionId()
   const frozen = frozenToolOrder.get(key)
-  if (frozen && frozen.length === tools.length) {
-    return frozen
+  if (frozen && frozen.tools.length === tools.length && frozen.hash === hashTools(tools)) {
+    return frozen.tools
   }
   // First call this session: sort core tools first, keep rest stable
   const alwaysSet = new Set(ALWAYS_INCLUDE_TOOLS)
@@ -179,7 +186,7 @@ function getToolsForPrefixCache(tools: Tools): Tools {
     ...tools.filter(t => alwaysSet.has(t.name)),
     ...tools.filter(t => !alwaysSet.has(t.name)),
   ]
-  frozenToolOrder.set(key, sorted)
+  frozenToolOrder.set(key, { tools: sorted, hash: hashTools(tools) })
   return sorted
 }
 
@@ -410,9 +417,11 @@ export async function rankToolsTwoPhase(
 
 /**
  * Invalidate the description cache (e.g., when tools change).
+ * Also clears the frozen tool order cache for prefix caching providers.
  */
 export function invalidateDescriptionCache(): void {
   getDescriptionCache().clear()
+  frozenToolOrder.clear()
 }
 
 /**
