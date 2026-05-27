@@ -5,7 +5,7 @@
  * 实现自然语言推理、上下文感知和智能决策
  */
 
-import { z } from 'zod'
+import { z } from 'zod/v4'
 
 // 分析结果类型定义
 export interface AnalysisResult {

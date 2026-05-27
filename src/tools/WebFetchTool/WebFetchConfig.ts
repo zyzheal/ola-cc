@@ -1,4 +1,4 @@
-import { z } from 'zod'
+import { z } from 'zod/v4'
 import { CONFIG_OPTIONS, storageAdapter } from './constants.js'
 
 export interface WebFetchConfig {

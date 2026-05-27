@@ -6,7 +6,7 @@
  * 新增：SkillEvolver 9项审计清单（codeAuditor）
  */
 
-import { z } from 'zod'
+import { z } from 'zod/v4'
 import { buildTool, type ToolDef } from '../../Tool'
 import { AgentToolSystem, AgentToolSystemFactory } from './AgentToolSystem'
 import { runAudit, getAuditSummary, type AuditResult } from './codeAuditor'
