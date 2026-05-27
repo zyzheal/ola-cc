@@ -1374,6 +1374,220 @@ export function buildMessageLookups(
   }
 }
 
+// ---- Incremental lookup cache ----
+
+/**
+ * Module-level state for incremental `buildMessageLookupsIncremental`.
+ *
+ * After the initial full build, subsequent calls only process newly-appended
+ * messages (identified by the gap from `oldNormalizedLen` to the current
+ * `normalizedMessages.length`). The existing Maps and Sets are mutated in
+ * place — this is safe because the data is append-only (messages never change
+ * after being written) and the returned `MessageLookups` object is used only
+ * for reads during the same render cycle.
+ *
+ * Full rebuild triggered on: cache miss, compaction (length decrease), or
+ * an explicit invalidate signal.
+ */
+interface IncrementalLookupState {
+  lookups: MessageLookups
+  /** Number of normalizedMessages processed during the last build */
+  oldNormalizedLen: number
+  /** Number of `messages` (messagesToShow) processed during the last build */
+  oldMessagesLen: number
+  /** Generation counter — bumped on full rebuild so stale refs are detected */
+  gen: number
+}
+
+let incrementalState: IncrementalLookupState | null = null
+
+/**
+ * Version of `buildMessageLookups` that incrementally updates the cached
+ * result instead of rebuilding all Maps/Sets from scratch each time.
+ *
+ * Reduces GC pressure from 7 allocations × O(n) over 27k normalizedMessages
+ * to only processing the delta (typically 1-20 new messages per turn).
+ */
+export function buildMessageLookupsIncremental(
+  normalizedMessages: NormalizedMessage[],
+  messages: Message[],
+): MessageLookups {
+  const currentNormLen = normalizedMessages.length
+  const currentMsgLen = messages.length
+
+  // ---- Full rebuild conditions ----
+  const needsFullRebuild =
+    !incrementalState ||
+    currentNormLen < incrementalState.oldNormalizedLen || // compaction
+    currentNormLen === 0 // clear
+
+  if (needsFullRebuild) {
+    incrementalState = {
+      lookups: buildMessageLookups(normalizedMessages, messages),
+      oldNormalizedLen: currentNormLen,
+      oldMessagesLen: currentMsgLen,
+      gen: (incrementalState?.gen ?? 0) + 1,
+    }
+    return incrementalState.lookups
+  }
+
+  const state = incrementalState
+
+  // No new messages since last call → return cached
+  if (
+    currentNormLen === state.oldNormalizedLen &&
+    currentMsgLen === state.oldMessagesLen
+  ) {
+    return state.lookups
+  }
+
+  // ---- Incremental update ----
+  const l = state.lookups
+
+  // First pass (messages): sibling tool use IDs, tool use → message map
+  // Only process newly added messages
+  if (currentMsgLen > state.oldMessagesLen) {
+    for (let i = state.oldMessagesLen; i < currentMsgLen; i++) {
+      const msg = messages[i]!
+      if (msg.type === 'assistant' && msg.message) {
+        const id = msg.message.id
+        let siblingIDs = l.siblingToolUseIDs.get(id)
+        if (!siblingIDs) {
+          // This message ID wasn't in the cache — unlikely but handle it
+          siblingIDs = new Set()
+          l.siblingToolUseIDs.set(id, siblingIDs)
+        }
+        for (const content of msg.message.content) {
+          if (content.type === 'tool_use') {
+            siblingIDs.add(content.id)
+            l.toolUseByToolUseID.set(content.id, content)
+          }
+        }
+      }
+    }
+  }
+
+  // Second pass (normalizedMessages): progress, tool results, hooks
+  if (currentNormLen > state.oldNormalizedLen) {
+    for (let i = state.oldNormalizedLen; i < currentNormLen; i++) {
+      const msg = normalizedMessages[i]!
+
+      if (msg.type === 'progress') {
+        const toolUseID = msg.parentToolUseID
+        const existing = l.progressMessagesByToolUseID.get(toolUseID)
+        if (existing) {
+          existing.push(msg)
+        } else {
+          l.progressMessagesByToolUseID.set(toolUseID, [msg])
+        }
+
+        if (msg.data.type === 'hook_progress') {
+          const hookEvent = msg.data.hookEvent
+          let byHookEvent = l.inProgressHookCounts.get(toolUseID)
+          if (!byHookEvent) {
+            byHookEvent = new Map()
+            l.inProgressHookCounts.set(toolUseID, byHookEvent)
+          }
+          byHookEvent.set(hookEvent, (byHookEvent.get(hookEvent) ?? 0) + 1)
+        }
+      }
+
+      if (msg.type === 'user') {
+        for (const content of msg.message.content) {
+          if (content.type === 'tool_result') {
+            l.toolResultByToolUseID.set(content.tool_use_id, msg)
+            l.resolvedToolUseIDs.add(content.tool_use_id)
+            if (content.is_error) {
+              l.erroredToolUseIDs.add(content.tool_use_id)
+            }
+          }
+        }
+      }
+
+      if (msg.type === 'assistant') {
+        for (const content of msg.message.content) {
+          if (
+            'tool_use_id' in content &&
+            typeof (content as { tool_use_id: string }).tool_use_id === 'string'
+          ) {
+            l.resolvedToolUseIDs.add(
+              (content as { tool_use_id: string }).tool_use_id,
+            )
+          }
+          if ((content.type as string) === 'advisor_tool_result') {
+            const result = content as {
+              tool_use_id: string
+              content: { type: string }
+            }
+            if (result.content.type === 'advisor_tool_result_error') {
+              l.erroredToolUseIDs.add(result.tool_use_id)
+            }
+          }
+        }
+      }
+
+      // Count resolved hooks
+      if (msg.type === 'attachment' && 'hookName' in msg.attachment && msg.attachment.hookName !== undefined) {
+        const toolUseID = msg.attachment.toolUseID
+        const hookEvent = msg.attachment.hookEvent
+        const hookName = (msg.attachment as HookAttachmentWithName).hookName
+
+        let byHookEvent = l.resolvedHookCounts.get(toolUseID)
+        if (!byHookEvent) {
+          byHookEvent = new Map()
+          l.resolvedHookCounts.set(toolUseID, byHookEvent)
+        }
+        byHookEvent.set(hookEvent, (byHookEvent.get(hookEvent) ?? 0) + 1)
+      }
+    }
+  }
+
+  // Orphaned server_tool_use / mcp_tool_use marking — only check newly added
+  // assistant blocks that don't yet have matching results.
+  if (currentMsgLen > state.oldMessagesLen) {
+    const lastMsg = messages[currentMsgLen - 1]
+    const lastAssistantMsgId =
+      lastMsg?.type === 'assistant' && lastMsg.message
+        ? lastMsg.message.id
+        : undefined
+
+    for (let i = Math.max(0, state.oldNormalizedLen); i < currentNormLen; i++) {
+      const msg = normalizedMessages[i]
+      if (!msg || msg.type !== 'assistant') continue
+      if (!msg.message) continue
+      if (msg.message.id === lastAssistantMsgId) continue
+      for (const content of msg.message.content) {
+        if (
+          (content.type === 'server_tool_use' ||
+            content.type === 'mcp_tool_use') &&
+          !l.resolvedToolUseIDs.has((content as { id: string }).id)
+        ) {
+          const id = (content as { id: string }).id
+          l.resolvedToolUseIDs.add(id)
+          l.erroredToolUseIDs.add(id)
+        }
+      }
+    }
+  }
+
+  // Update normalizedMessageCount
+  l.normalizedMessageCount = currentNormLen
+
+  // Advance the watermark
+  state.oldNormalizedLen = currentNormLen
+  state.oldMessagesLen = currentMsgLen
+
+  return l
+}
+
+/**
+ * Force a full rebuild on the next call to buildMessageLookupsIncremental.
+ * Call after compaction, /clear, or any non-append change to messages.
+ */
+export function invalidateLookupCache(): void {
+  incrementalState = null
+}
+
 /** Empty lookups for static rendering contexts that don't need real lookups. */
 export const EMPTY_LOOKUPS: MessageLookups = {
   siblingToolUseIDs: new Map(),

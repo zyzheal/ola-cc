@@ -946,6 +946,11 @@ export class QueryEngine {
             if (localBoundaryIdx > 0) {
               messages.splice(0, localBoundaryIdx)
             }
+            // Invalidate incremental message lookup cache so the next render
+            // does a full rebuild instead of processing stale deltas.
+            void import('./utils/messages.js').then(({ invalidateLookupCache }) => {
+              invalidateLookupCache()
+            })
 
             yield {
               type: 'system',
