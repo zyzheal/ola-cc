@@ -21,6 +21,8 @@ import memoize from 'lodash-es/memoize.js'
 import { type Tool, type Tools, type ToolPermissionContext, toolMatchesName } from '../../Tool.js'
 import type { AgentDefinition } from '../../tools/AgentTool/loadAgentsDir.js'
 import { escapeRegExp } from '../../utils/stringUtils.js'
+import { getCacheStrategy } from '../../utils/model/providers.js'
+import { getSessionId } from '../../bootstrap/state.js'
 
 // -- Configuration
 
@@ -160,6 +162,27 @@ function scoreTool(
   return score
 }
 
+// -- Session-level tool order freeze (prefix caching optimization)
+
+/** Session-level cache for prefix caching providers (DeepSeek). */
+const frozenToolOrder = new Map<string, Tools>()
+
+function getToolsForPrefixCache(tools: Tools): Tools {
+  const key = getSessionId()
+  const frozen = frozenToolOrder.get(key)
+  if (frozen && frozen.length === tools.length) {
+    return frozen
+  }
+  // First call this session: sort core tools first, keep rest stable
+  const alwaysSet = new Set(ALWAYS_INCLUDE_TOOLS)
+  const sorted: Tools = [
+    ...tools.filter(t => alwaysSet.has(t.name)),
+    ...tools.filter(t => !alwaysSet.has(t.name)),
+  ]
+  frozenToolOrder.set(key, sorted)
+  return sorted
+}
+
 // -- Main ranking function
 
 /**
@@ -179,6 +202,10 @@ export async function rankTools(
   query: string,
   opts?: RankOptions,
 ): Promise<Tools> {
+  // Prefix caching providers (DeepSeek): freeze tool order per-session
+  if (getCacheStrategy() === 'prefix') {
+    return getToolsForPrefixCache(tools).slice(0, MAX_TOOL_COUNT)
+  }
   if (tools.length <= MIN_TOOL_COUNT) {
     // If we have fewer tools than the minimum, send them all
     return tools
