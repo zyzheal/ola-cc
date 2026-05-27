@@ -160,12 +160,15 @@ const externals = publish
       'turndown',
       'url-handler-napi',
       'bun:*',
+      'zod',
     ]
   : [
       '@ant/*',
       '@anthropic-ai/bedrock-sdk',
+      '@anthropic-ai/claude-agent-sdk',
       '@anthropic-ai/foundry-sdk',
       '@anthropic-ai/vertex-sdk',
+      '@anthropic-ai/sdk',
       '@aws-sdk/client-bedrock',
       '@aws-sdk/client-sts',
       '@azure/identity',
@@ -186,6 +189,7 @@ const externals = publish
       'sharp',
       'turndown',
       'url-handler-napi',
+      'zod',
     ]
 
 const defines = {
