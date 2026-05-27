@@ -60,6 +60,14 @@ bun run dev:buddy        # 启动开发模式（带宠物功能）
 | `/share` | 分享当前会话 |
 | `/summary` | 生成对话摘要 |
 | `/rename` | 重命名会话 |
+| `/orion-score` | 为 skill 执行评分（5维 + 成熟度） |
+| `/orion-review` | 检查 skill 健康状态并推荐操作 |
+| `/orion-repair` | 自动修复低分 skill |
+| `/orion-crystallize` | 锁定已验证 skill 为不可变版本 |
+| `/orion-dashboard` | 查看所有 skill 概览 |
+| `/orion-deep-audit` | 执行深层语义代码审计 |
+| `/orion-create` | 创建新 skill |
+| `/orion-assess` | 5维评分评估 skill 质量 |
 | `/resume` | 恢复之前的会话 |
 | `/session` | 会话管理 |
 | `/commit` | 提交代码（标准版） |
@@ -428,6 +436,15 @@ dist/publish/
 | `OLA_CC_SYNTAX_HIGHLIGHT` | 语法高亮主题 |
 | `OLA_CC_IDLE_THRESHOLD_MINUTES` | 空闲阈值（默认 75 分钟） |
 | `SPROCKET_DUDOT_ENABLED` | 启用宠物伴随 |
+| `RUBRIC_HOLDOUT_FLOOR` | ASAEF 门控：留出集通过率阈值（默认 0.60） |
+| `RUBRIC_MIN_DELTA` | ASAEF 门控：最小改进幅度（默认 0.05） |
+| `RUBRIC_TRIGGER_F1` | ASAEF 门控：触发 F1 阈值（默认 0.85） |
+| `RUBRIC_MAX_COST_RATIO` | ASAEF 门控：最大成本比例（默认 1.2） |
+| `MATURITY_TESTED_RUNS` | 成熟度 tested 所需最少执行次数（默认 3） |
+| `MATURITY_TESTED_AVG` | 成熟度 tested 所需最低平均分（默认 60） |
+| `MATURITY_HARDENED_RUNS` | 成熟度 hardened 所需最少执行次数（默认 5） |
+| `MATURITY_HARDENED_AVG` | 成熟度 hardened 所需最低平均分（默认 80） |
+| `MATURITY_CRYSTALLIZED_AVG` | 成熟度 crystallized 所需最低平均分（默认 90） |
 
 ---
 
@@ -443,6 +460,7 @@ dist/publish/
 - [06-bridge.md](docs/06-bridge.md) - 远程桥接
 - [07-feature-gates.md](docs/07-feature-gates.md) - 功能门控详解
 - [08-chrome-mcp.md](docs/08-chrome-mcp.md) - Chrome MCP 集成
+- [agent-evolution-system.md](docs/agent-evolution-system.md) - Agent + Skill 自进化系统（ASAEF 框架）架构与使用方法
 
 ## 数据来源
 
