@@ -14,7 +14,9 @@ import { type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS, logEve
 import { clearDumpState } from '../../services/api/dumpPrompts.js';
 import { completeAgentTask as completeAsyncAgent, createActivityDescriptionResolver, createProgressTracker, enqueueAgentNotification, failAgentTask as failAsyncAgent, getProgressUpdate, getTokenCountFromTracker, isLocalAgentTask, killAsyncAgent, registerAgentForeground, registerAsyncAgent, unregisterAgentForeground, updateAgentProgress as updateAsyncAgentProgress, updateProgressFromMessage } from '../../tasks/LocalAgentTask/LocalAgentTask.js';
 import { checkRemoteAgentEligibility, formatPreconditionError, getRemoteTaskSessionUrl, registerRemoteAgentTask } from '../../tasks/RemoteAgentTask/RemoteAgentTask.js';
-import { assembleToolPool } from '../../tools.js';
+// Lazy import to break circular dependency: tools.ts → AgentTool.tsx → assembleToolPool → tools.ts
+const getAssembleToolPool =
+  () => (require('../../tools.js') as typeof import('../../tools.js')).assembleToolPool;
 import { asAgentId } from '../../types/ids.js';
 import { runWithAgentContext } from '../../utils/agentContext.js';
 import { isAgentSwarmsEnabled } from '../../utils/agentSwarmsEnabled.js';
@@ -224,7 +226,8 @@ const baseInputSchema = lazySchema(() => z.object({
   prompt: z.string().describe('The task for the agent to perform'),
   subagent_type: z.string().optional().describe('The type of specialized agent to use for this task'),
   model: z.enum(['sonnet', 'opus', 'haiku']).optional().describe("Optional model override for this agent. Takes precedence over the agent definition's model frontmatter. If omitted, uses the agent definition's model, or inherits from the parent."),
-  run_in_background: z.boolean().optional().describe('Set to true to run this agent in the background. You will be notified when it completes.')
+  run_in_background: z.boolean().optional().describe('Set to true to run this agent in the background. You will be notified when it completes.'),
+  task_id: z.string().optional().describe('If set, automatically updates the corresponding V2 task status on completion — sets to "in_progress" when agent starts and "completed"/"failed" when agent finishes.')
 }));
 
 // Full schema combining base + multi-agent params + isolation
@@ -390,6 +393,7 @@ export const AgentTool = buildTool({
     description,
     model: modelParam,
     run_in_background,
+    task_id: v2TaskId,
     name,
     team_name,
     mode: spawnMode,
@@ -401,6 +405,16 @@ export const AgentTool = buildTool({
     depends_on
   }: AgentToolInput, toolUseContext, canUseTool, assistantMessage, onProgress?) {
     const startTime = Date.now();
+
+    // Fire-and-forget V2 task status sync when task_id is provided
+    const syncV2Task = (status: 'in_progress' | 'completed' | 'failed') => {
+      if (!v2TaskId) return;
+      const { updateTask, getTaskListId } = require('../../utils/tasks.js') as typeof import('../../utils/tasks.js');
+      updateTask(getTaskListId(), v2TaskId, { status }).catch(() => {});
+    };
+
+    // Sync to in_progress immediately when agent starts
+    syncV2Task('in_progress');
     const model = isCoordinatorMode() ? undefined : modelParam;
 
     // Get app state for permission mode and agent filtering
@@ -763,7 +777,7 @@ export const AgentTool = buildTool({
       ...appState.toolPermissionContext,
       mode: selectedAgent.permissionMode ?? 'acceptEdits'
     };
-    const workerTools = assembleToolPool(workerPermissionContext, appState.mcp.tools);
+    const workerTools = getAssembleToolPool()(workerPermissionContext, appState.mcp.tools);
 
     // Create a stable agent ID early so it can be used for worktree slug
     const earlyAgentId = createAgentId();
@@ -1163,6 +1177,7 @@ export const AgentTool = buildTool({
                     // cleanupWorktreeIfNeeded can hang — they must not gate
                     // the status transition (gh-20236).
                     completeAsyncAgent(agentResult, rootSetAppState);
+                    syncV2Task('completed');
 
                     // Extract text from agent result content for the notification
                     let finalMessage = extractTextContent(agentResult.content, '\n');
@@ -1239,6 +1254,7 @@ export const AgentTool = buildTool({
                     }
                     const errMsg = errorMessage(error);
                     failAsyncAgent(backgroundedTaskId, errMsg, rootSetAppState);
+                    syncV2Task('failed');
                     const worktreeResult = await cleanupWorktreeIfNeeded();
                     enqueueAgentNotification({
                       taskId: backgroundedTaskId,
@@ -1407,6 +1423,9 @@ export const AgentTool = buildTool({
                   duration_ms: Date.now() - agentStartTime
                 }
               });
+              // Sync V2 task status for foreground (sync) agents
+              if (syncAgentError) { syncV2Task('failed'); }
+              else if (!wasAborted) { syncV2Task('completed'); }
             }
           }
 
