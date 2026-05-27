@@ -237,10 +237,11 @@ async function verifyProviderProfile(
 // -- Parse arguments for CLI mode
 
 interface ParsedArgs {
-  action: 'add' | 'list' | 'use' | 'delete' | 'test' | 'help' | 'add-model' | 'remove-model' | 'edit' | ''
+  action: 'add' | 'list' | 'use' | 'delete' | 'test' | 'help' | 'add-model' | 'remove-model' | 'edit' | 'update-key' | ''
   name?: string
   apiUrl?: string
   apiKey?: string
+  newApiKey?: string
   model?: string
   provider?: 'openai' | 'anthropic'
 }
@@ -255,6 +256,13 @@ function parseArgs(args: string): ParsedArgs {
   if (action === 'list' || action === 'info') return { action }
   if (action === 'help' || action === '--help' || action === '-h') return { action: 'help' }
   if (action === 'delete' || action === 'test' || action === 'edit') return { action, name: parts[1] ? sanitizeInput(parts[1], MAX_PROFILE_NAME_LENGTH) : undefined }
+  if (action === 'update-key') {
+    const result: ParsedArgs = { action, name: parts[1] ? sanitizeInput(parts[1], MAX_PROFILE_NAME_LENGTH) : undefined }
+    for (let argIdx = 2; argIdx < parts.length; argIdx++) {
+      if (parts[argIdx] === '--new-key' && parts[argIdx + 1]) result.newApiKey = sanitizeInput(parts[++argIdx], MAX_API_KEY_LENGTH)
+    }
+    return result
+  }
   if (action === 'use') {
     const result: ParsedArgs = { action, name: parts[1] ? sanitizeInput(parts[1], MAX_PROFILE_NAME_LENGTH) : undefined }
     for (let i = 2; i < parts.length; i++) {
@@ -505,6 +513,39 @@ function AuthActionView({
           break
         }
 
+        case 'update-key': {
+          // CLI-only mode: name + newApiKey provided as args
+          if (parsed.name && parsed.newApiKey) {
+            const profile = data.profiles.find(p => p.name === parsed.name)
+            if (!profile) {
+              setMessage(`未找到 "${parsed.name}"`)
+              setDone(true)
+              break
+            }
+            setMessage('正在验证新的 API Key...')
+            const verifyResult = await verifyProviderProfile({ ...profile, apiKey: parsed.newApiKey })
+            if (verifyResult.success) {
+              const profileIdx = data.profiles.findIndex(p => p.name === profile.name)
+              if (profileIdx >= 0) {
+                data.profiles[profileIdx].apiKey = parsed.newApiKey
+                data.profiles[profileIdx].verified = true
+              }
+              saveProfiles(data)
+              syncProcessScopedOlaProviders(data)
+              approveProviderApiKey(data.profiles[profileIdx])
+              setMessage(`已更新 "${chalk.bold(profile.name)}" 的 API Key\n连接验证成功 ✓\n已同步到环境变量`)
+            } else {
+              setMessage(`更新失败 "${profile.name}":\n${chalk.red(verifyResult.error || 'Unknown error')}`)
+            }
+            setDone(true)
+            break
+          }
+          // Interactive mode: fall through to __interactive__
+          setMessage('__interactive__')
+          setDone(true)
+          break
+        }
+
         case 'help': {
           setMessage(
             `${chalk.bold('Provider 配置管理')}\n\n` +
@@ -513,6 +554,8 @@ function AuthActionView({
             `${chalk.cyan('/auth use')} <name>               切换到指定 provider\n\n` +
             `${chalk.cyan('/auth delete')} <name>            删除 provider\n\n` +
             `${chalk.cyan('/auth test')} <name>              测试连接\n\n` +
+            `${chalk.cyan('/auth update-key')} <name>         交互式更新 provider API Key (支持命令行模式)\n` +
+            `${chalk.cyan('                        ')}` + chalk.dim('CLI: /auth update-key <name> --new-key <key>\n') +
             `${chalk.cyan('/auth add-model')} <name> <model> 给 provider 添加新 model\n` +
             `${chalk.cyan('/auth remove-model')} <name> <model> 从 provider 移除 model\n\n` +
             `${chalk.dim('示例:')}\n` +
@@ -545,6 +588,274 @@ function AuthActionView({
   return null
 }
 
+// -- Update Key Interactive View
+
+interface UpdateKeyState {
+  step: 'select' | 'input-key' | 'verifying' | 'done' | 'error'
+  selectedProfile?: ProviderProfile
+  selectedIdx: number
+  newApiKey: string
+  error?: string
+}
+
+function UpdateKeyView({ onDone }: { onDone: (result?: string, options?: { display?: CommandResultDisplay }) => void }) {
+  const [state, setState] = useState<UpdateKeyState>({ step: 'select', selectedIdx: 0 })
+  const profilesData = loadProfiles()
+
+  // Filter out empty profiles list
+  useEffect(() => {
+    if (profilesData.profiles.length === 0) {
+      onDone('没有已保存的 provider 配置。使用 /auth add 添加。', { display: 'system' })
+    }
+  }, [])
+
+  function handleSelectProfile(idx: number, profile: ProviderProfile) {
+    setState(prev => ({ ...prev, step: 'input-key', selectedProfile: profile, selectedIdx: idx }))
+  }
+
+  async function handleSubmitKey() {
+    const currentNewKey = state.newApiKey.trim()
+    const currentProfile = state.selectedProfile
+    if (!currentProfile || !currentNewKey) {
+      setState(prev => ({ ...prev, step: 'error', error: 'API Key 不能为空' }))
+      return
+    }
+    setState(prev => ({ ...prev, step: 'verifying' }))
+
+    const verifyResult = await verifyProviderProfile({ ...currentProfile, apiKey: currentNewKey })
+    if (verifyResult.success) {
+      const data = loadProfiles()
+      const idx = data.profiles.findIndex(p => p.name === currentProfile.name)
+      if (idx >= 0) {
+        data.profiles[idx].apiKey = currentNewKey
+        data.profiles[idx].verified = true
+      }
+      saveProfiles(data)
+      syncProcessScopedOlaProviders(data)
+      approveProviderApiKey(data.profiles[idx])
+      setState(prev => ({ ...prev, step: 'done' }))
+    } else {
+      setState(prev => ({ ...prev, step: 'error', error: verifyResult.error || '验证失败' }))
+    }
+  }
+
+  // Step: Select profile from list
+  if (state.step === 'select') {
+    return (
+      <div
+        onKeyDown={(e) => {
+          if (e.key === 'ArrowDown' || e.key === 'j') {
+            e.preventDefault()
+            setState(prev => ({ ...prev, selectedIdx: Math.min(prev.selectedIdx + 1, profilesData.profiles.length - 1) }))
+          } else if (e.key === 'ArrowUp' || e.key === 'k') {
+            e.preventDefault()
+            setState(prev => ({ ...prev, selectedIdx: Math.max(prev.selectedIdx - 1, 0) }))
+          } else if (e.key === 'Enter') {
+            e.preventDefault()
+            const sel = profilesData.profiles[state.selectedIdx]
+            if (sel) handleSelectProfile(state.selectedIdx, sel)
+          }
+        }}
+        style={{ padding: '8px 0', outline: 'none', cursor: 'default' }}
+        tabIndex={0}
+      >
+        <div style={{ color: '#58a6ff', marginBottom: 12, fontSize: 14, fontWeight: 'bold' }}>
+          {chalk.bold('更新 Provider API Key')}
+        </div>
+        <div style={{ color: '#8b949e', fontSize: 12, marginBottom: 8 }}>请选择要更新 API Key 的 profile：</div>
+        {profilesData.profiles.map((p, i) => {
+          const isActive = i === state.selectedIdx
+          return (
+            <div
+              key={p.name}
+              onClick={() => handleSelectProfile(i, p)}
+              style={{
+                background: isActive ? 'rgba(88,166,255,0.1)' : 'transparent',
+                padding: '4px 8px',
+                borderRadius: 4,
+                margin: '2px 0',
+                borderLeft: p.name === profilesData.activeProfile ? '2px solid #3fb950' : '2px solid transparent',
+                paddingLeft: isActive ? 12 : 8,
+                cursor: 'pointer',
+              }}
+            >
+              <span style={{ color: isActive ? '#58a6ff' : '#c9d1d9' }}>
+                {chalk.dim(`${i + 1}. `)}{chalk.bold(p.name)}
+              </span>
+              {p.name === profilesData.activeProfile && chalk.green(' (当前)')}
+              {' '}
+              <span style={{ color: p.verified ? '#3fb950' : '#d29922' }}>{p.verified ? '✓' : '?'}</span>
+              {' '}
+              <span style={{ color: '#8b949e', fontSize: 11 }}>{p.provider}</span>
+            </div>
+          )
+        })}
+        <div style={{ marginTop: 12, fontSize: 11, color: '#8b949e' }}>
+          ↑↓ 选择 · Enter 确认
+        </div>
+      </div>
+    )
+  }
+
+  // Step: Input new API Key
+  if (state.step === 'input-key' && state.selectedProfile) {
+    return (
+      <div style={{ padding: '8px 0' }}>
+        <div style={{ color: '#58a6ff', marginBottom: 8, fontSize: 14, fontWeight: 'bold' }}>
+          {chalk.bold(`更新 ${chalk.cyan(state.selectedProfile.name)} 的 API Key`)}
+        </div>
+        <div style={{ marginBottom: 8 }}>
+          <div style={{ color: '#8b949e', fontSize: 12 }}>URL:</div>
+          <div style={{ fontSize: 12, fontFamily: 'monospace' }}>{state.selectedProfile.apiUrl}</div>
+        </div>
+        <div style={{ marginBottom: 8 }}>
+          <div style={{ color: '#8b949e', fontSize: 12 }}>当前 Key:</div>
+          <div style={{ fontSize: 12, fontFamily: 'monospace', color: '#8b949e' }}>sk-{'•'.repeat(Math.min(state.selectedProfile.apiKey.length - 4, 16))}</div>
+        </div>
+        <div style={{ marginBottom: 12 }}>
+          <div style={{ color: '#8b949e', fontSize: 12 }}>新 API Key:</div>
+          <input
+            type="password"
+            value={state.newApiKey}
+            onChange={(e) => setState({ ...state, newApiKey: e.target.value })}
+            onKeyDown={async (e) => {
+              if (e.key === 'Enter') await handleSubmitKey()
+            }}
+            placeholder="sk-..."
+            autoFocus
+            style={{
+              width: '100%',
+              background: 'transparent',
+              border: '1px solid #30363d',
+              borderBottomColor: state.newApiKey ? '#58a6ff' : '#30363d',
+              color: '#c9d1d9',
+              fontFamily: 'monospace',
+              fontSize: 12,
+              padding: '4px 8px',
+              outline: 'none',
+              borderRadius: 4,
+            }}
+          />
+        </div>
+        {state.error && (
+          <div style={{ fontSize: 12, color: '#f85149', marginBottom: 8 }}>
+            {chalk.red('✗ ') + state.error}
+          </div>
+        )}
+        <button
+          onClick={handleSubmitKey}
+          style={{
+            background: '#238636',
+            color: '#fff',
+            border: 'none',
+            borderRadius: 6,
+            padding: '6px 16px',
+            fontFamily: 'inherit',
+            fontSize: 12,
+            cursor: 'pointer',
+          }}
+        >
+          验证并保存 →
+        </button>
+        <button
+          onClick={() => setState({ ...state, step: 'select', selectedProfile: undefined, newApiKey: '', error: undefined })}
+          style={{
+            marginLeft: 8,
+            background: '#30363d',
+            color: '#c9d1d9',
+            border: 'none',
+            borderRadius: 6,
+            padding: '6px 16px',
+            fontFamily: 'inherit',
+            fontSize: 12,
+            cursor: 'pointer',
+          }}
+        >
+          返回
+        </button>
+      </div>
+    )
+  }
+
+  // Step: Verifying
+  if (state.step === 'verifying') {
+    return (
+      <div style={{ padding: '8px 0', textAlign: 'center' }}>
+        <div style={{ color: '#d29922', fontSize: 13 }}>
+          ⠋ 正在连接到 {state.selectedProfile?.apiUrl}...
+        </div>
+        <div style={{ marginTop: 8, height: 2, background: '#21262d', borderRadius: 1, overflow: 'hidden' }}>
+          <div style={{
+            height: '100%',
+            background: 'linear-gradient(90deg, #58a6ff, #3fb950)',
+            animation: 'auth-progress 1.5s ease-in-out infinite',
+            width: '30%',
+            borderRadius: 1,
+          }} />
+        </div>
+      </div>
+    )
+  }
+
+  // Step: Done
+  if (state.step === 'done' && state.selectedProfile) {
+    onDone(
+      `${chalk.green('✓')} 已更新 "${chalk.bold(state.selectedProfile.name)}" 的 API Key\n${chalk.green('✓')} 连接验证成功\n${chalk.green('✓')} 已同步到环境变量`,
+      { display: 'system' }
+    )
+    return null
+  }
+
+  // Step: Error
+  if (state.step === 'error' && state.selectedProfile) {
+    return (
+      <div style={{ padding: '8px 0' }}>
+        <div style={{ color: '#f85149', fontSize: 13, marginBottom: 8 }}>
+          {chalk.red('✗') + ` 更新失败 "${chalk.bold(state.selectedProfile.name)}"`}
+        </div>
+        {state.error && (
+          <div style={{ fontSize: 12, color: '#f85149', marginBottom: 12, whiteSpace: 'pre-wrap' }}>
+            {state.error}
+          </div>
+        )}
+        <button
+          onClick={() => setState({ ...state, step: 'input-key', error: undefined })}
+          style={{
+            background: '#238636',
+            color: '#fff',
+            border: 'none',
+            borderRadius: 6,
+            padding: '6px 16px',
+            fontFamily: 'inherit',
+            fontSize: 12,
+            cursor: 'pointer',
+          }}
+        >
+          重试
+        </button>
+        <button
+          onClick={() => setState({ ...state, step: 'select', selectedProfile: undefined, newApiKey: '', error: undefined })}
+          style={{
+            marginLeft: 8,
+            background: '#30363d',
+            color: '#c9d1d9',
+            border: 'none',
+            borderRadius: 6,
+            padding: '6px 16px',
+            fontFamily: 'inherit',
+            fontSize: 12,
+            cursor: 'pointer',
+          }}
+        >
+          返回列表
+        </button>
+      </div>
+    )
+  }
+
+  return null
+}
+
 // -- Main export
 
 export const call: LocalJSXCommandCall = async (onDone, _context, args) => {
@@ -566,6 +877,11 @@ export const call: LocalJSXCommandCall = async (onDone, _context, args) => {
   if (parsed.action === 'edit') {
     onDone('编辑功能暂不可用。请使用 /auth add 重新添加配置。', { display: 'system' })
     return
+  }
+
+  // Update key: interactive mode (no --new-key arg)
+  if (parsed.action === 'update-key' && !parsed.newApiKey) {
+    return <UpdateKeyView onDone={onDone} />
   }
 
   return <AuthActionView parsed={parsed} onDone={onDone} />
