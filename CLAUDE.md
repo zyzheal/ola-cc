@@ -98,6 +98,25 @@ Context compression lives in `src/services/compact/`:
 - `compact.ts` — main compaction logic, `buildPostCompactMessages()`
 - `microCompact.ts` — lightweight per-tool-result compaction
 
+### Agent Evolution System (ASAEF + EmbodiSkill + SkillEvolver)
+
+混合架构: TypeScript 算法基础设施 + Markdown Skill 工作流。
+
+**TypeScript 层** (`src/tools/AgentTool/` + `src/services/singularity/`):
+- `codeAuditor.ts` — 5项静态代码审计（Syntax/Hallucinated API/Infinite Loop/Dead Code/Complexity），4项LLM审计已迁移至 `orion-deep-audit` skill
+- `rubricEvaluator.ts` — ASAEF 5维 AND 门控 + 论文 `Score(v)=w1*passRate-w2*normCost-w3*overfitRisk` 综合评分
+- `maturityPolicy.ts` — draft→tested→hardened→crystallized 4级成熟度（支持环境变量覆盖 + 中英文提示）
+- `LearningSystem.ts` — ExecutionRecord 双缓冲区 + contrastAnalysis(winners\losers) + JSONL 持久化
+- `AgentAnalyzer.ts` — EmbodiSkill 四类型反思（Discovery/Optimization/Defect/Lapse）+ CONSOLIDATEREVISIONS 批量合并
+- `EvolutionEngine.ts` — ASAEF 8阶段确定性状态机（P0→P1→P2→P3→P4→P5→P6→P7→P8），Layer Promotion (L1→L2→L3)，Early Stopping
+- `storage.ts` — JSONL append-only 持久化 + 防污染 train/test split
+
+**Skill 层** (`~/.ola-cc/skills/orion-*/`):
+- 10个 orion-* skills: assessor, creating, crystallizing, dashboard, deep-audit, gap-detect, repairing, reviewing, scoring, using
+- 用户通过 `/orion-*` 命令触发，Skill 调用 TypeScript API
+
+**设计原则:** 需要程序化调用的逻辑→TypeScript；需要用户判断的交互→Skill。详见 `docs/agent-evolution-system.md`。
+
 ### Event System
 
 事件系统使用 NATS 作为可选的事件总线：
@@ -241,6 +260,9 @@ Safety checks (`checkPathSafetyForAutoEdit` in `src/utils/permissions/filesystem
 | `src/services/compact/compact.ts` | Main context compaction logic |
 | `src/state/AppStateStore.ts` | Central application state management |
 | `src/bootstrap/state.ts` | Session-level state management |
+| `src/tools/AgentTool/` | Agent evolution system: `codeAuditor.ts` (5项静态审计), `rubricEvaluator.ts` (5维AND门控+论文评分), `maturityPolicy.ts` (成熟度模型), `LearningSystem.ts` (执行记录+对比分析), `AgentAnalyzer.ts` (四类型反思) |
+| `src/services/singularity/EvolutionEngine.ts` | ASAEF 8阶段进化状态机 (P0→P8, Layer Promotion, Early Stopping) |
+| `src/services/singularity/storage.ts` | ExecutionRecord JSONL 持久化 + 防污染 train/test split |
 
 ## Documentation Update Policy
 
