@@ -84,7 +84,7 @@ export async function setup(
   }
 
   // Clean up orphaned tasks from previous interrupted sessions
-  if ("external" === 'ant' && !getIsNonInteractiveSession()) {
+  if (!getIsNonInteractiveSession()) {
     import('./utils/tasks.js').then(({ cleanupOrphanTasks, getTaskListId }) => {
       cleanupOrphanTasks(getTaskListId()).catch(err => {
         logForDiagnosticsNoPII('info', 'setup_orphan_task_cleanup_failed', {
