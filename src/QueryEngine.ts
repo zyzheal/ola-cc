@@ -950,7 +950,12 @@ export class QueryEngine {
             // does a full rebuild instead of processing stale deltas.
             void import('./utils/messages.js').then(({ invalidateLookupCache }) => {
               invalidateLookupCache()
-            })
+            }).catch(() => { /* best-effort during compact */ })
+            // Reset memory profiler baseline so post-compact samples compare
+            // against a fresh reference point rather than the pre-compact RSS.
+            void import('./utils/memoryProfiler.js').then(({ resetMemoryProfiler }) => {
+              resetMemoryProfiler()
+            }).catch(() => { /* best-effort during compact */ })
 
             yield {
               type: 'system',

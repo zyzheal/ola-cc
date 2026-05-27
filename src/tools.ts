@@ -58,6 +58,14 @@ const getSendMessageTool = () =>
   require('./tools/SendMessageTool/SendMessageTool.js')
     .SendMessageTool as typeof import('./tools/SendMessageTool/SendMessageTool.js').SendMessageTool
 /* eslint-enable @typescript-eslint/no-require-imports */
+// Force initialization of lazy-loaded tools during module init phase (tools init = sL() in bundle).
+// Bun bytecode's TDZ tracking requires require()-accessed modules to be resolved in the startup
+// chain (sL()), not deferred to main(). Without this, async subagent contexts can trigger
+// "Cannot access 'qq' before initialization" because the runtime doesn't see these modules as
+// initialized despite them being loaded by getAllBaseTools() later in main().
+getSendMessageTool();
+getTeamCreateTool();
+getTeamDeleteTool();
 import { AskUserQuestionTool } from './tools/AskUserQuestionTool/AskUserQuestionTool.js'
 import { LSPTool } from './tools/LSPTool/LSPTool.js'
 import { ListMcpResourcesTool } from './tools/ListMcpResourcesTool/ListMcpResourcesTool.js'
