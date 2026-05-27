@@ -677,6 +677,16 @@ function extractCacheTokens(usage: unknown): CacheTokenResult {
 
 // -- Extra body parsing
 
+/** Detect DeepSeek API provider by base URL */
+function isDeepSeekProvider(baseURL: string): boolean {
+  try {
+    const host = new URL(baseURL).host
+    return host === 'api.deepseek.com' || host.endsWith('.api.deepseek.com')
+  } catch {
+    return false
+  }
+}
+
 function parseExtraBodyEnv(): Record<string, unknown> {
   const envValue = process.env.OPENAI_EXTRA_BODY
   if (!envValue) return {}
@@ -1082,10 +1092,16 @@ export function createOpenAICompatibleShimClient(options: OpenAICompatibleClient
           // Allow override via env var for providers with smaller context windows.
           // Falls back to 128K; will be corrected by API error if wrong.
           const rawLimit = process.env.OPENAI_CONTEXT_LIMIT
-          const parsedLimit = rawLimit ? parseInt(rawLimit, 10) : NaN
-          const contextLimit = !rawLimit || isNaN(parsedLimit) || parsedLimit < 1000
-            ? 128_000
-            : parsedLimit
+          const isDeepSeek = isDeepSeekProvider(baseURL)
+          let contextLimit: number
+          if (isDeepSeek && !rawLimit) {
+            contextLimit = 1_000_000 // DeepSeek V4 Flash/Pro 1M context window
+          } else if (rawLimit) {
+            const parsedLimit = parseInt(rawLimit, 10)
+            contextLimit = isNaN(parsedLimit) || parsedLimit < 1000 ? 128_000 : parsedLimit
+          } else {
+            contextLimit = 128_000
+          }
           let effectiveMaxTokens = openaiParams.max_tokens
           const available = contextLimit - estimatedInput
           if (effectiveMaxTokens > available && available > 0) {
@@ -1094,6 +1110,14 @@ export function createOpenAICompatibleShimClient(options: OpenAICompatibleClient
           }
 
           const paramsToSend = { ...openaiParams, max_tokens: effectiveMaxTokens }
+
+          // Inject prefix caching flag for DeepSeek backend
+          if (isDeepSeek) {
+            paramsToSend.extra_body = {
+              ...paramsToSend.extra_body,
+              enable_prefix_caching: true,
+            }
+          }
 
           if (!params.stream) {
             const response = await fetchWithRetry(
