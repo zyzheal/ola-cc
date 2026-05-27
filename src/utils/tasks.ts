@@ -1,4 +1,4 @@
-import { mkdir, readdir, readFile, unlink, writeFile } from 'fs/promises'
+import { mkdir, readdir, readFile, stat, unlink, writeFile } from 'fs/promises'
 import { join } from 'path'
 import { z } from 'zod/v4'
 import { getIsNonInteractiveSession, getSessionId } from '../bootstrap/state.js'
@@ -136,6 +136,196 @@ export function isTodoV2Enabled(): boolean {
     return true
   }
   return !getIsNonInteractiveSession()
+}
+
+/**
+ * Result of stale task detection: tasks that were left pending/in_progress
+ * from a previous session but were NOT automatically cleaned up.
+ */
+export interface StaleTaskInfo {
+  taskListId: string
+  taskId: string
+  subject: string
+  description: string
+  status: string
+}
+
+/**
+ * Detects pending/in_progress tasks from previous sessions WITHOUT cleaning them.
+ * Returns the list so the caller can decide whether to resume, complete, or ignore.
+ *
+ * Called at session start to check if there are unfinished tasks to continue.
+ */
+export async function detectStaleTasks(
+  currentTaskListId: string = getTaskListId(),
+): Promise<StaleTaskInfo[]> {
+  const configDir = getClaudeConfigHomeDir()
+  const tasksRoot = join(configDir, 'tasks')
+  const staleTasks: StaleTaskInfo[] = []
+
+  try {
+    const sessionDirs = await readdir(tasksRoot)
+    await Promise.all(
+      sessionDirs.map(async (sessionDir) => {
+        // Skip the current session
+        if (sessionDir === sanitizePathComponent(currentTaskListId)) return
+        if (sessionDir.startsWith('.')) return
+
+        const dirPath = join(tasksRoot, sessionDir)
+        let st: ReturnType<typeof stat>
+        try {
+          st = await stat(dirPath)
+        } catch {
+          return
+        }
+        if (!st.isDirectory()) return
+
+        try {
+          const taskFiles = await readdir(dirPath)
+          for (const file of taskFiles) {
+            if (!file.endsWith('.json') || file.startsWith('.')) continue
+            const taskPath = join(dirPath, file)
+
+            try {
+              const content = await readFile(taskPath, 'utf-8')
+              const taskData = jsonParse(content) as Task & {
+                status?: string
+                description?: string
+                subject?: string
+              }
+              if (
+                taskData.status !== 'pending' &&
+                taskData.status !== 'in_progress'
+              )
+                continue
+
+              staleTasks.push({
+                taskListId: sessionDir,
+                taskId: file.replace('.json', ''),
+                subject: taskData.subject ?? '',
+                description: taskData.description ?? '',
+                status: taskData.status ?? 'pending',
+              })
+            } catch {
+              // Skip unreadable files
+            }
+          }
+        } catch {
+          // Skip unreadable dirs
+        }
+      })
+    )
+  } catch {
+    // Tasks directory doesn't exist
+  }
+
+  return staleTasks
+}
+
+/**
+ * Cleans up orphaned tasks from previous sessions.
+ * Scans all task directories under the config home and marks any `pending`
+ * or `in_progress` tasks from other sessions as `completed` (since the
+ * original session was interrupted and the work is no longer actionable).
+ *
+ * Called once at session initialization to prevent stale tasks from
+ * appearing in the UI after a session restart.
+ */
+export async function cleanupOrphanTasks(
+  currentTaskListId: string = getTaskListId(),
+): Promise<{ cleaned: number; dirs: number }> {
+  const configDir = getClaudeConfigHomeDir()
+  const tasksRoot = join(configDir, 'tasks')
+  const orphanMarker = '[Orphaned from interrupted session]'
+
+  let dirs = 0
+  let cleaned = 0
+
+  try {
+    const sessionDirs = await readdir(tasksRoot)
+    // Process directories in parallel for faster startup
+    const results = await Promise.all(
+      sessionDirs.map(async (sessionDir) => {
+        // Skip the current session's own directory
+        if (sessionDir === sanitizePathComponent(currentTaskListId)) return { cleaned: 0, isDir: false }
+        // Skip hidden files
+        if (sessionDir.startsWith('.')) return { cleaned: 0, isDir: false }
+
+        const dirPath = join(tasksRoot, sessionDir)
+        let st
+        try {
+          st = await stat(dirPath)
+        } catch {
+          return { cleaned: 0, isDir: false }
+        }
+        if (!st.isDirectory()) return { cleaned: 0, isDir: false }
+
+        let localCleaned = 0
+        try {
+          const taskFiles = await readdir(dirPath)
+          for (const file of taskFiles) {
+            if (!file.endsWith('.json') || file.startsWith('.')) continue
+
+            const taskPath = join(dirPath, file)
+
+            try {
+              const content = await readFile(taskPath, 'utf-8')
+              const taskData = jsonParse(content) as Task & { status?: string; description?: string }
+
+              // Only clean tasks that were pending or in_progress (interrupted)
+              if (taskData.status !== 'pending' && taskData.status !== 'in_progress') continue
+
+              // Avoid duplicing the orphan marker
+              if (taskData.description?.startsWith(orphanMarker)) continue
+
+              // Acquire lock before modifying another session's task file
+              // to prevent TOCTOU races if the owning session is still running.
+              let release: (() => Promise<void>) | undefined
+              try {
+                release = await lockfile.lock(taskPath, LOCK_OPTIONS)
+
+                // Re-read after lock to avoid overwriting concurrent updates
+                const freshContent = await readFile(taskPath, 'utf-8')
+                const freshData = jsonParse(freshContent) as Task & { status?: string; description?: string }
+
+                // Double-check: skip if already cleaned or completed
+                if (freshData.status === 'completed') continue
+                if (freshData.description?.startsWith(orphanMarker)) continue
+
+                freshData.status = 'completed'
+                freshData.description = `${orphanMarker} ${freshData.description ?? ''}`
+                await writeFile(taskPath, jsonStringify(freshData, null, 2))
+                localCleaned++
+              } finally {
+                await release?.()
+              }
+            } catch (e) {
+              // Skip unreadable task files
+              logForDebugging(`[Tasks] Skipping orphan cleanup for ${taskPath}: ${errorMessage(e)}`)
+            }
+          }
+        } catch {
+          // Skip directories that can't be read
+        }
+
+        return { cleaned: localCleaned, isDir: true }
+      }),
+    )
+
+    // Aggregate results
+    for (const result of results) {
+      if (result.isDir) dirs++
+      cleaned += result.cleaned
+    }
+  } catch {
+    // Tasks directory doesn't exist or can't be read — nothing to clean
+  }
+
+  if (cleaned > 0) {
+    logForDebugging(`[Tasks] Cleaned up ${cleaned} orphaned tasks from ${dirs} previous sessions`)
+  }
+
+  return { cleaned, dirs }
 }
 
 /**
