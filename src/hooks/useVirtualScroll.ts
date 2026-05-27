@@ -324,6 +324,18 @@ export function useVirtualScroll(
     for (const k of refCache.current.keys()) {
       if (!live.has(k)) refCache.current.delete(k)
     }
+    // Cap refCache at HEIGHT_CACHE_MAX to match heightCache — prevents
+    // unbounded closure allocation in long sessions.
+    if (refCache.current.size > HEIGHT_CACHE_MAX) {
+      const excess = refCache.current.size - HEIGHT_CACHE_MAX
+      let removed = 0
+      for (const k of refCache.current.keys()) {
+        if (removed >= excess) break
+        refCache.current.delete(k)
+        removed++
+        dirty = true
+      }
+    }
 
     if (dirty) offsetVersionRef.current++
   }, [itemKeys])

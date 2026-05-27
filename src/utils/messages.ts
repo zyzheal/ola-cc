@@ -1395,6 +1395,11 @@ interface IncrementalLookupState {
   oldNormalizedLen: number
   /** Number of `messages` (messagesToShow) processed during the last build */
   oldMessagesLen: number
+  /** IDs of server_tool_use / mcp_tool_use blocks in the last assistant
+   *  message that haven't been resolved yet. When a NEW assistant message
+   *  arrives, these are re-evaluated — if still unresolved, they're marked
+   *  as orphaned (the previous "last assistant" is no longer last). */
+  pendingOrphanIDs: Set<string>
 }
 
 let incrementalState: IncrementalLookupState | null = null
@@ -1420,12 +1425,26 @@ export function buildMessageLookupsIncremental(
     currentNormLen === 0 // clear
 
   if (needsFullRebuild) {
+    const lookups = buildMessageLookups(normalizedMessages, messages)
     incrementalState = {
-      lookups: buildMessageLookups(normalizedMessages, messages),
+      lookups,
       oldNormalizedLen: currentNormLen,
       oldMessagesLen: currentMsgLen,
+      pendingOrphanIDs: new Set(),
     }
-    return incrementalState.lookups
+    // Populate pendingOrphanIDs from last assistant's unresolved server/mcp tool uses
+    const lastMsg = messages[currentMsgLen - 1]
+    if (lastMsg?.type === 'assistant' && lastMsg.message) {
+      for (const content of lastMsg.message.content) {
+        if (
+          (content.type === 'server_tool_use' || content.type === 'mcp_tool_use') &&
+          !lookups.resolvedToolUseIDs.has((content as { id: string }).id)
+        ) {
+          incrementalState.pendingOrphanIDs.add((content as { id: string }).id)
+        }
+      }
+    }
+    return lookups
   }
 
   const state = incrementalState
@@ -1547,7 +1566,8 @@ export function buildMessageLookupsIncremental(
     }
   }
 
-  // Orphaned server_tool_use / mcp_tool_use marking — only check newly added
+  // Orphaned server_tool_use / mcp_tool_use marking — checks both old
+  // pending IDs (from the previous "last assistant") and newly added
   // assistant blocks that don't yet have matching results.
   if (currentMsgLen > state.oldMessagesLen) {
     const lastMsg = messages[currentMsgLen - 1]
@@ -1555,6 +1575,17 @@ export function buildMessageLookupsIncremental(
       lastMsg?.type === 'assistant' && lastMsg.message
         ? lastMsg.message.id
         : undefined
+
+    // Re-evaluate pending orphans: IDs tracked from the previous "last
+    // assistant" message. That assistant is no longer the last (new messages
+    // arrived), so its unresolved server_tool_use / mcp_tool_use blocks
+    // are now permanent orphans.
+    for (const id of state.pendingOrphanIDs) {
+      if (!l.resolvedToolUseIDs.has(id)) {
+        l.resolvedToolUseIDs.add(id)
+        l.erroredToolUseIDs.add(id)
+      }
+    }
 
     for (let i = Math.max(0, state.oldNormalizedLen); i < currentNormLen; i++) {
       const msg = normalizedMessages[i]
@@ -1570,6 +1601,19 @@ export function buildMessageLookupsIncremental(
           const id = (content as { id: string }).id
           l.resolvedToolUseIDs.add(id)
           l.erroredToolUseIDs.add(id)
+        }
+      }
+    }
+
+    // Update pendingOrphanIDs for the current last assistant message
+    state.pendingOrphanIDs.clear()
+    if (lastMsg?.type === 'assistant' && lastMsg.message) {
+      for (const content of lastMsg.message.content) {
+        if (
+          (content.type === 'server_tool_use' || content.type === 'mcp_tool_use') &&
+          !l.resolvedToolUseIDs.has((content as { id: string }).id)
+        ) {
+          state.pendingOrphanIDs.add((content as { id: string }).id)
         }
       }
     }
