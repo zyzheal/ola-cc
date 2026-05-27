@@ -8,7 +8,8 @@ import type {
   BetaStopReason,
 } from '@anthropic-ai/sdk/resources/beta/messages/messages.mjs'
 import { AFK_MODE_BETA_HEADER } from 'src/constants/betas.js'
-import type { SDKAssistantMessageError } from 'shims/claude-agent-sdk/sdk.d.ts'
+// SDKAssistantMessageError is defined inline below to avoid importing the SDK shim
+type SDKAssistantMessageError = Error
 import type {
   AssistantMessage,
   Message,
