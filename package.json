@@ -32,6 +32,8 @@
     "build:bin": "bun run ./scripts/build-publish-bin.ts",
     "build:bin:wrapper": "bun run ./scripts/build-publish-bin.ts --only-wrapper",
     "build:bin:platform": "bun run ./scripts/build-publish-bin.ts --only-bin",
+    "install:dev": "bun run ./scripts/install-dev-global.ts",
+    "uninstall:dev": "bun run ./scripts/uninstall-dev-global.ts",
     "version:bump": "bun run ./scripts/bump-version.ts",
     "version:bump:patch": "bun run ./scripts/bump-version.ts patch",
     "version:bump:minor": "bun run ./scripts/bump-version.ts minor",
