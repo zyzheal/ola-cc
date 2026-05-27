@@ -83,6 +83,44 @@ export async function setup(
     switchSession(asSessionId(customSessionId))
   }
 
+  // Clean up orphaned tasks from previous interrupted sessions
+  if ("external" === 'ant' && !getIsNonInteractiveSession()) {
+    import('./utils/tasks.js').then(({ cleanupOrphanTasks, getTaskListId }) => {
+      cleanupOrphanTasks(getTaskListId()).catch(err => {
+        logForDiagnosticsNoPII('info', 'setup_orphan_task_cleanup_failed', {
+          error: err.message,
+        })
+      })
+    })
+  }
+
+  // Detect pending/in_progress tasks from previous sessions and notify the user.
+  // Unlike cleanupOrphanTasks (which marks old session tasks as completed),
+  // this detection checks if the CURRENT task list has unfinished tasks so
+  // the model can decide whether to resume them.
+  if ("external" === 'ant' && !getIsNonInteractiveSession()) {
+    import('./utils/tasks.js').then(({ detectStaleTasks, getTaskListId, listTasks, updateTask }) => {
+      const currentTaskListId = getTaskListId()
+      detectStaleTasks(currentTaskListId).then((staleTasks) => {
+        if (staleTasks.length === 0) return
+
+        // Also check current session tasks for pending/in_progress
+        listTasks(currentTaskListId).then((currentTasks) => {
+          const pending = currentTasks.filter(
+            t => t.status === 'pending' || t.status === 'in_progress'
+          )
+          if (pending.length === 0) return
+
+          // Log stale task count for diagnostics
+          logForDebugging(
+            `[Tasks] Found ${pending.length} pending tasks from previous sessions. ` +
+            `Consider resuming with TaskUpdate: ${pending.map(t => `#${t.id} ${t.subject}`).join(', ')}`
+          )
+        }).catch(() => {})
+      }).catch(() => {})
+    })
+  }
+
   // --bare / SIMPLE: skip UDS messaging server and teammate snapshot.
   // Scripted calls don't receive injected messages and don't use swarm teammates.
   // Explicit --messaging-socket-path is the escape hatch (per #23222 gate pattern).
