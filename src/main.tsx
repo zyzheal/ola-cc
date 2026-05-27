@@ -3097,6 +3097,11 @@ async function run(): Promise<CommanderCommand> {
       ...(uploaderReady && {
         onTurnComplete: (messages: MessageType[]) => {
           void uploaderReady.then(uploader => uploader?.(messages));
+          // Sample memory usage after each turn for OOM diagnostics.
+          // Heap snapshots are captured automatically when RSS exceeds thresholds.
+          void import('./utils/memoryProfiler.js').then(({ sampleMemory }) => {
+            sampleMemory().catch(() => { /* best-effort */ })
+          })
         }
       })
     };

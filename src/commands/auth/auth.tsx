@@ -600,7 +600,7 @@ interface UpdateKeyState {
 
 function UpdateKeyView({ onDone }: { onDone: (result?: string, options?: { display?: CommandResultDisplay }) => void }) {
   const [state, setState] = useState<UpdateKeyState>({ step: 'select', selectedIdx: 0 })
-  const profilesData = loadProfiles()
+  const [profilesData] = useState(() => loadProfiles())
 
   // Filter out empty profiles list
   useEffect(() => {

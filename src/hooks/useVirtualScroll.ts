@@ -22,6 +22,13 @@ const DEFAULT_ESTIMATE = 3
  * heights can be 10x the estimate for long tool results.
  */
 const OVERSCAN_ROWS = 80
+/**
+ * Max entries in heightCache before proactive GC trims stale entries.
+ * Each entry is ~80 bytes. 30k entries ≈ 2.4 MB of retained Map + string keys.
+ * Without this cap, long sessions accumulate heights for every item ever
+ * scrolled past, never releasing them until compaction/clear.
+ */
+const HEIGHT_CACHE_MAX = 15_000
 /** Items rendered before the ScrollBox has laid out (viewportHeight=0). */
 const COLD_START_COUNT = 30
 /**
@@ -268,19 +275,56 @@ export function useVirtualScroll(
   // GC stale cache entries (compaction, /clear, screenToggleId bump). Only
   // runs when itemKeys identity changes — scrolling doesn't touch keys.
   // itemRefs self-cleans via ref(null) on unmount.
+  // Also proactively evicts when heightCache exceeds HEIGHT_CACHE_MAX,
+  // keeping only keys that are in the current live set (visible items).
   // eslint-disable-next-line react-hooks/exhaustive-deps -- refs are stable
   useMemo(() => {
     const live = new Set(itemKeys)
     let dirty = false
+
+    // 1. Always remove stale keys (no longer in itemKeys)
     for (const k of heightCache.current.keys()) {
       if (!live.has(k)) {
         heightCache.current.delete(k)
         dirty = true
       }
     }
+
+    // 2. Proactive size cap: if cache still exceeds threshold, trim oldest
+    // entries (those not in the current visible range) until under limit.
+    if (heightCache.current.size > HEIGHT_CACHE_MAX) {
+      const toDelete: string[] = []
+      // Build candidate list of keys not in the current item set (should be
+      // rare after the loop above, but catches edge cases where live set
+      // identity didn't change but scrolling accumulated many heights).
+      for (const k of heightCache.current.keys()) {
+        if (toDelete.length >= heightCache.current.size - HEIGHT_CACHE_MAX) break
+        if (!live.has(k)) {
+          toDelete.push(k)
+        }
+      }
+      for (const k of toDelete) {
+        heightCache.current.delete(k)
+        dirty = true
+      }
+      // If still over limit after removing non-live keys, trim by FIFO
+      if (heightCache.current.size > HEIGHT_CACHE_MAX) {
+        const excess = heightCache.current.size - HEIGHT_CACHE_MAX
+        let removed = 0
+        for (const k of heightCache.current.keys()) {
+          if (removed >= excess) break
+          heightCache.current.delete(k)
+          removed++
+          dirty = true
+        }
+      }
+    }
+
+    // Also GC refCache (same trigger, same candidate set)
     for (const k of refCache.current.keys()) {
       if (!live.has(k)) refCache.current.delete(k)
     }
+
     if (dirty) offsetVersionRef.current++
   }, [itemKeys])
 
