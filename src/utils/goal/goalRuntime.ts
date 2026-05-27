@@ -421,19 +421,23 @@ export function processGoalRuntimeEvent(
 
 				// Dead-turn detection: 2+ turns with no observable changes
 				let turnsWithNoChanges = runtime.turnsWithNoChanges ?? 0;
-				// Use Boolean() to ensure strict boolean type (fixes null issue)
-				// Only check outputTokens growth, not inputTokens (context grows naturally)
-				// When outputTokens is undefined, treat as "cannot determine" (conservatively assume changes)
+				// Check multiple signals for observable work:
+				// 1. outputTokens growth (model produced text)
+				// 2. tool calls executed (model performed work even without text output)
+				// Bug fix: tool-heavy turns (Edit/Bash) may have 0 outputTokens
+				//    but still produce real work — count toolCalls as observable change
 				const currentOutput = context.currentTokenUsage?.outputTokens;
 				const lastOutput = lastTurn?.lastTokenUsage?.outputTokens;
-				const hadObservableChanges = currentOutput != null
+				const toolCallsThisTurn = runtime._toolCallsThisTurn ?? [];
+				const outputGrew = currentOutput != null
 					? !!(
 						lastTurn &&
 						context.currentTokenUsage &&
 						(currentOutput > 0 ||
 							currentOutput > (lastOutput ?? 0))
-					)
+					  )
 					: true; // undefined outputTokens — conservatively assume changes occurred
+				const hadObservableChanges = outputGrew || toolCallsThisTurn.length > 0;
 
 				if (!hadObservableChanges) {
 					turnsWithNoChanges++;
