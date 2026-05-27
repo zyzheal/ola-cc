@@ -1395,8 +1395,6 @@ interface IncrementalLookupState {
   oldNormalizedLen: number
   /** Number of `messages` (messagesToShow) processed during the last build */
   oldMessagesLen: number
-  /** Generation counter — bumped on full rebuild so stale refs are detected */
-  gen: number
 }
 
 let incrementalState: IncrementalLookupState | null = null
@@ -1426,7 +1424,6 @@ export function buildMessageLookupsIncremental(
       lookups: buildMessageLookups(normalizedMessages, messages),
       oldNormalizedLen: currentNormLen,
       oldMessagesLen: currentMsgLen,
-      gen: (incrementalState?.gen ?? 0) + 1,
     }
     return incrementalState.lookups
   }
@@ -1445,22 +1442,26 @@ export function buildMessageLookupsIncremental(
   const l = state.lookups
 
   // First pass (messages): sibling tool use IDs, tool use → message map
-  // Only process newly added messages
+  // Only process newly added messages.
+  // NOTE: siblingToolUseIDs is keyed by tool_use_id (not message ID).
+  // For each new assistant message, build the sibling Set and register
+  // each tool_use_id as a key pointing to it.
   if (currentMsgLen > state.oldMessagesLen) {
     for (let i = state.oldMessagesLen; i < currentMsgLen; i++) {
       const msg = messages[i]!
       if (msg.type === 'assistant' && msg.message) {
-        const id = msg.message.id
-        let siblingIDs = l.siblingToolUseIDs.get(id)
-        if (!siblingIDs) {
-          // This message ID wasn't in the cache — unlikely but handle it
-          siblingIDs = new Set()
-          l.siblingToolUseIDs.set(id, siblingIDs)
-        }
+        const newSiblingIDs = new Set<string>()
+        let hasToolUse = false
         for (const content of msg.message.content) {
           if (content.type === 'tool_use') {
-            siblingIDs.add(content.id)
+            newSiblingIDs.add(content.id)
             l.toolUseByToolUseID.set(content.id, content)
+            hasToolUse = true
+          }
+        }
+        if (hasToolUse) {
+          for (const toolUseID of newSiblingIDs) {
+            l.siblingToolUseIDs.set(toolUseID, newSiblingIDs)
           }
         }
       }
@@ -1497,6 +1498,10 @@ export function buildMessageLookupsIncremental(
           if (content.type === 'tool_result') {
             l.toolResultByToolUseID.set(content.tool_use_id, msg)
             l.resolvedToolUseIDs.add(content.tool_use_id)
+            // Clear any previous orphan marking — this tool_use now has a
+            // result, even if it arrives in a later batch than the original
+            // server_tool_use / mcp_tool_use block.
+            l.erroredToolUseIDs.delete(content.tool_use_id)
             if (content.is_error) {
               l.erroredToolUseIDs.add(content.tool_use_id)
             }
