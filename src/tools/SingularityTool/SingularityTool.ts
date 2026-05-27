@@ -20,7 +20,7 @@
  * - C2: registry_update 使用 maturity 参数而非 context 字段
  */
 
-import { z } from 'zod'
+import { z } from 'zod/v4'
 import * as path from 'path'
 import * as os from 'os'
 import * as fs from 'fs'

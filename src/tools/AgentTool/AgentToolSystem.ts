@@ -5,7 +5,7 @@
  * 替代原有的硬编码规则系统
  */
 
-import { z } from 'zod'
+import { z } from 'zod/v4'
 import { AgentAnalyzer } from './AgentAnalyzer'
 import { AdaptiveDetector } from './AdaptiveDetector'
 import { LearningSystem } from './LearningSystem'

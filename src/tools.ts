@@ -2,8 +2,10 @@
 import { type Tool, type Tools } from './Tool.js'
 import { AgentTool, registerAssembleToolPool } from './tools/AgentTool/AgentTool.js'
 import { agentDetectorTool } from './tools/AgentTool/AgentDetectorTool.js'
-import { singularityTool } from './tools/SingularityTool/SingularityTool.js'
-import { codegraphTool } from './tools/CodegraphTool/CodegraphTool.js'
+let singularityTool: any = null
+try { singularityTool = require('./tools/SingularityTool/SingularityTool.js').singularityTool } catch (e) { console.error('[tools] Failed to load SingularityTool:', e) }
+let codegraphTool: any = null
+try { codegraphTool = require('./tools/CodegraphTool/CodegraphTool.js').codegraphTool } catch (e) { console.error('[tools] Failed to load CodegraphTool:', e) }
 import { SkillTool } from './tools/SkillTool/SkillTool.js'
 import { BashTool } from './tools/BashTool/BashTool.js'
 import { FileEditTool } from './tools/FileEditTool/FileEditTool.js'
@@ -304,8 +306,7 @@ export function getMergedTools(
   return [...builtInTools, ...mcpTools]
 }
 
-// Register assembleToolPool with AgentTool after this module finishes initializing,
-// so AgentTool.call() never needs to require('../../tools.js') during runtime.
-// This avoids Bun bytecode TDZ ("Cannot access 'qq' before initialization") that
-// occurs when AgentTool's lazy require hits a partially-initialized tools.ts module.
-registerAssembleToolPool(assembleToolPool)
+// Register assembleToolPool with AgentTool after all tool imports are complete.
+// Use setTimeout to defer until after module initialization, avoiding TDZ errors
+// when other tools trigger AgentTool loading during their own initialization.
+setTimeout(() => registerAssembleToolPool(assembleToolPool), 0)

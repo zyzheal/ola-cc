@@ -7,7 +7,7 @@
  * 新增：支持 SkillEvolver 对比分析引擎（winners \ losers）
  */
 
-import { z } from 'zod'
+import { z } from 'zod/v4'
 import { DetectionResult, Issue } from './AdaptiveDetector'
 import type { StructuredAnalysisResult } from './AgentAnalyzer'
 import { saveExecutionRecord, loadExecutionHistory } from '../../services/singularity/storage'

@@ -5,7 +5,7 @@
  * 自动选择最合适的检测策略和工具
  */
 
-import { z } from 'zod'
+import { z } from 'zod/v4'
 import { AgentAnalyzer } from './AgentAnalyzer'
 
 // 检测策略类型

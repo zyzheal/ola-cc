@@ -4,7 +4,7 @@
  * 提供智能分析器、自适应检测器和学习系统的统一创建接口
  */
 
-import { z } from 'zod'
+import { z } from 'zod/v4'
 import { AgentAnalyzer } from './AgentAnalyzer'
 import { AdaptiveDetector } from './AdaptiveDetector'
 import { LearningSystem } from './LearningSystem'
