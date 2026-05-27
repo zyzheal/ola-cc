@@ -32,6 +32,7 @@ import {
 } from './model.js'
 import { has1mContext } from '../context.js'
 import { getGlobalConfig, resolveProviderConfig } from '../config.js'
+import { getProcessScopedOlaProviders } from '../managedEnv.js'
 
 // @[MODEL LAUNCH]: Update all the available and default model option strings below.
 
@@ -297,6 +298,19 @@ function getModelOptionsBase(fastMode = false): ModelOption[] {
     ]
   }
 
+  // Second priority: active /auth provider profile models
+  const providerProfileModels = getActiveProviderProfileModels()
+  if (providerProfileModels?.length) {
+    return [
+      getProviderModelDefaultOption(),
+      ...providerProfileModels.map(id => ({
+        value: id,
+        label: id,
+        description: `Provider model (${id})`,
+      })),
+    ]
+  }
+
   // Fall back to built-in logic (Anthropic/OpenAI/Bedrock etc.)
   if (process.env.USER_TYPE === 'ant') {
     // Build options from antModels config
@@ -411,6 +425,18 @@ function getModelOptionsBase(fastMode = false): ModelOption[] {
  * version the alias currently resolves to. Used to detect when a user has
  * a specific older version pinned and a newer one is available.
  */
+/**
+ * Get models from the active /auth provider profile.
+ * Returns null if no active provider profile or no models configured.
+ */
+function getActiveProviderProfileModels(): string[] | null {
+  const data = getProcessScopedOlaProviders()
+  if (!data.activeProfile) return null
+  const profile = data.profiles.find(p => p.name === data.activeProfile)
+  if (!profile || profile.models.length === 0) return null
+  return profile.models
+}
+
 function getModelFamilyInfo(
   model: string,
 ): { alias: string; currentVersionName: string } | null {

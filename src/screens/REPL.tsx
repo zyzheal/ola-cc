@@ -575,7 +575,11 @@ function AnimatedTerminalTitle(t0) {
     t2 = $[5];
   }
   useEffect(t1, t2);
-  const prefix = isAnimating ? TITLE_ANIMATION_FRAMES[frame] ?? TITLE_STATIC_PREFIX : TITLE_STATIC_PREFIX;
+  const prefix = isAnimating ? (TITLE_ANIMATION_FRAMES[frame] || TITLE_STATIC_PREFIX) : TITLE_STATIC_PREFIX;
+  // 调试日志：帮助诊断标题显示问题
+  if (process.env.Ola_CC_DEBUG_TITLE === '1') {
+    console.log(`[DEBUG] Title animation - isAnimating: ${isAnimating}, frame: ${frame}, prefix: "${prefix}", title: "${title}"`);
+  }
   useTerminalTitle(disabled ? null : noPrefix ? title : `${prefix} ${title}`);
   return null;
 }
@@ -583,7 +587,8 @@ function _temp2(setFrame_0) {
   return setFrame_0(_temp);
 }
 function _temp(f) {
-  return (f + 1) % TITLE_ANIMATION_FRAMES.length;
+  const nextFrame = f + 1;
+  return nextFrame < TITLE_ANIMATION_FRAMES.length ? nextFrame : 0;
 }
 type ReplRuntimeBoundaryState = {
   error: Error | null;
@@ -4326,6 +4331,7 @@ export function REPL({
 
     // Find stop hook progress messages
     const progressMsgs = messages.filter((m): m is ProgressMessage<HookProgress> => m.type === 'progress' && m.data.type === 'hook_progress' && (m.data.hookEvent === 'Stop' || m.data.hookEvent === 'SubagentStop'));
+
     if (progressMsgs.length === 0) return null;
 
     // Get the most recent stop hook execution

@@ -1,6 +1,7 @@
 // biome-ignore-all assist/source/organizeImports: ANT-ONLY import markers must not be reordered
 import { type Tool, type Tools } from './Tool.js'
 import { AgentTool } from './tools/AgentTool/AgentTool.js'
+import { agentDetectorTool } from './tools/AgentTool/AgentDetectorTool.js'
 import { SkillTool } from './tools/SkillTool/SkillTool.js'
 import { BashTool } from './tools/BashTool/BashTool.js'
 import { FileEditTool } from './tools/FileEditTool/FileEditTool.js'
@@ -9,6 +10,8 @@ import { FileWriteTool } from './tools/FileWriteTool/FileWriteTool.js'
 import { GlobTool } from './tools/GlobTool/GlobTool.js'
 import { NotebookEditTool } from './tools/NotebookEditTool/NotebookEditTool.js'
 import { WebFetchTool } from './tools/WebFetchTool/WebFetchTool.js'
+import { ConfirmDomainAccessTool } from './tools/ConfirmDomainAccessTool.js'
+import { DomainPreferencesTool } from './tools/DomainPreferencesTool.js'
 import { TaskStopTool } from './tools/TaskStopTool/TaskStopTool.js'
 import { BriefTool } from './tools/BriefTool/BriefTool.js'
 import { SYNTHETIC_OUTPUT_TOOL_NAME } from './tools/SyntheticOutputTool/SyntheticOutputTool.js'
@@ -142,6 +145,7 @@ export function getToolsForDefaultPreset(): string[] {
 export function getAllBaseTools(): Tools {
   return [
     AgentTool,
+    agentDetectorTool,
     TaskOutputTool,
     getShellTool(),
     GlobTool,
@@ -152,6 +156,8 @@ export function getAllBaseTools(): Tools {
     FileWriteTool,
     NotebookEditTool,
     WebFetchTool,
+    ConfirmDomainAccessTool,
+    DomainPreferencesTool,
     TodoWriteTool,
     WebSearchTool,
     TaskStopTool,

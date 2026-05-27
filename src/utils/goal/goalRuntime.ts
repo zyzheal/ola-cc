@@ -20,6 +20,7 @@ import {
 	buildBudgetLimitPrompt,
 	buildContinuationPrompt,
 } from "./goalSteering.js";
+import { checkMemoryIfNeeded, disposeGoalMemory } from "./goalMemory.js";
 
 /**
  * Options for building the GoalRuntimeContext callbacks.
@@ -40,6 +41,8 @@ export interface GoalContextOptions {
 	updateGoalTasks: (listId: string, tasks: GoalTask[]) => void;
 	/** First 200 chars of last API response for analysis */
 	outputSummary?: string;
+	/** Called when compact is needed (deferred — caller handles actual compact in next turn) */
+	onCompactNeeded?: (reason: string) => void;
 }
 
 /**
@@ -92,6 +95,7 @@ export function finishTurnForGoal(
 				if (!goalTaskListId) return;
 				opts.updateGoalTasks(goalTaskListId, tasks);
 			},
+			onCompactNeeded: opts.onCompactNeeded,
 		},
 	);
 }
@@ -119,6 +123,8 @@ export interface GoalRuntimeContext {
 	getTodos?: () => TodoItem[] | undefined; // Optional: get current task list
 	updateGoalTasks?: (tasks: GoalTask[]) => void; // Optional: update goal task list
 	getGoalTasks?: () => GoalTask[] | undefined; // Optional: get current goal task list
+	onCompactNeeded?: (reason: string) => void; // Deferred compact notification
+		onGoalCompleted?: (goal: Goal) => void; // Phase 3: goal completion recording
 }
 
 // Result of processing a runtime event
@@ -356,6 +362,7 @@ export function processGoalRuntimeEvent(
 				// Codex-style: Goal completion via update_goal tool
 				// Finalize accounting and mark goal complete
 				const lastTurn = runtime.accounting.turn;
+				let completedGoal: Goal;
 				if (lastTurn && lastTurn.lastTokenUsage) {
 					const usage = context.currentTokenUsage;
 					const tokenDelta = tokenDeltaSinceLastAccounting(
@@ -366,7 +373,7 @@ export function processGoalRuntimeEvent(
 						runtime.accounting.wallClock.lastAccountedAt,
 					);
 
-					const completedGoal: Goal = {
+					completedGoal = {
 						...goal,
 						status: Status.Complete,
 						tokensUsed: goal.tokensUsed + tokenDelta,
@@ -378,7 +385,7 @@ export function processGoalRuntimeEvent(
 					runtime.accounting.turn = null;
 				} else {
 					// No turn accounting, just mark complete
-					const completedGoal: Goal = {
+					completedGoal = {
 						...goal,
 						status: Status.Complete,
 						updatedAt: Date.now(),
@@ -389,6 +396,12 @@ export function processGoalRuntimeEvent(
 				// Mark all tasks as completed
 				const todos = context.getTodos?.();
 				markAllTasksCompleted(todos, context.updateTodos);
+
+				// Phase 3: Notify goal completion for execution recording
+				context.onGoalCompleted?.(completedGoal);
+
+				// Clean up goal memory and session MC registry
+				disposeGoalMemory(goal.id);
 
 				// Goal complete - no continuation needed
 				return { shouldContinue: false };
@@ -469,6 +482,12 @@ export function processGoalRuntimeEvent(
 					}
 
 					context.updateGoal(updatedGoal);
+
+					// Check memory compaction need (budget threshold + cooldown, P0-03)
+					const memoryResult = checkMemoryIfNeeded(updatedGoal)
+					if (memoryResult.shouldCompact && context.onCompactNeeded) {
+						context.onCompactNeeded(memoryResult.message ?? 'memory_check')
+					}
 				}
 
 				// Record turn in ring buffer with analysis fields
@@ -524,6 +543,8 @@ export function processGoalRuntimeEvent(
 					context.updateGoal(pausedGoal);
 					// Clear pending analysis on pause to prevent stale injection on resume
 					runtime.pendingAnalysis = undefined;
+					// Clean up goal memory and session MC registry
+					disposeGoalMemory(goal.id);
 					return {
 						shouldContinue: false,
 						injectedPrompt: `[Goal auto-paused] ${criticalThreshold} consecutive critical issues detected. Latest: "${analysisResult.reason ?? "Unknown"}". Use /goal resume to continue or /goal stop to cancel.`,
@@ -565,6 +586,8 @@ export function processGoalRuntimeEvent(
 					pausedGoal.pauseReason = `Auto-paused: ${turnsWithNoChanges} consecutive turns with no observable changes (limit: ${deadTurnLimit})`;
 					context.updateGoal(pausedGoal);
 					runtime.pendingAnalysis = undefined;
+					// Clean up goal memory and session MC registry
+					disposeGoalMemory(goal.id);
 					return {
 						shouldContinue: false,
 						injectedPrompt: `[Goal auto-paused] ${turnsWithNoChanges} turns with no progress. Latest issue: "${analysisResult.reason ?? "Unknown"}". Use /goal resume to continue or /goal stop to cancel.`,

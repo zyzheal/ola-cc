@@ -254,7 +254,14 @@ function parseArgs(args: string): ParsedArgs {
 
   if (action === 'list' || action === 'info') return { action }
   if (action === 'help' || action === '--help' || action === '-h') return { action: 'help' }
-  if (action === 'use' || action === 'delete' || action === 'test' || action === 'edit') return { action, name: parts[1] ? sanitizeInput(parts[1], MAX_PROFILE_NAME_LENGTH) : undefined }
+  if (action === 'delete' || action === 'test' || action === 'edit') return { action, name: parts[1] ? sanitizeInput(parts[1], MAX_PROFILE_NAME_LENGTH) : undefined }
+  if (action === 'use') {
+    const result: ParsedArgs = { action, name: parts[1] ? sanitizeInput(parts[1], MAX_PROFILE_NAME_LENGTH) : undefined }
+    for (let i = 2; i < parts.length; i++) {
+      if (parts[i] === '--model' && parts[i + 1]) result.model = sanitizeInput(parts[++i], MAX_MODEL_NAME_LENGTH)
+    }
+    return result
+  }
   if (action === 'add-model' || action === 'remove-model') return { action, name: parts[1] ? sanitizeInput(parts[1], MAX_PROFILE_NAME_LENGTH) : undefined, model: parts[2] ? sanitizeInput(parts[2], MAX_MODEL_NAME_LENGTH) : undefined }
 
   if (action === 'add') {
@@ -375,27 +382,36 @@ function AuthActionView({
         }
 
         case 'use': {
-          if (!parsed.name) { setMessage('用法: /auth use <name>'); setDone(true); break }
+          if (!parsed.name) { setMessage('用法: /auth use <name> [--model <model>]'); setDone(true); break }
           const profile = data.profiles.find(p => p.name === parsed.name)
           if (!profile) { setMessage(`未找到 "${parsed.name}"`); setDone(true); break }
           if (profile.models.length === 0) { setMessage(`"${parsed.name}" 没有可用模型`); setDone(true); break }
+
+          // Resolve model: --model flag > defaultModel
+          const targetModel = parsed.model && profile.models.includes(parsed.model)
+            ? parsed.model
+            : profile.defaultModel
+
+          if (parsed.model && !profile.models.includes(parsed.model)) {
+            setMessage(`模型 "${parsed.model}" 不在 "${parsed.name}" 中。\n可用模型: ${profile.models.join(', ')}\n已切换到默认模型: ${chalk.bold(profile.defaultModel)}`)
+          }
 
           approveProviderApiKey(profile)
 
           // Use process-scoped memory switching — env vars are process-scoped,
           // so multiple processes can independently switch providers.
-          setProcessScopedActiveProfile(profile.name, profile.defaultModel)
+          setProcessScopedActiveProfile(profile.name, targetModel)
 
           // Update mainLoopModel via AppState for immediate effect in current session
-          setAppState(prev => ({ ...prev, mainLoopModel: profile.defaultModel, mainLoopModelForSession: null }))
+          setAppState(prev => ({ ...prev, mainLoopModel: targetModel, mainLoopModelForSession: null }))
 
           // Persist the active profile to disk so new processes pick it up.
           data.activeProfile = profile.name
-          data.activeModel = profile.defaultModel
+          data.activeModel = targetModel
           saveProfiles(data)
 
-          logEvent('tengu_auth_switch_provider', { provider: profile.provider, model: profile.defaultModel })
-          setMessage(`已切换到 "${chalk.bold(profile.name)}" (${profile.provider})\n模型: ${chalk.bold(profile.defaultModel)}\nURL: ${profile.apiUrl}`)
+          logEvent('tengu_auth_switch_provider', { provider: profile.provider, model: targetModel })
+          setMessage(`已切换到 "${chalk.bold(profile.name)}" (${profile.provider})\n模型: ${chalk.bold(targetModel)}\nURL: ${profile.apiUrl}`)
           setDone(true)
           break
         }

@@ -13,6 +13,14 @@ import {
   isBinaryContentType,
   persistBinaryContent,
 } from '../../utils/mcpOutputStorage.js'
+import {
+  TIMEOUTS,
+  LIMITS,
+  ERROR_MESSAGES,
+  ERROR_TYPES,
+  CACHE,
+} from './constants.js'
+import { domainPreferenceManager } from './DomainPreferenceManager.js'
 import { getSettings_DEPRECATED } from '../../utils/settings/settings.js'
 import { asSystemPrompt } from '../../utils/systemPromptType.js'
 import { isPreapprovedHost } from './preapproved.js'
@@ -48,6 +56,22 @@ class EgressBlockedError extends Error {
   }
 }
 
+class DomainCheckRequiresConfirmationError extends Error {
+  constructor(
+    public readonly domain: string,
+    public readonly message: string,
+  ) {
+    super(
+      JSON.stringify({
+        error_type: 'DOMAIN_CHECK_REQUIRES_CONFIRMATION',
+        domain,
+        message,
+      }),
+    )
+    this.name = 'DomainCheckRequiresConfirmationError'
+  }
+}
+
 // Cache for storing fetched URL content
 type CacheEntry = {
   bytes: number
@@ -59,14 +83,10 @@ type CacheEntry = {
   persistedSize?: number
 }
 
-// Cache with 15-minute TTL and 50MB size limit
-// LRUCache handles automatic expiration and eviction
-const CACHE_TTL_MS = 15 * 60 * 1000 // 15 minutes
-const MAX_CACHE_SIZE_BYTES = 50 * 1024 * 1024 // 50MB
-
+// Cache configuration using constants from constants.ts
 const URL_CACHE = new LRUCache<string, CacheEntry>({
-  maxSize: MAX_CACHE_SIZE_BYTES,
-  ttl: CACHE_TTL_MS,
+  maxSize: CACHE.MAX_URL_CACHE_SIZE,
+  ttl: CACHE.TTL_URL,
 })
 
 // Separate cache for preflight domain checks. URL_CACHE is URL-keyed, so
@@ -74,8 +94,8 @@ const URL_CACHE = new LRUCache<string, CacheEntry>({
 // HTTP round-trips to api.anthropic.com. This hostname-keyed cache avoids
 // that. Only 'allowed' is cached — blocked/failed re-check on next attempt.
 const DOMAIN_CHECK_CACHE = new LRUCache<string, true>({
-  max: 128,
-  ttl: 5 * 60 * 1000, // 5 minutes — shorter than URL_CACHE TTL
+  max: CACHE.MAX_DOMAIN_CACHE_SIZE,
+  ttl: CACHE.TTL_DOMAIN_CHECK,
 })
 
 export function clearWebFetchCache(): void {
@@ -104,34 +124,10 @@ function getTurndownService(): Promise<InstanceType<TurndownCtor>> {
 // which provides a primary security boundary. In addition, ola-cc has
 // other data exfil channels, and this one does not seem relatively high risk,
 // so I'm removing that length restriction. -ab
-const MAX_URL_LENGTH = 2000
-
-// Per PSR:
-// "Implement resource consumption controls because setting limits on CPU,
-// memory, and network usage for the Web Fetch tool can prevent a single
-// request or user from overwhelming the system."
-const MAX_HTTP_CONTENT_LENGTH = 10 * 1024 * 1024
-
-// Timeout for the main HTTP fetch request (60 seconds).
-// Prevents hanging indefinitely on slow/unresponsive servers.
-const FETCH_TIMEOUT_MS = 60_000
-
-// Timeout for the domain blocklist preflight check (10 seconds).
-const DOMAIN_CHECK_TIMEOUT_MS = 10_000
-
 // Cap same-host redirect hops. Without this a malicious server can return
 // a redirect loop (/a → /b → /a …) and the per-request FETCH_TIMEOUT_MS
-// resets on every hop, hanging the tool until user interrupt. 10 matches
-// common client defaults (axios=5, follow-redirects=21, Chrome=20).
-const MAX_REDIRECTS = 10
-
-// Truncate to not spend too many tokens
-export const MAX_MARKDOWN_LENGTH = 100_000
-
-// Truncate HTML BEFORE turndown conversion to prevent hangs on超大 pages.
-// Turndown builds a full DOM tree (3-5x HTML size in memory) — even 10MB
-// of HTML can cause OOM or multi-minute hangs.
-const MAX_HTML_BEFORE_TURNDOWN = 500_000 // ~500KB
+// resets on every hop, hanging the tool until user interrupt.
+const MAX_REDIRECTS = LIMITS.MAX_REDIRECTS // ~500KB
 
 export function isPreapprovedUrl(url: string): boolean {
   try {
@@ -143,7 +139,7 @@ export function isPreapprovedUrl(url: string): boolean {
 }
 
 export function validateURL(url: string): boolean {
-  if (url.length > MAX_URL_LENGTH) {
+  if (url.length > LIMITS.MAX_URL_LENGTH) {
     return false
   }
 
@@ -181,31 +177,92 @@ type DomainCheckResult =
 
 export async function checkDomainBlocklist(
   domain: string,
-): Promise<DomainCheckResult> {
+  requireConfirmationOnFailure: boolean = false,
+): Promise<DomainCheckResult | { status: 'requires_confirmation'; message: string }> {
+  // Basic domain validation
+  if (!domain || typeof domain !== 'string' || domain.length > 253) {
+    throw new Error('Invalid domain name')
+  }
+
+  // Check cache first
   if (DOMAIN_CHECK_CACHE.has(domain)) {
     return { status: 'allowed' }
   }
-  try {
-    const response = await axios.get(
-      `${getEnvOrThrow('CLAUDE_WEB_DOMAIN_INFO_URL')}?domain=${encodeURIComponent(domain)}`,
-      { timeout: DOMAIN_CHECK_TIMEOUT_MS },
-    )
-    if (response.status === 200) {
-      if (response.data.can_fetch === true) {
-        DOMAIN_CHECK_CACHE.set(domain, true)
-        return { status: 'allowed' }
+
+  // Validate domain format
+  const domainRegex = /^[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)*$/
+  if (!domainRegex.test(domain)) {
+    if (requireConfirmationOnFailure) {
+      return {
+        status: 'requires_confirmation',
+        message: `域名格式异常: ${domain}。请确认是否要继续访问。`,
       }
-      return { status: 'blocked' }
     }
-    // Non-200 status but didn't throw
     return {
       status: 'check_failed',
-      error: new Error(`Domain check returned status ${response.status}`),
+      error: new Error(`Invalid domain format: ${domain}`),
     }
-  } catch (e) {
-    logError(e)
-    return { status: 'check_failed', error: e as Error }
   }
+
+  // Try domain check with retry logic
+  const maxRetries = 1
+  let lastError: Error | null = null
+
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    try {
+      const response = await axios.get(
+        `${getEnvOrThrow('CLAUDE_WEB_DOMAIN_INFO_URL')}?domain=${encodeURIComponent(domain)}`,
+        {
+          timeout: DOMAIN_CHECK_TIMEOUT_MS,
+          headers: {
+            'User-Agent': 'ola-cc-webfetch/1.0',
+          },
+        },
+      )
+
+      if (response.status === 200) {
+        if (response.data.can_fetch === true) {
+          DOMAIN_CHECK_CACHE.set(domain, true)
+          return { status: 'allowed' }
+        }
+        return { status: 'blocked' }
+      }
+
+      // Non-200 status but didn't throw
+      if (requireConfirmationOnFailure) {
+        return {
+          status: 'requires_confirmation',
+          message: `无法验证域名 ${domain} 的安全性。服务器返回状态码 ${response.status}。`,
+        }
+      }
+      return {
+        status: 'check_failed',
+        error: new Error(`Domain check returned status ${response.status}`),
+      }
+    } catch (e) {
+      lastError = e as Error
+      logError(e)
+
+      // If it's not a network error, don't retry
+      if (axios.isAxiosError(e) && e.response?.status >= 400) {
+        break
+      }
+
+      // Wait before retry (exponential backoff)
+      if (attempt < maxRetries) {
+        await new Promise(resolve => setTimeout(resolve, 1000 * Math.pow(2, attempt)))
+      }
+    }
+  }
+
+  // All attempts failed
+  if (requireConfirmationOnFailure) {
+    return {
+      status: 'requires_confirmation',
+      message: `无法验证域名 ${domain} 的安全性。这可能是由于网络限制或企业安全策略阻止了对 claude.ai 的访问。`,
+    }
+  }
+  return { status: 'check_failed', error: lastError || new Error('Unknown error during domain check') }
 }
 
 /**
@@ -353,9 +410,47 @@ export type FetchedContent = {
 export async function getURLMarkdownContent(
   url: string,
   abortController: AbortController,
-): Promise<FetchedContent | RedirectInfo> {
+  requireConfirmationOnFailure: boolean = true,
+): Promise<FetchedContent | RedirectInfo | { status: 'requires_confirmation'; message: string; domain: string }> {
   if (!validateURL(url)) {
-    throw new Error('Invalid URL')
+    throw new ERROR_MESSAGES.INVALID_URL(url)
+  }
+
+  // Additional validation for common edge cases
+  try {
+    const parsedUrl = new URL(url)
+    if (!parsedUrl.hostname) {
+      throw new Error('URL must include a hostname')
+    }
+    if (parsedUrl.protocol !== 'http:' && parsedUrl.protocol !== 'https:') {
+      throw new Error('Only HTTP and HTTPS protocols are supported')
+    }
+  } catch (error) {
+    throw new ERROR_MESSAGES.URL_VALIDATION_FAILED(error instanceof Error ? error.message : String(error))
+  }
+
+  const hostname = parsedUrl.hostname
+
+  // Check user preferences first
+  if (domainPreferenceManager.isDomainAllowed(hostname)) {
+    // Domain is explicitly allowed, skip confirmation
+    console.log(`Domain ${hostname} is in allowed list, skipping confirmation`)
+  } else if (domainPreferenceManager.isDomainDenied(hostname)) {
+    // Domain is explicitly denied
+    throw new Error(`Domain ${hostname} is in denied list`)
+  } else {
+    // Check for academic auto-allow if configured
+    if (webFetchConfigManager.shouldAllowAcademic() && domainPreferenceManager.getDomainCategory(hostname) === 'academic') {
+      console.log(`Auto-allowing academic domain ${hostname}`)
+      domainPreferenceManager.recordDecision(hostname, 'allow', url, 'academic')
+    } else if (!requireConfirmationOnFailure || !domainPreferenceManager.shouldAskForConfirmation(hostname)) {
+      // User has confirmed recently or confirmation is disabled
+      const suggestion = domainPreferenceManager.getSuggestion(hostname)
+      if (suggestion === 'allow') {
+        console.log(`Auto-allowing domain ${hostname} based on history`)
+        domainPreferenceManager.recordDecision(hostname, 'allow', url, domainPreferenceManager.getDomainCategory(hostname))
+      }
+    }
   }
 
   // Check cache (LRUCache handles TTL automatically)
@@ -391,7 +486,14 @@ export async function getURLMarkdownContent(
     // that prevent outbound connections to claude.ai
     const settings = getSettings_DEPRECATED()
     if (!settings.skipWebFetchPreflight) {
-      const checkResult = await checkDomainBlocklist(hostname)
+      const checkResult = await checkDomainBlocklist(hostname, requireConfirmationOnFailure)
+      if (checkResult.status === 'requires_confirmation') {
+        return {
+          status: 'requires_confirmation',
+          message: checkResult.message,
+          domain: hostname,
+        }
+      }
       switch (checkResult.status) {
         case 'allowed':
           // Continue with the fetch

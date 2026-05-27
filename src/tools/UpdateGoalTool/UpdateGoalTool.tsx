@@ -2,6 +2,7 @@ import { z } from "zod/v4";
 import type { Goal, TokenUsage } from "../../commands/goal/types.js";
 import { buildTool, type ToolDef } from "../../Tool.js";
 import { processGoalRuntimeEvent } from "../../utils/goal/goalRuntime.js";
+import { recordGoalCompletion } from "../../utils/goal/goalCompletionRecorder.js";
 import { lazySchema } from "../../utils/lazySchema.js";
 import {
 	renderToolResultMessage,
@@ -118,6 +119,9 @@ export const UpdateGoalTool: ToolDef<InputSchema, Output> = buildTool({
 							...prev,
 							goal: updatedGoal,
 						}));
+					},
+					onGoalCompleted: (completedGoal: Goal) => {
+						recordGoalCompletion(completedGoal);
 					},
 				},
 			);
