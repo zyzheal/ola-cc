@@ -71,7 +71,11 @@ type RankOptions = {
  * Get tool description with memoized caching.
  * Reuses ToolSearchTool's pattern: memoize by tool name to avoid
  * re-computing descriptions on subsequent ranking calls.
+ *
+ * LRU-style bounded cache to prevent unbounded growth during
+ * long-lived sessions (inc-4120: OOM after ~3h).
  */
+const MAX_MEMOIZED_DESC = 200
 const getToolDescriptionMemoized = memoize(
   async (cacheKey: string, toolName: string, tools: Tools, opts: RankOptions): Promise<string> => {
     void cacheKey // Used for cache uniqueness only
@@ -90,6 +94,22 @@ const getToolDescriptionMemoized = memoize(
   },
   (cacheKey: string) => cacheKey,
 )
+
+/**
+ * Evict oldest entries when cache grows beyond limit.
+ * Called periodically from rankTools to keep memory bounded.
+ */
+function pruneMemoizedCache(): void {
+  const cache = getToolDescriptionMemoized.cache
+  const keys = Object.keys(cache)
+  if (keys.length > MAX_MEMOIZED_DESC) {
+    // lodash memoize cache is a plain object — delete excess entries
+    const excess = keys.length - MAX_MEMOIZED_DESC
+    for (let i = 0; i < excess; i++) {
+      delete cache[keys[i]]
+    }
+  }
+}
 
 function getDescriptionCache(): { clear: () => void } {
   return getToolDescriptionMemoized.cache
@@ -230,6 +250,9 @@ export async function rankTools(
     termPatterns.set(term, new RegExp(`\\b${escapeRegExp(term)}\\b`))
   }
 
+  // Prune memoized cache to prevent unbounded growth (inc-4120: OOM after ~3h)
+  pruneMemoizedCache()
+
   // Pre-compute descriptions for all tools (uses memoized cache)
   const toolDescriptions = new Map<string, string>()
   // Cache key: tool descriptions depend on the current tools list and agents,
@@ -319,6 +342,9 @@ export async function rankToolsTwoPhase(
   for (const term of queryTerms) {
     termPatterns.set(term, new RegExp(`\\b${escapeRegExp(term)}\\b`))
   }
+
+  // Prune memoized cache to prevent unbounded growth (inc-4120: OOM after ~3h)
+  pruneMemoizedCache()
 
   // === PHASE 1: Lightweight scoring (name + searchHint only) ===
   const alwaysInclude = new Set<string>(ALWAYS_INCLUDE_TOOLS)
