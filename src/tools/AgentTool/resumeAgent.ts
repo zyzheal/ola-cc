@@ -6,7 +6,9 @@ import { isCoordinatorMode } from '../../coordinator/coordinatorMode.js'
 import type { CanUseToolFn } from '../../hooks/useCanUseTool.js'
 import type { ToolUseContext } from '../../Tool.js'
 import { registerAsyncAgent } from '../../tasks/LocalAgentTask/LocalAgentTask.js'
-import { assembleToolPool } from '../../tools.js'
+// Lazy import to prevent potential circular dependency with tools.ts
+const getAssembleToolPool =
+  () => (require('../../tools.js') as typeof import('../../tools.js')).assembleToolPool;
 import { asAgentId } from '../../types/ids.js'
 import { runWithAgentContext } from '../../utils/agentContext.js'
 import { runWithCwdOverride } from '../../utils/cwd.js'
@@ -158,7 +160,7 @@ export async function resumeAgentBackground({
   }
   const workerTools = isResumedFork
     ? toolUseContext.options.tools
-    : assembleToolPool(workerPermissionContext, appState.mcp.tools)
+    : getAssembleToolPool()(workerPermissionContext, appState.mcp.tools)
 
   const runAgentParams: Parameters<typeof runAgent>[0] = {
     agentDefinition: selectedAgent,
