@@ -21,6 +21,10 @@ import {
 	buildContinuationPrompt,
 } from "./goalSteering.js";
 import { checkMemoryIfNeeded, disposeGoalMemory } from "./goalMemory.js";
+import { initOrchestratorState, processTurn } from "./goalOrchestrator.js";
+import { resolveScenario } from "./goalScenario.js";
+import { observeTurn } from "./goalReActObserver.js";
+import { recordError, shouldPause as trackerShouldPause } from "./goalErrorTracker.js";
 
 /**
  * Options for building the GoalRuntimeContext callbacks.
@@ -134,29 +138,6 @@ export interface GoalRuntimeResult {
 }
 
 /**
- * Work tools that should auto-progress tasks.
- * Replaces hardcoded exclusion list with explicit inclusion.
- */
-const WORK_TOOLS = new Set([
-	"Bash",
-	"FileEdit",
-	"FileWrite",
-	"FileRead",
-	"Glob",
-	"Grep",
-	"Agent",
-	"SkillTool",
-	"TodoWrite",
-	"Edit",
-	"Write",
-	"Read",
-]);
-
-function isWorkTool(toolName: string): boolean {
-	return WORK_TOOLS.has(toolName);
-}
-
-/**
  * Get configurable threshold for consecutive critical analyses before auto-pause.
  * Defaults to 3, configurable via OLA_CC_GOAL_AUTO_PAUSE_CRITICAL_THRESHOLD env var.
  */
@@ -174,49 +155,6 @@ function getDeadTurnLimit(): number {
   return isNaN(env) || env < 1 ? 5 : env;
 }
 
-// Helper: Auto-progress task status
-function autoProgressTasks(
-	todos: TodoItem[] | undefined,
-	updateTodos: ((todos: TodoItem[]) => void) | undefined,
-): void {
-	if (!todos || !updateTodos || todos.length === 0) return;
-
-	// Find current in_progress task
-	const inProgressIndex = todos.findIndex((t) => t.status === "in_progress");
-
-	// If no task in progress, start the first pending task
-	if (inProgressIndex === -1) {
-		const firstPendingIndex = todos.findIndex((t) => t.status === "pending");
-		if (firstPendingIndex !== -1) {
-			const updatedTodos = [...todos];
-			updatedTodos[firstPendingIndex] = {
-				...updatedTodos[firstPendingIndex],
-				status: "in_progress",
-			};
-			updateTodos(updatedTodos);
-		}
-		return;
-	}
-
-	// Mark current task as completed and start next
-	const updatedTodos = [...todos];
-	updatedTodos[inProgressIndex] = {
-		...updatedTodos[inProgressIndex],
-		status: "completed",
-	};
-
-	const nextPendingIndex = todos.findIndex(
-		(t, i) => i > inProgressIndex && t.status === "pending",
-	);
-	if (nextPendingIndex !== -1) {
-		updatedTodos[nextPendingIndex] = {
-			...updatedTodos[nextPendingIndex],
-			status: "in_progress",
-		};
-	}
-
-	updateTodos(updatedTodos);
-}
 
 // Helper: Mark all tasks as completed
 function markAllTasksCompleted(
@@ -228,43 +166,6 @@ function markAllTasksCompleted(
 	updateTodos(updatedTodos);
 }
 
-// Helper: Auto-advance goal tasks when a turn produces observable changes.
-// Marks the current in_progress task as completed and advances the next
-// pending task to in_progress.
-function autoAdvanceGoalTasks(
-	tasks: GoalTask[] | undefined,
-	updateGoalTasks: ((tasks: GoalTask[]) => void) | undefined,
-): void {
-	if (!tasks || !updateGoalTasks || tasks.length === 0) return;
-
-	const currentIdx = tasks.findIndex(t => t.status === "in_progress");
-	if (currentIdx === -1) {
-		// No task in progress — start the first pending task
-		const firstPending = tasks.findIndex(t => t.status === "pending");
-		if (firstPending !== -1) {
-			const updated = [...tasks];
-			updated[firstPending] = { ...updated[firstPending], status: "in_progress" };
-			updateGoalTasks(updated);
-		}
-		return;
-	}
-
-	// Find next pending task after current
-	const nextIdx = tasks.findIndex((t, i) => i > currentIdx && t.status === "pending");
-	if (nextIdx === -1) {
-		// No more pending tasks — just mark current as completed
-		const updated = [...tasks];
-		updated[currentIdx] = { ...updated[currentIdx], status: "completed" };
-		updateGoalTasks(updated);
-		return;
-	}
-
-	// Mark current as completed, advance next to in_progress
-	const updated = [...tasks];
-	updated[currentIdx] = { ...updated[currentIdx], status: "completed" };
-	updated[nextIdx] = { ...updated[nextIdx], status: "in_progress" };
-	updateGoalTasks(updated);
-}
 
 // Process goal runtime events with error handling
 export function processGoalRuntimeEvent(
@@ -305,25 +206,6 @@ export function processGoalRuntimeEvent(
 				};
 				// Record wall time start
 				runtime._currentTurnWallStartMs = Date.now();
-				// Auto-start first task if none is in progress
-				const todos = context.getTodos?.();
-				if (
-					todos &&
-					todos.length > 0 &&
-					!todos.some((t) => t.status === "in_progress")
-				) {
-					autoProgressTasks(todos, context.updateTodos);
-				}
-
-				// Also check goalTasks if todos didn't trigger
-				const goalTasks = context.getGoalTasks?.();
-				if (
-					goalTasks &&
-					goalTasks.length > 0 &&
-					!goalTasks.some((t) => t.status === "in_progress")
-				) {
-					autoAdvanceGoalTasks(goalTasks, context.updateGoalTasks);
-				}
 
 				return { shouldContinue: true };
 			}
@@ -426,7 +308,11 @@ export function processGoalRuntimeEvent(
 							currentOutput > (lastOutput ?? 0))
 					  )
 					: true; // undefined outputTokens — conservatively assume changes occurred
-				const hadObservableChanges = outputGrew || toolCallsThisTurn.length > 0;
+				// Redefine: only file-system writes count as observable changes
+				// (Read-only turns should not reset the dead-turn counter)
+				const WRITE_TOOLS = new Set(["Write", "FileWrite", "Edit", "FileEdit"])
+				const hasFileSystemChanges = toolCallsThisTurn.some(t => WRITE_TOOLS.has(t))
+				const hadObservableChanges = hasFileSystemChanges || (outputGrew && (context.currentTokenUsage?.outputTokens ?? 0) > 100)
 
 				if (!hadObservableChanges) {
 					turnsWithNoChanges++;
@@ -520,6 +406,90 @@ export function processGoalRuntimeEvent(
 				);
 				// Clear tool calls accumulator for next turn
 				runtime._toolCallsThisTurn = [];
+
+				// ── Orchestrator decision ──
+				// ReAct observation
+				const toolCallsForObs = (runtime.turnBuffer[runtime.turnBuffer.length - 1]?.toolCallsSummary ?? []) as string[]
+				const observation = observeTurn(toolCallsForObs, context.outputSummary ?? "")
+				runtime.lastObservation = {
+					mainPhase: observation.mainPhase,
+					phases: observation.phases,
+					qualitySignals: observation.qualitySignals,
+				}
+
+				// Build orchestrator context and get decision
+				const scenarioConfig = resolveScenario(goal.objective)
+				const prevTurn = runtime.turnBuffer.length >= 2
+					? runtime.turnBuffer[runtime.turnBuffer.length - 2]
+					: undefined
+				const currentTurnRecord = runtime.turnBuffer[runtime.turnBuffer.length - 1]
+				const allTodos = context.getTodos?.() ?? []
+				const orchGoalTasks = context.getGoalTasks?.()
+				const orchTodos = context.getTodos?.()
+				const inProgressGoalTask = orchGoalTasks?.find(t => t.status === "in_progress")
+				const inProgressTodo = orchTodos?.find(t => t.status === "in_progress")
+				const currentTaskContent = inProgressGoalTask?.content ?? inProgressTodo?.content
+
+				const decision = processTurn({
+					goal, runtime,
+					currentTurn: currentTurnRecord,
+					previousTurn: prevTurn,
+					todos: allTodos,
+					currentTask: currentTaskContent,
+					observation,
+					scenarioConfig,
+				})
+
+				// Apply orchestrator decision
+				if (decision.action === "pause") {
+					const pausedGoal = {
+						...goal,
+						status: Status.Paused,
+						updatedAt: Date.now(),
+						pauseReason: decision.pauseReason ?? decision.reason,
+					}
+					context.updateGoal(pausedGoal)
+					runtime.pendingAnalysis = undefined
+					disposeGoalMemory(goal.id)
+					return {
+						shouldContinue: false,
+						injectedPrompt: decision.pauseReason ?? decision.reason,
+					}
+				}
+
+				if (decision.action === "skip_task") {
+					// Mark current task as skipped and advance
+					const skipTasks = context.getGoalTasks?.()
+					if (skipTasks) {
+						const idx = skipTasks.findIndex(t => t.status === "in_progress")
+						if (idx !== -1) {
+							const updated = [...skipTasks]
+							updated[idx] = { ...updated[idx], status: "skipped" }
+							// Advance next pending
+							const nextIdx = updated.findIndex((t, i) => i > idx && t.status === "pending")
+							if (nextIdx !== -1) {
+								updated[nextIdx] = { ...updated[nextIdx], status: "in_progress" }
+							}
+							context.updateGoalTasks?.(updated)
+						}
+					}
+					return {
+						shouldContinue: true,
+						injectedPrompt: `Task skipped: ${decision.reason}. Moving to next task.`,
+					}
+				}
+
+				if (decision.action === "retry") {
+					return {
+						shouldContinue: true,
+						injectedPrompt: decision.prompt ?? `Retry: ${decision.reason}`,
+					}
+				}
+
+				// decision.action === "continue" with specific prompt
+				if (decision.prompt) {
+					return { shouldContinue: true, injectedPrompt: decision.prompt }
+				}
 
 				// Lightweight analysis after turn completion
 				const analysisResult = analyzeTurnLightweight(
@@ -675,6 +645,9 @@ export function processGoalRuntimeEvent(
 				runtime.consecutiveErrors = 0;
 				runtime.consecutiveCritical = 0;
 
+				// Initialize orchestrator state (scenario, convergence, error tracker)
+				initOrchestratorState(runtime, event.goal.objective);
+
 				// Start first task as in_progress
 				const todos = context.getTodos?.();
 				if (todos && todos.length > 0) {
@@ -706,21 +679,35 @@ export function processGoalRuntimeEvent(
 		console.error("[goalRuntime] Error processing event:", error);
 		const { goal, runtime } = context;
 		if (goal && runtime) {
-			runtime.consecutiveErrors = (runtime.consecutiveErrors ?? 0) + 1;
-
-			if (runtime.consecutiveErrors >= 3) {
-				const pausedGoal = {
-					...goal,
-					status: Status.Paused,
-					updatedAt: Date.now(),
-				};
-				context.updateGoal(pausedGoal);
-				// Clear pending analysis on pause to prevent stale injection on resume
-				runtime.pendingAnalysis = undefined;
-				return {
-					shouldContinue: false,
-					injectedPrompt: `[Goal paused due to errors] 3 consecutive errors encountered. Use /goal resume to continue or /goal stop to cancel.`,
-				};
+			// Use error tracker if available, fallback to legacy counter
+			if (runtime.errorTracker) {
+				recordError(runtime.errorTracker, "runtime_exception")
+				if (trackerShouldPause(runtime.errorTracker)) {
+					const pausedGoal = { ...goal, status: Status.Paused, updatedAt: Date.now() }
+					context.updateGoal(pausedGoal)
+					runtime.pendingAnalysis = undefined
+					disposeGoalMemory(goal.id)
+					return {
+						shouldContinue: false,
+						injectedPrompt: `[Goal paused due to errors] Error threshold exceeded. Use /goal resume to continue or /goal stop to cancel.`,
+					}
+				}
+			} else {
+				// Legacy fallback
+				runtime.consecutiveErrors = (runtime.consecutiveErrors ?? 0) + 1;
+				if (runtime.consecutiveErrors >= 3) {
+					const pausedGoal = {
+						...goal,
+						status: Status.Paused,
+						updatedAt: Date.now(),
+					};
+					context.updateGoal(pausedGoal);
+					runtime.pendingAnalysis = undefined;
+					return {
+						shouldContinue: false,
+						injectedPrompt: `[Goal paused due to errors] 3 consecutive errors encountered. Use /goal resume to continue or /goal stop to cancel.`,
+					};
+				}
 			}
 		}
 		return { shouldContinue: true };
