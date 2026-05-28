@@ -31,11 +31,11 @@ const operationEnum = z.enum([
 
 const inputSchema = z.object({
   operation: operationEnum.describe('CodeGraph 操作类型'),
-  query: z.string().optional().describe('查询内容（任务描述 / 符号名）'),
-  symbol: z.string().optional().describe('符号名称（用于 callers/callees/impact/trace）'),
-  maxNodes: z.number().optional().describe('最大返回节点数（默认 20）'),
+  query: z.string().max(10000).optional().describe('查询内容（任务描述 / 符号名）'),
+  symbol: z.string().max(1000).optional().describe('符号名称（用于 callers/callees/impact/trace）'),
+  maxNodes: z.number().min(1).max(100).optional().describe('最大返回节点数（默认 20）'),
   format: z.enum(['markdown', 'json']).optional().describe('输出格式（默认 markdown）'),
-  depth: z.number().optional().describe('影响分析深度（默认 2）'),
+  depth: z.number().min(1).max(10).optional().describe('影响分析深度（默认 2）'),
 });
 
 type Input = z.infer<typeof inputSchema>;

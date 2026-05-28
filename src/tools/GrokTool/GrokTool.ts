@@ -28,15 +28,15 @@ const operationEnum = z.enum([
 
 const inputSchema = z.object({
   operation: operationEnum.describe('Grok 操作类型'),
-  question: z.string().optional().describe('问题（用于 grok_chat）'),
-  target: z.string().optional().describe('目标文件/函数（用于 grok_explain）'),
-  topic: z.string().optional().describe('主题（用于 grok_tour）'),
-  files: z.array(z.string()).optional().describe('变更文件列表（用于 grok_diff）'),
-  path: z.string().optional().describe('扫描路径（用于 grok_generate）'),
-  language: z.string().optional().describe('输出语言（用于 grok_generate）'),
-  scope: z.string().optional().describe('子目录范围（用于 grok_generate）'),
+  question: z.string().max(5000).optional().describe('问题（用于 grok_chat）'),
+  target: z.string().max(1000).optional().describe('目标文件/函数（用于 grok_explain）'),
+  topic: z.string().max(1000).optional().describe('主题（用于 grok_tour）'),
+  files: z.array(z.string().max(500)).max(100).optional().describe('变更文件列表（用于 grok_diff）'),
+  path: z.string().max(1000).optional().describe('扫描路径（用于 grok_generate）'),
+  language: z.string().max(50).optional().describe('输出语言（用于 grok_generate）'),
+  scope: z.string().max(500).optional().describe('子目录范围（用于 grok_generate）'),
   incremental: z.boolean().optional().describe('增量更新（用于 grok_generate）'),
-  port: z.number().optional().describe('端口号（用于 grok_dashboard）'),
+  port: z.number().min(1024).max(65535).optional().describe('端口号（用于 grok_dashboard）'),
 })
 
 type Input = z.infer<typeof inputSchema>

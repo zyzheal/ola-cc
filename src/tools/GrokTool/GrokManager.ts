@@ -80,16 +80,6 @@ export const ERROR_SUGGESTIONS: Record<string, string> = {
 const GROK_VENDOR_DIR = '~/.ola-cc/vendor/grok'
 const GROK_GRAPH_FILE = '.understand-anything/knowledge-graph.json'
 
-// Agent 超时配置（毫秒）
-const AGENT_TIMEOUTS = {
-  scanner: 30_000,
-  analyzer_batch: 30_000,
-  architecture: 60_000,
-  tour: 60_000,
-  review: 30_000,
-  total: 10 * 60_000,  // 10 分钟
-}
-
 // Agent 系统提示词（从 Understand-Anything 源码提取）
 const AGENT_SYSTEM_PROMPTS = {
   scanner: `You are a project scanner. Your job is to:

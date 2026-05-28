@@ -395,6 +395,8 @@ function runCodegraph(binPath: string, projectRoot: string, args: string[], time
     child.on('error', (err) => { clearTimeout(timer); settle(() => reject(err)); });
     child.on('exit', (code) => {
       clearTimeout(timer);
+      const stdout = Buffer.concat(stdoutChunks).toString();
+      const stderr = Buffer.concat(stderrChunks).toString();
       settle(() => resolve({
         ok: code === 0,
         stdout,
