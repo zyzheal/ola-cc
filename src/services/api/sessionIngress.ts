@@ -23,7 +23,7 @@ interface SessionIngressError {
 // Module-level state
 const lastUuidMap: Map<string, UUID> = new Map()
 
-const MAX_RETRIES = 10
+const MAX_RETRIES = 20
 const BASE_DELAY_MS = 500
 
 // Session entry timestamps for TTL-based cleanup
