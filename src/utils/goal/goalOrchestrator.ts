@@ -16,6 +16,7 @@ import {
   shouldPause as trackerShouldPause,
 } from "./goalErrorTracker.js"
 import { handleVerifyFailure, resetRecovery } from "./goalErrorRecovery.js"
+import type { RankedSkill } from "./goalSkillRanker.js"
 import type { TodoItem } from "../todo/types.js"
 
 export interface OrchestratorDecision {
@@ -211,4 +212,19 @@ export function createOrchestratorDecision(input: {
     prompt: undefined, // goalRuntime will use buildContinuationPrompt
     reason: "continuing",
   }
+}
+
+/**
+ * Format ranked skills into a prompt section.
+ * Pure function — no side effects. Returns empty string if no skills.
+ */
+export function formatSkillRecommendations(ranked: RankedSkill[]): string {
+  if (ranked.length === 0) return ""
+  const lines = ranked
+    .map(
+      (r) =>
+        `- \`${r.skill.name}\` (score: ${r.score}) — ${r.skill.description.slice(0, 80)}`,
+    )
+    .join("\n")
+  return `\n\n## Recommended Skills\nConsider invoking these skills for the current task:\n${lines}`
 }

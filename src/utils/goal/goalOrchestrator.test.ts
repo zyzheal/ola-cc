@@ -5,7 +5,8 @@
  */
 
 import { describe, it, expect } from "bun:test"
-import { createOrchestratorDecision, SCENARIO_CIRCUIT_BREAKER } from "./goalOrchestrator.js"
+import { createOrchestratorDecision, SCENARIO_CIRCUIT_BREAKER, formatSkillRecommendations } from "./goalOrchestrator.js"
+import type { RankedSkill } from "./goalSkillRanker.js"
 
 describe("createOrchestratorDecision", () => {
   it("should continue when all checks pass", () => {
@@ -143,5 +144,53 @@ describe("SCENARIO_CIRCUIT_BREAKER", () => {
     for (const [key, val] of Object.entries(SCENARIO_CIRCUIT_BREAKER)) {
       expect(val.timeoutMs).toBeGreaterThan(0)
     }
+  })
+})
+
+describe("formatSkillRecommendations", () => {
+  function makeSkill(name: string, description: string): RankedSkill {
+    return {
+      skill: {
+        name,
+        path: `/skills/${name}/SKILL.md`,
+        description,
+        triggers: [],
+        priority: 50,
+        conflictsWith: [],
+        lastModified: Date.now(),
+      },
+      score: 100,
+    }
+  }
+
+  it("should return empty string for no skills", () => {
+    expect(formatSkillRecommendations([])).toBe("")
+  })
+
+  it("should format single skill recommendation", () => {
+    const ranked = [makeSkill("systematic-debugging", "Debug complex issues systematically")]
+    const result = formatSkillRecommendations(ranked)
+    expect(result).toContain("## Recommended Skills")
+    expect(result).toContain("systematic-debugging")
+    expect(result).toContain("score: 100")
+  })
+
+  it("should format multiple skills", () => {
+    const ranked = [
+      makeSkill("brainstorming", "Explore design approaches"),
+      makeSkill("test-driven-development", "Write tests first"),
+    ]
+    const result = formatSkillRecommendations(ranked)
+    expect(result).toContain("brainstorming")
+    expect(result).toContain("test-driven-development")
+  })
+
+  it("should truncate long descriptions to 80 chars", () => {
+    const longDesc = "A".repeat(200)
+    const ranked = [makeSkill("long-skill", longDesc)]
+    const result = formatSkillRecommendations(ranked)
+    // Should contain exactly 80 A's (truncated)
+    expect(result).toContain("A".repeat(80))
+    expect(result).not.toContain("A".repeat(81))
   })
 })
