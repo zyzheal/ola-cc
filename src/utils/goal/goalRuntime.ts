@@ -477,13 +477,13 @@ export function processGoalRuntimeEvent(
 							context.updateGoalTasks?.(updated)
 						}
 					}
-					// Also skip in todos if present
+					// Also skip in todos if present (TodoItem only supports 'completed', not 'skipped')
 					const skipTodos = context.getTodos?.()
 					if (skipTodos) {
 						const todoIdx = skipTodos.findIndex(t => t.status === "in_progress")
 						if (todoIdx !== -1) {
 							const updatedTodos = [...skipTodos]
-							updatedTodos[todoIdx] = { ...updatedTodos[todoIdx], status: "completed" }
+							updatedTodos[todoIdx] = { ...updatedTodos[todoIdx], status: "completed", content: `[SKIPPED] ${updatedTodos[todoIdx].content}` }
 							const nextTodoIdx = updatedTodos.findIndex((t, i) => i > todoIdx && t.status === "pending")
 							if (nextTodoIdx !== -1) {
 								updatedTodos[nextTodoIdx] = { ...updatedTodos[nextTodoIdx], status: "in_progress" }

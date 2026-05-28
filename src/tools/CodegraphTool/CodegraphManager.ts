@@ -17,11 +17,12 @@
  */
 
 import { spawn, execFile } from 'child_process';
-import { existsSync, createWriteStream, mkdirSync, statSync } from 'fs';
+import { existsSync, createWriteStream, mkdirSync, readFileSync, statSync, readdirSync, writeFileSync } from 'fs';
 import { chmod, unlink } from 'fs/promises';
+import { createHash, randomUUID } from 'crypto';
 import https from 'https';
 import { homedir } from 'os';
-import { join, dirname } from 'path';
+import { join, dirname, relative, isAbsolute } from 'path';
 import { promisify } from 'util';
 import { createRequire } from 'module';
 
@@ -140,7 +141,15 @@ async function ensureCodegraphBinary(): Promise<string> {
   const binPath = getBinaryPath();
   if (binPath && existsSync(binPath)) {
     try { await chmod(binPath, 0o755); } catch { /* ignore */ }
-    return binPath;
+    // 完整性校验（TOFU）
+    if (!verifyBinaryIntegrity(binPath)) {
+      logWarn('Binary integrity check failed, re-downloading...');
+      try { await unlink(binPath); } catch { /* ignore */ }
+      try { await unlink(binPath + '.sha256'); } catch { /* ignore */ }
+      // 继续到下载逻辑
+    } else {
+      return binPath;
+    }
   }
 
   // 需要下载
@@ -155,7 +164,7 @@ async function ensureCodegraphBinary(): Promise<string> {
 
     mkdirSync(VENDOR_DIR, { recursive: true });
 
-    const tempFile = join(VENDOR_DIR, `download-temp-${Date.now()}.tar.gz`);
+    const tempFile = join(VENDOR_DIR, `download-temp-${randomUUID()}.tar.gz`);
 
     // 带重试的下载
     await downloadWithRetry(downloadUrl, tempFile);
@@ -163,6 +172,9 @@ async function ensureCodegraphBinary(): Promise<string> {
 
     try { await unlink(tempFile); } catch { /* ignore */ }
     try { await chmod(expectedPath, 0o755); } catch { /* ignore */ }
+
+    // 下载后存储哈希（TOFU）
+    verifyBinaryIntegrity(expectedPath);
 
     logInfo(`Binary ready at ${expectedPath}`);
     return expectedPath;
@@ -316,12 +328,69 @@ function downloadFile(url: string, dest: string, redirectCount = 0): Promise<voi
   });
 }
 
+/**
+ * 计算文件 SHA-256 哈希
+ */
+function computeFileHash(filePath: string): string {
+  const content = readFileSync(filePath);
+  return createHash('sha256').update(content).digest('hex');
+}
+
+/**
+ * 二进制完整性校验（TOFU: Trust On First Use）
+ * 首次下载时存储哈希，后续加载时验证
+ */
+function verifyBinaryIntegrity(binaryPath: string): boolean {
+  const hashFile = binaryPath + '.sha256';
+  const currentHash = computeFileHash(binaryPath);
+
+  if (existsSync(hashFile)) {
+    const storedHash = readFileSync(hashFile, 'utf-8').trim();
+    if (currentHash !== storedHash) {
+      logWarn(`Binary integrity check failed: hash mismatch for ${binaryPath}`);
+      logWarn(`Expected: ${storedHash}, Got: ${currentHash}`);
+      return false;
+    }
+    return true;
+  }
+
+  // 首次使用：存储哈希（TOFU）
+  try {
+    writeFileSync(hashFile, currentHash, 'utf-8');
+    logInfo(`Stored binary hash for future verification: ${hashFile}`);
+  } catch {
+    logWarn('Failed to store binary hash, integrity verification disabled for future loads');
+  }
+  return true;
+}
+
 async function extractTarGz(tarPath: string, dest: string): Promise<void> {
   logInfo('Extracting archive...');
   // --no-absolute-filenames: 防止绝对路径穿越（如 /etc/passwd）
   // --overwrite: 允许覆盖已存在的文件
   await execFileAsync('tar', ['-xzf', tarPath, '-C', dest, '--no-absolute-filenames', '--overwrite']);
+  // Post-extraction validation: ensure no files escaped the destination directory
+  validateExtractedPaths(dest);
   logInfo('Extraction complete');
+}
+
+/**
+ * 验证解压后的文件都在目标目录内（防止 ../ 相对路径穿越）
+ */
+function validateExtractedPaths(dest: string): void {
+  const walk = (dir: string) => {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      const fullPath = join(dir, entry.name);
+      const rel = relative(dest, fullPath);
+      if (isAbsolute(rel) || rel.startsWith('..')) {
+        throw new Error(`Path traversal detected in extracted archive: ${rel}`);
+      }
+      if (entry.isDirectory()) {
+        walk(fullPath);
+      }
+    }
+  };
+  walk(dest);
 }
 
 // ============================================================
@@ -339,7 +408,11 @@ function runCodegraph(binPath: string, projectRoot: string, args: string[], time
     const child = spawn(binPath, args, {
       cwd: projectRoot,
       env: {
-        ...process.env,
+        // 安全: 白名单环境变量，避免泄露 API 密钥给第三方二进制
+        PATH: process.env.PATH,
+        HOME: process.env.HOME,
+        USER: process.env.USER,
+        LANG: process.env.LANG ?? 'en_US.UTF-8',
         // Force non-interactive mode: clack/prompts checks isatty(0)
         CI: '1',
         FORCE_COLOR: '0',

@@ -32,6 +32,7 @@ export interface ScenarioConfig {
 	requiredTools: string[];
 	preferredSkills: string[];
 	skillAffinity: Record<string, number>;
+	circuitBreaker: { maxRounds: number; timeoutMs: number };
 }
 
 export interface KeywordEntry {
@@ -128,6 +129,7 @@ export const SCENARIO_CONFIGS: Record<ScenarioType, ScenarioConfig> = {
 			"verification-before-completion",
 		],
 		skillAffinity: {},
+		circuitBreaker: { maxRounds: 5, timeoutMs: 20 * 60 * 1000 },
 	},
 	doc_writing: {
 		type: "doc_writing",
@@ -157,6 +159,7 @@ export const SCENARIO_CONFIGS: Record<ScenarioType, ScenarioConfig> = {
 			"docs-navigator",
 		],
 		skillAffinity: {},
+		circuitBreaker: { maxRounds: 3, timeoutMs: 15 * 60 * 1000 },
 	},
 	troubleshooting: {
 		type: "troubleshooting",
@@ -182,6 +185,7 @@ export const SCENARIO_CONFIGS: Record<ScenarioType, ScenarioConfig> = {
 		requiredTools: ["Bash", "Read", "Grep"],
 		preferredSkills: ["systematic-debugging", "orion-deep-audit"],
 		skillAffinity: {},
+		circuitBreaker: { maxRounds: 8, timeoutMs: 45 * 60 * 1000 },
 	},
 	design_improve: {
 		type: "design_improve",
@@ -212,6 +216,7 @@ export const SCENARIO_CONFIGS: Record<ScenarioType, ScenarioConfig> = {
 			"code-design-analyzer",
 		],
 		skillAffinity: {},
+		circuitBreaker: { maxRounds: 5, timeoutMs: 25 * 60 * 1000 },
 	},
 	refactoring: {
 		type: "refactoring",
@@ -241,6 +246,7 @@ export const SCENARIO_CONFIGS: Record<ScenarioType, ScenarioConfig> = {
 			"design-constraint",
 		],
 		skillAffinity: {},
+		circuitBreaker: { maxRounds: 6, timeoutMs: 30 * 60 * 1000 },
 	},
 };
 

@@ -23,6 +23,9 @@ interface SessionIngressError {
 // Module-level state
 const lastUuidMap: Map<string, UUID> = new Map()
 
+// Cache for last fetched UUID per session (avoids full re-fetch on repeated 409s)
+const lastFetchedUuidCache: Map<string, UUID> = new Map()
+
 const MAX_RETRIES = 20
 const BASE_DELAY_MS = 500
 
@@ -120,30 +123,40 @@ async function appendSessionLogImpl(
             `Session 409: adopting server lastUuid=${serverLastUuid} from header, retrying entry ${entry.uuid}`,
           )
         } else {
-          // Server didn't return x-last-uuid (e.g. v1 endpoint). Re-fetch
-          // the session to discover the current head of the append chain.
-          const logs = await fetchSessionLogsFromUrl(sessionId, url, headers)
-          const adoptedUuid = findLastUuid(logs)
-          if (adoptedUuid) {
-            lastUuidMap.set(sessionId, adoptedUuid)
+          // Server didn't return x-last-uuid (e.g. v1 endpoint).
+          // Check local cache first to avoid expensive full re-fetch.
+          const cachedUuid = lastFetchedUuidCache.get(sessionId)
+          if (cachedUuid) {
+            lastUuidMap.set(sessionId, cachedUuid)
             logForDebugging(
-              `Session 409: re-fetched ${logs!.length} entries, adopting lastUuid=${adoptedUuid}, retrying entry ${entry.uuid}`,
+              `Session 409: adopting cached lastUuid=${cachedUuid}, retrying entry ${entry.uuid}`,
             )
           } else {
-            // Can't determine server state — give up
-            const errorData = response.data as SessionIngressError
-            const errorMessage =
-              errorData.error?.message || 'Concurrent modification detected'
-            logError(
-              new Error(
-                `Session persistence conflict: UUID mismatch for session ${sessionId}, entry ${entry.uuid}. ${errorMessage}`,
-              ),
-            )
-            logForDiagnosticsNoPII(
-              'error',
-              'session_persist_fail_concurrent_modification',
-            )
-            return false
+            // Re-fetch the session to discover the current head of the append chain.
+            const logs = await fetchSessionLogsFromUrl(sessionId, url, headers)
+            const adoptedUuid = findLastUuid(logs)
+            if (adoptedUuid) {
+              lastUuidMap.set(sessionId, adoptedUuid)
+              lastFetchedUuidCache.set(sessionId, adoptedUuid)
+              logForDebugging(
+                `Session 409: re-fetched ${logs!.length} entries, adopting lastUuid=${adoptedUuid}, retrying entry ${entry.uuid}`,
+              )
+            } else {
+              // Can't determine server state — give up
+              const errorData = response.data as SessionIngressError
+              const errorMessage =
+                errorData.error?.message || 'Concurrent modification detected'
+              logError(
+                new Error(
+                  `Session persistence conflict: UUID mismatch for session ${sessionId}, entry ${entry.uuid}. ${errorMessage}`,
+                ),
+              )
+              logForDiagnosticsNoPII(
+                'error',
+                'session_persist_fail_concurrent_modification',
+              )
+              return false
+            }
           }
         }
         logForDiagnosticsNoPII('info', 'session_persist_409_adopt_server_uuid')
@@ -524,6 +537,7 @@ export async function clearSession(sessionId: string): Promise<void> {
     } catch { /* ignore drain errors */ }
   }
   lastUuidMap.delete(sessionId)
+  lastFetchedUuidCache.delete(sessionId)
   sequentialAppendBySession.delete(sessionId)
   sessionLastSeen.delete(sessionId)
 }
@@ -548,6 +562,7 @@ function evictStaleSessions(): void {
  */
 export function clearAllSessions(): void {
   lastUuidMap.clear()
+  lastFetchedUuidCache.clear()
   sequentialAppendBySession.clear()
   sessionLastSeen.clear()
 }

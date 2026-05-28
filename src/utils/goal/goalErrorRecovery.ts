@@ -72,6 +72,7 @@ export function handleReviewRejection(tracker: UnifiedErrorTracker, reason: stri
 
 export function resetRecovery(tracker: UnifiedErrorTracker): void {
   tracker.recoveryLayer = "FIX_RETRY"
+  tracker.fullRestartUsed = false
   resetCategory(tracker, "runtime_exception")
   resetOnProgress(tracker)
 }

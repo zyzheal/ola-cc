@@ -58,6 +58,19 @@ export const TOOL_PHASE_MAP: Record<string, ReActPhase> = {
   update_goal: "VERIFY",
 }
 
+/**
+ * Fallback strategy for unknown tools (MCP, dynamic tools).
+ * Infers ReAct phase from tool name patterns.
+ */
+function inferPhaseFromName(toolName: string): ReActPhase {
+  const lower = toolName.toLowerCase()
+  if (lower.includes("test") || lower.includes("verify") || lower.includes("check")) return "VERIFY"
+  if (lower.includes("fix") || lower.includes("repair") || lower.includes("patch")) return "FIX"
+  if (lower.includes("review") || lower.includes("audit") || lower.includes("lint")) return "REVIEW"
+  if (lower.includes("build") || lower.includes("compile") || lower.includes("deploy")) return "SKILL"
+  return "ANALYZE"
+}
+
 // ============================================
 // 核心函数
 // ============================================
@@ -69,7 +82,7 @@ export const TOOL_PHASE_MAP: Record<string, ReActPhase> = {
 export function inferReActPhases(toolCalls: string[]): Omit<ReActObservation, "qualitySignals"> {
   const phaseTools = new Map<ReActPhase, string[]>()
   for (const tool of toolCalls) {
-    const phase = TOOL_PHASE_MAP[tool] ?? "ANALYZE"
+    const phase = TOOL_PHASE_MAP[tool] ?? inferPhaseFromName(tool)
     if (!phaseTools.has(phase)) phaseTools.set(phase, [])
     phaseTools.get(phase)!.push(tool)
   }
