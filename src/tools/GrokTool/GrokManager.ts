@@ -1,5 +1,8 @@
 // src/tools/GrokTool/GrokManager.ts
 
+import { existsSync, mkdirSync } from 'fs'
+import { execSync } from 'child_process'
+import { resolve } from 'path'
 import { z } from 'zod/v4'
 import { getCwd } from '../../utils/cwd.js'
 import { logForDebugging } from '../../utils/debug.js'
@@ -44,6 +47,32 @@ export interface GrokGraphStatus {
   edgeCount?: number
   lastUpdated?: string
   stale?: boolean
+}
+
+// ============================================================
+// Error Classes
+// ============================================================
+
+export class GrokError extends Error {
+  constructor(
+    public code: string,
+    public stage: string,
+    message: string,
+    public recoverable: boolean,
+    public suggestion?: string
+  ) {
+    super(message)
+    this.name = 'GrokError'
+  }
+}
+
+// 错误类型与建议
+export const ERROR_SUGGESTIONS: Record<string, string> = {
+  'PARSE_TIMEOUT': '文件过大，建议 --exclude 排除或拆分文件',
+  'LLM_RATE_LIMIT': 'API 限流，建议等待 60s 后重试',
+  'LLM_TOKEN_BUDGET': 'Token 预算耗尽，建议 --scope 缩小范围',
+  'GRAPH_INVALID': '图谱数据损坏，建议 /grok --full 重新生成',
+  'SOURCE_CLONE_FAILED': '源码克隆失败，检查网络连接后重试',
 }
 
 // ============================================================
@@ -177,11 +206,85 @@ export class GrokManager {
   }
 
   /**
-   * 确保 Grok 源码已克隆
+   * 带指数退避的重试机制
+   */
+  private async retryWithBackoff<T>(
+    fn: () => Promise<T>,
+    maxRetries: number = 3,
+    baseDelay: number = 1000
+  ): Promise<T> {
+    for (let i = 0; i < maxRetries; i++) {
+      try {
+        return await fn()
+      } catch (error) {
+        if (i === maxRetries - 1) throw error
+        const delay = baseDelay * Math.pow(2, i)
+        logForDebugging(`[grok] Retry ${i + 1}/${maxRetries} after ${delay}ms`)
+        await new Promise(resolve => setTimeout(resolve, delay))
+      }
+    }
+    throw new Error('Unreachable')
+  }
+
+  /**
+   * 确保 Grok 源码已克隆（带重试）
+   * @returns 源码目录路径
    */
   async ensureGrokSource(): Promise<string> {
-    // TODO: 实现源码克隆逻辑
-    throw new Error('Not implemented')
+    const sourceDir = resolve(this.vendorDir, 'understand-anything')
+
+    if (existsSync(sourceDir)) {
+      logForDebugging(`[grok] Source already exists at ${sourceDir}`)
+      return sourceDir
+    }
+
+    mkdirSync(this.vendorDir, { recursive: true })
+
+    return this.retryWithBackoff(async () => {
+      logForDebugging(`[grok] Cloning Understand-Anything to ${sourceDir}`)
+      try {
+        execSync(
+          `git clone --depth 1 https://github.com/Lum1104/Understand-Anything.git ${sourceDir}`,
+          { stdio: 'pipe' }
+        )
+        logForDebugging(`[grok] Clone complete`)
+        return sourceDir
+      } catch (error) {
+        throw new GrokError(
+          'SOURCE_CLONE_FAILED',
+          'clone',
+          `Failed to clone source: ${error instanceof Error ? error.message : String(error)}`,
+          true,
+          'Check network connection and try again'
+        )
+      }
+    })
+  }
+
+  /**
+   * 更新 Grok 源码
+   */
+  async updateGrokSource(): Promise<void> {
+    const sourceDir = resolve(this.vendorDir, 'understand-anything')
+
+    if (!existsSync(sourceDir)) {
+      await this.ensureGrokSource()
+      return
+    }
+
+    logForDebugging(`[grok] Updating source at ${sourceDir}`)
+    try {
+      execSync('git pull', { cwd: sourceDir, stdio: 'pipe' })
+      logForDebugging(`[grok] Update complete`)
+    } catch (error) {
+      throw new GrokError(
+        'SOURCE_UPDATE_FAILED',
+        'update',
+        `Failed to update source: ${error instanceof Error ? error.message : String(error)}`,
+        true,
+        'Try running /grok --update manually'
+      )
+    }
   }
 
   /**
