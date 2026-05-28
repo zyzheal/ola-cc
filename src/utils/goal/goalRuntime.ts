@@ -460,19 +460,32 @@ export function processGoalRuntimeEvent(
 				}
 
 				if (decision.action === "skip_task") {
-					// Mark current task as skipped and advance
-					const skipTasks = context.getGoalTasks?.()
-					if (skipTasks) {
-						const idx = skipTasks.findIndex(t => t.status === "in_progress")
+					// Mark current task as skipped and advance (both goalTasks and todos)
+					const skipGoalTasks = context.getGoalTasks?.()
+					if (skipGoalTasks) {
+						const idx = skipGoalTasks.findIndex(t => t.status === "in_progress")
 						if (idx !== -1) {
-							const updated = [...skipTasks]
+							const updated = [...skipGoalTasks]
 							updated[idx] = { ...updated[idx], status: "skipped" }
-							// Advance next pending
 							const nextIdx = updated.findIndex((t, i) => i > idx && t.status === "pending")
 							if (nextIdx !== -1) {
 								updated[nextIdx] = { ...updated[nextIdx], status: "in_progress" }
 							}
 							context.updateGoalTasks?.(updated)
+						}
+					}
+					// Also skip in todos if present
+					const skipTodos = context.getTodos?.()
+					if (skipTodos) {
+						const todoIdx = skipTodos.findIndex(t => t.status === "in_progress")
+						if (todoIdx !== -1) {
+							const updatedTodos = [...skipTodos]
+							updatedTodos[todoIdx] = { ...updatedTodos[todoIdx], status: "completed" }
+							const nextTodoIdx = updatedTodos.findIndex((t, i) => i > todoIdx && t.status === "pending")
+							if (nextTodoIdx !== -1) {
+								updatedTodos[nextTodoIdx] = { ...updatedTodos[nextTodoIdx], status: "in_progress" }
+							}
+							context.updateTodos?.(updatedTodos)
 						}
 					}
 					return {
