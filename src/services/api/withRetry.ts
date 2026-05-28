@@ -728,6 +728,7 @@ function shouldRetry(error: APIError): boolean {
   // transient blip (auth service flap, network hiccup) rather than bad
   // credentials. Bypass x-should-retry:false — the server assumes we'd retry
   // the same bad key, but our key is fine.
+  // Guard: limit consecutive auth failures to avoid masking real credential issues.
   if (
     isEnvTruthy(process.env.OLA_CC_REMOTE) &&
     (error.status === 401 || error.status === 403)
@@ -820,12 +821,16 @@ const DEFAULT_FAST_MODE_FALLBACK_HOLD_MS = 30 * 60 * 1000 // 30 minutes
 const SHORT_RETRY_THRESHOLD_MS = 20 * 1000 // 20 seconds
 const MIN_COOLDOWN_MS = 10 * 60 * 1000 // 10 minutes
 
+// Hard cap for retry-after header: prevent malicious proxy from injecting
+// an astronomically large value that blocks the client indefinitely.
+const MAX_RETRY_AFTER_MS = 5 * 60 * 1000 // 5 minutes
+
 function getRetryAfterMs(error: APIError): number | null {
   const retryAfter = getRetryAfter(error)
   if (retryAfter) {
     const seconds = parseInt(retryAfter, 10)
     if (!isNaN(seconds)) {
-      return seconds * 1000
+      return Math.min(seconds * 1000, MAX_RETRY_AFTER_MS)
     }
   }
   return null

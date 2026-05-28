@@ -1,7 +1,7 @@
 // src/tools/GrokTool/GrokManager.ts
 
 import { createHash } from 'crypto'
-import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, unlinkSync, writeFileSync } from 'fs'
+import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, renameSync, unlinkSync, writeFileSync } from 'fs'
 import { execFileSync } from 'child_process'
 import { createServer } from 'http'
 import { homedir } from 'os'
@@ -45,6 +45,43 @@ export interface GrokGraphStatus {
   edgeCount?: number
   lastUpdated?: string
   stale?: boolean
+}
+
+// 图谱数据类型（替代 any）
+export interface GraphNode {
+  id: string
+  name: string
+  kind: string
+  file: string
+  line: number
+  signature: string
+  summary: string
+  layer: string
+  domain: string
+}
+
+export interface GraphEdge {
+  from: string
+  to: string
+  type: string
+}
+
+export interface GraphData {
+  nodes: GraphNode[]
+  edges: GraphEdge[]
+  metadata: {
+    lastUpdated: string
+    fileCount: number
+    languages: string[]
+    frameworks: string[]
+    layers: string[]
+    uncovered: number
+    tour: unknown[]
+    review: unknown
+    language: string
+    errors: { code: string; stage: string; message: string }[]
+    fingerprints: Record<string, { hash: string; size: number }>
+  }
 }
 
 // ============================================================
@@ -382,7 +419,7 @@ export class GrokManager {
     files: string[],
     batchSize: number = 25,
     maxParallel: number = 5
-  ): Promise<any[]> {
+  ): Promise<Record<string, unknown>[]> {
     // 内联 chunkArray
     const batches: string[][] = []
     for (let i = 0; i < files.length; i += batchSize) {
@@ -414,12 +451,20 @@ export class GrokManager {
   }
 
   /**
+   * 清理文件路径，防止 LLM 提示注入
+   * 用反引号包裹路径，转义内部反引号
+   */
+  private sanitizeFilePath(path: string): string {
+    return '`' + path.replace(/`/g, '\\`') + '`'
+  }
+
+  /**
    * 构建 file-analyzer 提示词
    */
   private buildFileAnalyzerPrompt(files: string[]): string {
     return `Analyze the following files and extract symbols, relationships, and summaries:
 
-${files.map(f => `- ${f}`).join('\n')}
+${files.map(f => `- ${this.sanitizeFilePath(f)}`).join('\n')}
 
 For each file, identify:
 1. Functions, classes, types, interfaces (symbols)
@@ -461,8 +506,16 @@ Output JSON array of analysis results.`
    */
   private async discoverFiles(projectPath?: string, scope?: string): Promise<string[]> {
     const basePath = resolve(this.projectRoot, scope || projectPath || '')
-    // 路径穿越防护：scope 不能逃出 projectRoot
-    if (!basePath.startsWith(this.projectRoot + '/') && basePath !== this.projectRoot) {
+    // 路径穿越防护：使用 realpathSync 规范化路径，防止 symlink 或 .. 绕过
+    let normalizedBase: string
+    let normalizedRoot: string
+    try {
+      normalizedBase = realpathSync(basePath)
+      normalizedRoot = realpathSync(this.projectRoot)
+    } catch {
+      throw new GrokError('INVALID_SCOPE', 'scanner', 'Scope path does not exist', false)
+    }
+    if (!normalizedBase.startsWith(normalizedRoot + '/') && normalizedBase !== normalizedRoot) {
       throw new GrokError('INVALID_SCOPE', 'scanner', 'Scope must be within project root', false)
     }
     const EXCLUDE_DIRS = new Set([

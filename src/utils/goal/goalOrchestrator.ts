@@ -6,7 +6,7 @@
 
 import type { Goal, GoalRuntimeState, GoalTask, TurnRecord } from "../../commands/goal/types.js"
 import type { ScenarioConfig, ScenarioType } from "./goalScenario.js"
-import { resolveScenario } from "./goalScenario.js"
+import { resolveScenario, SCENARIO_CONFIGS } from "./goalScenario.js"
 import { observeTurn } from "./goalReActObserver.js"
 import { checkConvergence, updateConvergenceState } from "./goalConvergence.js"
 import {
@@ -35,17 +35,18 @@ export interface TurnAnalysisContext {
   scenarioConfig: ScenarioConfig
 }
 
-/** Scenario-specific circuit breaker thresholds */
-export const SCENARIO_CIRCUIT_BREAKER: Record<
-  string,
-  { maxPerTask: number; timeoutMs: number }
-> = {
-  code_change: { maxPerTask: 5, timeoutMs: 20 * 60 * 1000 },
-  doc_writing: { maxPerTask: 3, timeoutMs: 15 * 60 * 1000 },
-  troubleshooting: { maxPerTask: 8, timeoutMs: 45 * 60 * 1000 },
-  design_improve: { maxPerTask: 5, timeoutMs: 25 * 60 * 1000 },
-  refactoring: { maxPerTask: 6, timeoutMs: 30 * 60 * 1000 },
-}
+/**
+ * Scenario-specific circuit breaker thresholds.
+ * Derived from SCENARIO_CONFIGS for single source of truth.
+ * @deprecated Use scenarioConfig.circuitBreaker directly.
+ */
+export const SCENARIO_CIRCUIT_BREAKER: Record<string, { maxPerTask: number; timeoutMs: number }> =
+  Object.fromEntries(
+    Object.entries(SCENARIO_CONFIGS).map(([type, config]) => [
+      type,
+      { maxPerTask: config.circuitBreaker.maxRounds, timeoutMs: config.circuitBreaker.timeoutMs },
+    ]),
+  )
 
 /**
  * Initialize orchestrator state on goal_created.
@@ -112,16 +113,17 @@ export function processTurn(ctx: TurnAnalysisContext): OrchestratorDecision {
   const errorPause = tracker ? trackerShouldPause(tracker) : false
 
   // Check task completion (todos OR goalTasks)
+  // Note: when both are empty/undefined, allTasksDone=false → goal continues
+  // via standard continuation prompt. This is correct for "no-task" goals.
   const allTodosDone = todos.length > 0 && todos.every((t) => t.status === "completed")
   const allGoalTasksDone = goalTasks && goalTasks.length > 0 && goalTasks.every((t) => t.status === "completed")
   const allTasksDone = allTodosDone || !!allGoalTasksDone
 
   // Check circuit breaker
-  const breaker = SCENARIO_CIRCUIT_BREAKER[scenarioConfig.type]
+  const breaker = scenarioConfig.circuitBreaker
   const roundExceeded =
     runtime.convergenceState &&
-    breaker &&
-    runtime.convergenceState.round >= breaker.maxPerTask
+    runtime.convergenceState.round >= breaker.maxRounds
 
   return createOrchestratorDecision({
     goal: { status: goal.status },
