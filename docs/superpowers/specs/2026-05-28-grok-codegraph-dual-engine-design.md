@@ -178,16 +178,18 @@ Skill 不直接执行 CLI，而是构造 Tool 调用参数，通过 ola-cc 的 T
 
 ### 5.2 Skill 命令
 
-| Skill | 功能 | 说明 |
-|-------|------|------|
-| `/grok` | 生成图谱 | 交互式进度显示，可选 `--language zh` |
-| `/gc <question>` | 自然语言问答 | 终端内联输出 |
-| `/gd` | 打开浏览器 Dashboard | 自动启动 HTTP 服务 |
-| `/ge <file>` | 深入解释 | 终端内联输出 |
-| `/gt` | 引导式学习路径 | 终端内联输出 |
-| `/gdiff` | 变更影响分析 | 终端内联输出 |
-| `/go` | 新人入职指南 | 终端内联输出 |
-| `/gdomain` | 业务域分析 | 终端内联输出 |
+| Skill | 功能 | type | 说明 |
+|-------|------|------|------|
+| `/grok` | 生成图谱 | `local` | 交互式进度显示，可选 `--language zh`，需要终端 UI |
+| `/gc <question>` | 自然语言问答 | `prompt` | 构造 prompt 让模型调用 grok_chat Tool |
+| `/gd` | 打开浏览器 Dashboard | `local` | 直接调用 GrokManager.startDashboard()，无需模型参与 |
+| `/ge <file>` | 深入解释 | `prompt` | 构造 prompt 让模型调用 grok_explain Tool |
+| `/gt` | 引导式学习路径 | `prompt` | 构造 prompt 让模型调用 grok_tour Tool |
+| `/gdiff` | 变更影响分析 | `prompt` | 构造 prompt 让模型调用 grok_diff Tool |
+| `/go` | 新人入职指南 | `prompt` | 构造 prompt 让模型调用 grok_tour + grok_domain Tool |
+| `/gdomain` | 业务域分析 | `prompt` | 构造 prompt 让模型调用 grok_domain Tool |
+
+> **type 说明**：`local` = 直接在本地执行，不经过模型（如进度显示、打开浏览器）；`prompt` = 构造 prompt 注入对话，由模型调用对应 Tool 完成。
 
 #### 5.2.1 Skill 交互流程规范
 
@@ -312,15 +314,30 @@ Skill 不直接执行 CLI，而是构造 Tool 调用参数，通过 ola-cc 的 T
 
 ### 5.3 Skill 别名
 
-| 完整名 | 缩写 |
-|--------|------|
-| `/grok-chat` | `/gc` |
-| `/grok-dashboard` | `/gd` |
-| `/grok-explain` | `/ge` |
-| `/grok-tour` | `/gt` |
-| `/grok-diff` | `/gdiff` |
-| `/grok-onboard` | `/go` |
-| `/grok-domain` | `/gdomain` |
+使用 ola-cc 命令系统原生的 `Command.aliases` 字段注册别名，无需自定义别名表。
+
+```typescript
+// src/commands/gc/index.ts
+export const Command = {
+  name: 'gc',
+  description: 'Grok 自然语言问答',
+  type: 'prompt',
+  aliases: ['grok-chat'],  // 原生 aliases 字段
+  // ...
+}
+```
+
+| 命令 | aliases | 说明 |
+|------|---------|------|
+| `/gc` | `grok-chat` | 用户输入 `/grok-chat` 自动路由到 `/gc` |
+| `/gd` | `grok-dashboard` | 同上 |
+| `/ge` | `grok-explain` | 同上 |
+| `/gt` | `grok-tour` | 同上 |
+| `/gdiff` | `grok-diff` | 同上 |
+| `/go` | `grok-onboard` | 同上 |
+| `/gdomain` | `grok-domain` | 同上 |
+
+> **实现方式**：每个命令的 `index.ts` 导出的 `Command` 对象中声明 `aliases` 数组，ola-cc 命令系统自动处理别名路由，无需额外代码。
 
 ---
 
@@ -384,7 +401,49 @@ export async function getGraphStatus(): Promise<GrokGraphStatus>
 
 ### 6.3 关键设计决策
 
-**Agent 流水线复用 ola-cc 的 AgentTool 子代理系统**，不引入独立的 Agent 运行时。
+**Agent 流水线使用轻量级 API client 直接编排**，不通过 AgentTool。
+
+#### 为什么不用 AgentTool？
+
+| 维度 | AgentTool | 轻量级 API client |
+|------|-----------|-------------------|
+| 设计目的 | 交互式子代理调用（用户对话中） | 批量 LLM 调用编排 |
+| UI 开销 | 完整的 Ink 渲染、权限检查、进度跟踪 | 无 UI 开销 |
+| Token 管理 | 会话级，非流水线级 | 可自定义流水线级预算 |
+| 并行能力 | 受 `isConcurrencySafe` 限制 | 原生 `Promise.all` 并行 |
+| 适合场景 | 2-3 个子代理任务 | 5 并行 × 20-30 文件/批 |
+
+**结论**：AgentTool 面向交互式子代理，用于批量文件分析流水线过于重量级。GrokManager 直接使用 `getAnthropicClient()` API client 构建轻量级 Agent 流水线。
+
+#### 实现方式
+
+```typescript
+import { getAnthropicClient } from '../../services/api/client.js'
+
+// 轻量级 Agent 调用 — 直接使用 Anthropic SDK
+async function callAgent(prompt: string, systemPrompt: string): Promise<string> {
+  const client = getAnthropicClient()
+  const response = await client.messages.create({
+    model: getAgentModel(),  // 复用 ola-cc 模型选择逻辑
+    max_tokens: 4096,
+    system: systemPrompt,
+    messages: [{ role: 'user', content: prompt }],
+  })
+  return response.content[0].type === 'text' ? response.content[0].text : ''
+}
+
+// 并行 file-analyzer — 5 批 × 20-30 文件
+async function analyzeFilesBatch(files: string[]): Promise<AnalysisResult[]> {
+  const batches = chunk(files, 25)  // 25 文件/批
+  const results = await Promise.all(
+    batches.slice(0, 5).map(batch => callAgent(
+      buildFileAnalyzerPrompt(batch),
+      FILE_ANALYZER_SYSTEM_PROMPT,
+    ))
+  )
+  return results.flatMap(parseAnalysisResults)
+}
+```
 
 原版 Understand-Anything 的 5 个 Agent：
 1. `project-scanner` — 发现文件、检测语言/框架
@@ -393,7 +452,7 @@ export async function getGraphStatus(): Promise<GrokGraphStatus>
 4. `tour-builder` — 生成引导式学习路径
 5. `graph-reviewer` — 验证图谱完整性
 
-这些 Agent 的 prompt 模板从源码中提取，通过 ola-cc 的 `AgentTool` 执行。
+这些 Agent 的 prompt 模板从源码中提取，通过轻量级 API client 直接执行。
 
 ### 6.4 错误处理与恢复策略
 
@@ -577,18 +636,29 @@ src/tools/
 │   ├── GrokManager.ts            # 新增：适配层
 │   └── GrokSkill.ts              # 新增：Skill 层
 src/commands/
-│   ├── grok.ts                   # 新增：/grok 命令
-│   ├── gc.ts                     # 新增：/gc 命令
-│   ├── gd.ts                     # 新增：/gd 命令
-│   ├── ge.ts                     # 新增：/ge 命令
-│   ├── gt.ts                     # 新增：/gt 命令
-│   ├── gdiff.ts                  # 新增：/gdiff 命令
-│   ├── go.ts                     # 新增：/go 命令
-│   ├── gdomain.ts                # 新增：/gdomain 命令
-│   └── cg.ts                     # 新增：/cg 命令
+│   ├── grok/
+│   │   └── index.ts              # 新增：/grok 命令（type: local）
+│   ├── gc/
+│   │   └── index.ts              # 新增：/gc 命令（type: prompt）
+│   ├── gd/
+│   │   └── index.ts              # 新增：/gd 命令（type: local）
+│   ├── ge/
+│   │   └── index.ts              # 新增：/ge 命令（type: prompt）
+│   ├── gt/
+│   │   └── index.ts              # 新增：/gt 命令（type: prompt）
+│   ├── gdiff/
+│   │   └── index.ts              # 新增：/gdiff 命令（type: prompt）
+│   ├── go/
+│   │   └── index.ts              # 新增：/go 命令（type: prompt）
+│   ├── gdomain/
+│   │   └── index.ts              # 新增：/gdomain 命令（type: prompt）
+│   └── cg/
+│       └── index.ts              # 新增：/cg 命令（type: prompt）
 vendor/
 │   └── grok/                     # 克隆的 Understand-Anything 源码
 ```
+
+> **目录结构说明**：ola-cc 的命令系统使用目录模式 `src/commands/<name>/index.ts`，而非扁平文件。每个命令目录下的 `index.ts` 导出 `Command` 对象，包含 `name`、`description`、`type`、`aliases` 等字段。
 
 ---
 
