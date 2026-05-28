@@ -8,6 +8,48 @@
 
 **Tech Stack:** TypeScript, Zod (schema), Anthropic SDK (LLM), Tree-sitter (parsing), D3.js (Dashboard), React/Ink (terminal UI)
 
+## 系统流程图
+
+```
+用户输入命令
+    │
+    ▼
+┌─────────────────────────────────────────────────────────────┐
+│  Skill 层解析                                               │
+│  /grok, /gc, /gd, /ge, /gt, /gdiff, /go, /gdomain, /cg    │
+└────────────────────────┬────────────────────────────────────┘
+                         │
+                         ▼
+┌─────────────────────────────────────────────────────────────┐
+│   Tool 层调用                                               │
+│   grok (8 ops), codegraph (10 ops)                         │
+└────────────────────────┬────────────────────────────────────┘
+                    ┌────┴────┐
+                    ▼         ▼
+            ┌───────────┐ ┌───────────┐
+            │   Grok    │ │ CodeGraph │
+            │  Manager  │ │  Manager  │
+            └─────┬─────┘ └─────┬─────┘
+                  │             │
+                  ▼             ▼
+            ┌───────────┐ ┌───────────┐
+            │  LLM API  │ │   本地    │
+            │ Anthropic │ │  索引     │
+            └─────┬─────┘ └─────┬─────┘
+                  │             │
+                  └──────┬──────┘
+                         ▼
+┌─────────────────────────────────────────────────────────────┐
+│  结果格式化（GrokSkill / CodegraphSkill）                   │
+└────────────────────────┬────────────────────────────────────┘
+                    ┌────┴────┐
+                    ▼         ▼
+            ┌───────────┐ ┌───────────┐
+            │  终端输出  │ │ Dashboard │
+            │  (Ink)    │ │ (Browser) │
+            └───────────┘ └───────────┘
+```
+
 ---
 
 ## 文件结构映射
@@ -969,6 +1011,50 @@ private parseAnalysisResult(result: string): any[] {
     logForDebugging(`[grok] Failed to parse analysis result: ${result.slice(0, 200)}`)
     return []
   }
+}
+
+// ============================================================
+// 超时配置
+// ============================================================
+
+private readonly LLM_TIMEOUT = 30_000    // LLM 调用超时 30 秒
+private readonly PARSE_TIMEOUT = 10_000  // 文件解析超时 10 秒
+
+/**
+ * 带超时的 Agent 调用
+ * 防止 LLM 调用挂起阻塞整个流程
+ */
+private async callAgentWithTimeout(prompt: string, systemPrompt: string): Promise<string> {
+  return Promise.race([
+    this.callAgent(prompt, systemPrompt),
+    new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new GrokError(
+        'LLM_TIMEOUT',
+        'agent',
+        'LLM call timed out after 30s',
+        true,
+        'Try with smaller scope or check API status'
+      )), this.LLM_TIMEOUT)
+    )
+  ])
+}
+
+/**
+ * 带超时的文件解析
+ */
+private async parseWithTimeout<T>(fn: () => T, fileName: string): Promise<T> {
+  return Promise.race([
+    Promise.resolve(fn()),
+    new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new GrokError(
+        'PARSE_TIMEOUT',
+        'parse',
+        `Parsing ${fileName} timed out after 10s`,
+        true,
+        'File too large, use --exclude to skip'
+      )), this.PARSE_TIMEOUT)
+    )
+  ])
 }
 ```
 
@@ -2454,3 +2540,66 @@ Phase 1 和 Phase 2 可以并行开发。验收测试在所有 Phase 完成后�
 3. **错误处理**: 所有错误都使用 GrokError 类，提供明确的错误信息和建议
 4. **配置优先**: 使用环境变量配置，便于调整参数
 5. **安全措施**: Dashboard 使用随机 token 防止 CSRF，绑定 localhost 防止外部访问
+
+---
+
+## 环境变量清单
+
+| 环境变量 | 默认值 | 说明 |
+|---------|--------|------|
+| `GROK_SOURCE_REPO` | `https://github.com/Lum1104/Understand-Anything.git` | Grok 源码仓库 |
+| `GROK_SOURCE_BRANCH` | `main` | 源码分支 |
+| `GROK_VENDOR_DIR` | `~/.ola-cc/vendor` | 源码安装目录 |
+| `GROK_LLM_MODEL` | `claude-sonnet-4-20250514` | LLM 模型 |
+| `GROK_MAX_CONCURRENT` | `5` | 最大并行批次数（1-20） |
+| `GROK_GRAPH_FILE` | `.understand-anything/knowledge-graph.json` | 图谱文件路径 |
+| `GROK_LLM_TIMEOUT` | `30000` | LLM 调用超时（毫秒） |
+| `GROK_PARSE_TIMEOUT` | `10000` | 文件解析超时（毫秒） |
+| `GROK_DASHBOARD_PORT` | `63000-63100` | Dashboard 端口范围 |
+
+---
+
+## 排错指南
+
+### 常见错误及解决方案
+
+| 错误码 | 症状 | 诊断步骤 | 解决方案 |
+|--------|------|---------|---------|
+| `SOURCE_CLONE_FAILED` | 源码克隆失败 | 检查网络连接、GitHub 访问 | 重试或手动克隆到 `~/.ola-cc/vendor/understand-anything/` |
+| `LLM_RATE_LIMIT` | API 限流 | 检查 API 配额 | 等待 60s 或切换模型（`GROK_LLM_MODEL`） |
+| `LLM_TOKEN_BUDGET` | Token 耗尽 | 检查使用量 | 使用 `--scope` 缩小范围 |
+| `LLM_TIMEOUT` | LLM 调用超时 | 检查 API 状态 | 减小批处理大小或检查网络 |
+| `PARSE_TIMEOUT` | 文件解析超时 | 检查文件大小 | 使用 `--exclude` 排除大文件 |
+| `GRAPH_INVALID` | 图谱损坏 | 检查 JSON 格式 | `/grok --full` 重新生成 |
+| `GRAPH_NOT_FOUND` | 图谱未生成 | 检查 `.understand-anything/` 目录 | 先执行 `/grok` 生成图谱 |
+
+### 诊断命令
+
+```bash
+# 检查 Grok 源码状态
+ls -la ~/.ola-cc/vendor/understand-anything/
+
+# 检查图谱文件
+cat .understand-anything/knowledge-graph.json | jq '.nodes | length'
+
+# 检查环境变量
+env | grep GROK
+
+# 查看调试日志
+DEBUG=grok* bun run dev
+
+# 检查 Dashboard 健康状态
+curl http://localhost:63000/health
+
+# 手动克隆源码（如果自动克隆失败）
+git clone --depth 1 https://github.com/Lum1104/Understand-Anything.git ~/.ola-cc/vendor/understand-anything
+```
+
+### 性能调优
+
+| 场景 | 调整参数 | 建议值 |
+|------|---------|--------|
+| 大项目（>1000 文件） | `GROK_MAX_CONCURRENT` | `3`（减少并发） |
+| API 限流频繁 | `GROK_LLM_TIMEOUT` | `60000`（增加超时） |
+| 内存不足 | `GROK_MAX_CONCURRENT` | `2`（最小并发） |
+| 生成速度慢 | `GROK_MAX_CONCURRENT` | `10`（增加并发，需要足够 API 配额） |
