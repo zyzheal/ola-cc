@@ -54,6 +54,14 @@ const SCENARIO_LABELS: Record<string, string> = {
   refactoring: 'refactor',
 }
 
+const SCENARIO_PREFERRED_SKILLS: Record<string, string[]> = {
+  code_change: ['test-driven-development', 'verification-before-completion', 'feature-dev:feature-dev'],
+  doc_writing: ['design-doc-reviewer', 'docs-navigator', 'writing-plans'],
+  troubleshooting: ['systematic-debugging', 'orion-deep-audit', 'orion-repairing'],
+  design_improve: ['brainstorming', 'design-constraint', 'code-design-analyzer'],
+  refactoring: ['simplify', 'design-constraint', 'test-driven-development'],
+}
+
 // ── Helpers ──
 
 function formatDuration(seconds: number): string {
@@ -131,17 +139,10 @@ export function GoalProgress() {
   const toolCallsThisTurn = useAppState(s => s.goalRuntime?._toolCallsThisTurn ?? [])
 
   // ── Orchestrator state (v3 — graceful degradation) ──
-  const currentScenario = useAppState(s => (s.goalRuntime as any)?.currentScenario as string | undefined)
-  const convergenceState = useAppState(s => (s.goalRuntime as any)?.convergenceState as {
-    informationGains: number[]; qualityScores: number[]; changeMagnitudes: number[]; round: number
-  } | undefined)
-  const lastObservation = useAppState(s => (s.goalRuntime as any)?.lastObservation as {
-    mainPhase: string | null; phases: string[]; qualitySignals: { hasErrors: boolean; hasSuccess: boolean; hasProgress: boolean }
-  } | undefined)
-  const errorTracker = useAppState(s => (s.goalRuntime as any)?.errorTracker as {
-    categories: Record<string, { count: number; threshold: number }>
-    recoveryLayer: string; fullRestartUsed: boolean
-  } | undefined)
+  const currentScenario = useAppState(s => s.goalRuntime?.currentScenario)
+  const convergenceState = useAppState(s => s.goalRuntime?.convergenceState)
+  const lastObservation = useAppState(s => s.goalRuntime?.lastObservation)
+  const errorTracker = useAppState(s => s.goalRuntime?.errorTracker)
 
   // ── Task state ──
   const goalTasks = useAppState(s => {
@@ -218,7 +219,16 @@ export function GoalProgress() {
       <Box>
         <Text dimColor>{goalMode}{goalAutoEdit ? ' | auto-edit' : ''}</Text>
         {recoveryLayer && recoveryLayer !== 'FIX_RETRY' && (
-          <Text color="yellow"> | {recoveryLayer}</Text>
+          <Text color="yellow"> | recovery: {recoveryLayer}</Text>
+        )}
+        {errorTracker && Object.values(errorTracker.categories).some(c => c.count > 0) && (
+          <Text color="red">
+            {' | errors: '}
+            {Object.entries(errorTracker.categories)
+              .filter(([_, c]) => c.count > 0)
+              .map(([cat, c]) => `${cat}:${c.count}/${c.threshold}`)
+              .join(' ')}
+          </Text>
         )}
         {consecutiveErrors > 0 && (
           <Text color="red"> | errors: {consecutiveErrors}/3</Text>
@@ -330,8 +340,23 @@ export function GoalProgress() {
         )}
       </Box>
 
-      {/* ═══ Skills (orchestrator data — placeholder for Phase 4) ═══ */}
-      {/* Will be populated when goalSkillRanker is implemented */}
+      {/* ═══ Skills (orchestrator data) ═══ */}
+      {currentScenario && (
+        <Box flexDirection="column">
+          <Box><Text dimColor>{sectionLabel('Skills')}</Text></Box>
+          <Box>
+            <Text dimColor>Recommended: </Text>
+            <Text>
+              {(SCENARIO_PREFERRED_SKILLS[currentScenario] ?? []).slice(0, 3).map((s, i) => (
+                <React.Fragment key={s}>
+                  {i > 0 && <Text dimColor> </Text>}
+                  <Text color="blue">{truncate(s, 20)}</Text>
+                </React.Fragment>
+              ))}
+            </Text>
+          </Box>
+        </Box>
+      )}
 
       {/* ═══ Legacy: Analysis result (backward compat) ═══ */}
       {lastAnalysisResult && !convergenceState && (
