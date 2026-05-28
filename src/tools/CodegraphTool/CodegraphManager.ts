@@ -2,10 +2,11 @@
  * CodegraphManager — 管理 codegraph CLI 的自动下载与子进程调用
  *
  * 核心设计：
- * 1. 首次使用时自动下载对应平台的 codegraph 预编译包（~45MB）到 vendor/
- * 2. 打开项目时自动检测 .codegraph/，不存在时自动初始化
- * 3. 所有查询通过子进程调用（codegraph 自带 Node 运行时 + node:sqlite）
- * 4. 后台 watcher 由 codegraph 自身管理（serve --mcp 模式）
+ * 1. 优先使用内置的 codegraph 二进制（通过 npm optionalDependencies 安装）
+ * 2. 如果内置不可用，首次使用时自动下载对应平台的 codegraph 预编译包（~45MB）到 vendor/
+ * 3. 打开项目时自动检测 .codegraph/，不存在时自动初始化
+ * 4. 所有查询通过子进程调用（codegraph 自带 Node 运行时 + node:sqlite）
+ * 5. 后台 watcher 由 codegraph 自身管理（serve --mcp 模式）
  *
  * 增强特性（Phase 1.5）：
  * - HTTP 状态码检查（404/500 等错误处理）
@@ -20,10 +21,12 @@ import { existsSync, createWriteStream, mkdirSync, statSync } from 'fs';
 import { chmod, unlink } from 'fs/promises';
 import https from 'https';
 import { homedir } from 'os';
-import { join } from 'path';
+import { join, dirname } from 'path';
 import { promisify } from 'util';
+import { createRequire } from 'module';
 
 const execAsync = promisify(exec);
+const require = createRequire(import.meta.url);
 
 // ============================================================
 // 配置
@@ -40,7 +43,65 @@ const DOWNLOAD_CONFIG = {
   minFileSize: 1024 * 1024, // 1MB 最小文件大小检查
 };
 
+/**
+ * 查找内置的 codegraph 二进制文件路径
+ * 优先从 node_modules 中的平台特定包加载
+ */
+function getBuiltinBinaryPath(): string | null {
+  const platform = process.platform;
+  const arch = process.arch === 'arm64' ? 'arm64' : 'x64';
+  const packageName = `@colbymchenry/codegraph-${platform}-${arch}`;
+
+  try {
+    // 尝试解析平台特定的包
+    const packagePath = require.resolve(`${packageName}/package.json`);
+    const packageDir = dirname(packagePath);
+    const binaryPath = join(packageDir, 'codegraph');
+
+    if (existsSync(binaryPath)) {
+      logInfo(`Using builtin codegraph from ${packageName}`);
+      return binaryPath;
+    }
+
+    // 尝试 bin 目录
+    const binPath = join(packageDir, 'bin', 'codegraph');
+    if (existsSync(binPath)) {
+      logInfo(`Using builtin codegraph from ${packageName}/bin`);
+      return binPath;
+    }
+  } catch {
+    // 包未安装，忽略
+  }
+
+  // 尝试主包
+  try {
+    const mainPackagePath = require.resolve('@colbymchenry/codegraph/package.json');
+    const mainPackageDir = dirname(mainPackagePath);
+    const mainBinaryPath = join(mainPackageDir, 'codegraph');
+
+    if (existsSync(mainBinaryPath)) {
+      logInfo('Using builtin codegraph from main package');
+      return mainBinaryPath;
+    }
+  } catch {
+    // 包未安装，忽略
+  }
+
+  return null;
+}
+
+/**
+ * 获取 codegraph 二进制文件路径
+ * 优先使用内置版本，否则使用下载版本
+ */
 function getBinaryPath(): string {
+  // 优先尝试内置版本
+  const builtinPath = getBuiltinBinaryPath();
+  if (builtinPath) {
+    return builtinPath;
+  }
+
+  // 回退到下载版本
   const platform = process.platform;
   const arch = process.arch === 'arm64' ? 'arm64' : 'x64';
   return join(VENDOR_DIR, `codegraph-${CODEGRAPH_VERSION}-${platform}-${arch}`, 'codegraph');
@@ -71,12 +132,21 @@ function logError(message: string, error?: unknown): void {
 let downloadPromise: Promise<string> | null = null;
 
 async function ensureCodegraphBinary(): Promise<string> {
+  // 优先检查内置版本
+  const builtinPath = getBuiltinBinaryPath();
+  if (builtinPath && existsSync(builtinPath)) {
+    try { await chmod(builtinPath, 0o755); } catch { /* ignore */ }
+    return builtinPath;
+  }
+
+  // 检查已下载的版本
   const binPath = getBinaryPath();
   if (existsSync(binPath)) {
     try { await chmod(binPath, 0o755); } catch { /* ignore */ }
     return binPath;
   }
 
+  // 需要下载
   if (downloadPromise) return downloadPromise;
 
   downloadPromise = (async () => {

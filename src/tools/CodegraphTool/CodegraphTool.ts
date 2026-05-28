@@ -224,6 +224,13 @@ export const codegraphTool = buildTool({
       : '';
     return op !== 'codegraph_init';
   },
+  mapToolResultToToolResultBlockParam(output, toolUseID) {
+    return {
+      tool_use_id: toolUseID,
+      type: 'tool_result',
+      content: JSON.stringify(output, null, 2),
+    };
+  },
 });
 
 // ============================================================

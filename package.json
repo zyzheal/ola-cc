@@ -116,5 +116,14 @@
     "xss": "*",
     "yaml": "*",
     "zod": "^3.25.0"
+  },
+  "optionalDependencies": {
+    "@colbymchenry/codegraph": "^0.9.6",
+    "@colbymchenry/codegraph-darwin-arm64": "^0.9.6",
+    "@colbymchenry/codegraph-darwin-x64": "^0.9.6",
+    "@colbymchenry/codegraph-linux-x64": "^0.9.6",
+    "@colbymchenry/codegraph-linux-arm64": "^0.9.6",
+    "@colbymchenry/codegraph-win32-x64": "^0.9.6",
+    "@colbymchenry/codegraph-win32-arm64": "^0.9.6"
   }
 }
