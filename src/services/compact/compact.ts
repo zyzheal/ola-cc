@@ -552,7 +552,14 @@ export async function compactConversation(
       type: 'compact_progress',
       stage: 'processing',
       progress: 50,
-      message: '正在生成摘要...',
+      message: '正在处理摘要...',
+    })
+
+    context.onCompactProgress?.({
+      type: 'compact_progress',
+      stage: 'processing',
+      progress: 60,
+      message: '正在重建上下文...',
     })
 
     // Store the current file state before clearing
@@ -638,6 +645,13 @@ export async function compactConversation(
     )) {
       postCompactFileAttachments.push(createAttachmentMessage(att))
     }
+
+    context.onCompactProgress?.({
+      type: 'compact_progress',
+      stage: 'processing',
+      progress: 80,
+      message: '正在恢复附件...',
+    })
 
     context.onCompactProgress?.({
       type: 'hooks_start',
@@ -770,6 +784,13 @@ export async function compactConversation(
     if (feature('KAIROS')) {
       void sessionTranscriptModule?.writeSessionTranscriptSegment(messages)
     }
+
+    context.onCompactProgress?.({
+      type: 'compact_progress',
+      stage: 'processing',
+      progress: 90,
+      message: '正在执行后处理...',
+    })
 
     context.onCompactProgress?.({
       type: 'hooks_start',
@@ -1273,6 +1294,12 @@ async function streamCompactSummary({
   try {
     if (promptCacheSharingEnabled) {
       logStreamDuration('cache_sharing_start')
+      context.onCompactProgress?.({
+        type: 'compact_progress',
+        stage: 'summarizing',
+        progress: 15,
+        message: '正在生成摘要(缓存共享)...',
+      })
       try {
         // DO NOT set maxOutputTokens here. The fork piggybacks on the main thread's
         // prompt cache by sending identical cache-key params (system, tools, model,
@@ -1446,6 +1473,14 @@ async function streamCompactSummary({
       const streamIter = streamingGen[Symbol.asyncIterator]()
       let next = await streamIter.next()
 
+      // Track streaming progress for UI updates
+      let totalCharsStreamed = 0
+      let lastProgressEmitTime = Date.now()
+      const PROGRESS_EMIT_INTERVAL_MS = 500
+      // Estimate: typical compact output is ~2000-6000 chars.
+      // Use 4000 as midpoint for smooth progress bar movement.
+      const ESTIMATED_OUTPUT_CHARS = 4000
+
       while (!next.done) {
         const event = next.value
 
@@ -1465,7 +1500,22 @@ async function streamCompactSummary({
           event.event.delta.type === 'text_delta'
         ) {
           const charactersStreamed = event.event.delta.text.length
+          totalCharsStreamed += charactersStreamed
           context.setResponseLength?.(length => length + charactersStreamed)
+
+          // Emit intermediate progress during streaming (5% → 50%)
+          const now = Date.now()
+          if (now - lastProgressEmitTime >= PROGRESS_EMIT_INTERVAL_MS) {
+            const streamProgress = Math.min(1, totalCharsStreamed / ESTIMATED_OUTPUT_CHARS)
+            const overallProgress = Math.round(5 + streamProgress * 45)
+            context.onCompactProgress?.({
+              type: 'compact_progress',
+              stage: 'summarizing',
+              progress: Math.min(overallProgress, 49),
+              message: '正在生成摘要...',
+            })
+            lastProgressEmitTime = now
+          }
         }
 
         if (event.type === 'assistant') {

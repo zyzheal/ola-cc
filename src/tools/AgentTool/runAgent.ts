@@ -354,8 +354,12 @@ export async function* runAgent({
   quotaManager?: import('../../utils/quota/ResourceQuotaManager.js').ResourceQuotaManager
 }): AsyncGenerator<Message, void> {
   // Track subagent usage for feature discovery
+  const _initStart = Date.now()
+  const _initLog = (step: string) => logForDebugging(`[AgentInit:${agentDefinition.agentType}] ${step} (+${Date.now() - _initStart}ms)`)
+  _initLog('begin')
 
   const appState = toolUseContext.getAppState()
+  _initLog('getAppState done')
   const permissionMode = appState.toolPermissionContext.mode
   // Always-shared channel to the root AppState store. toolUseContext.setAppState
   // is a no-op when the *parent* is itself an async agent (nested async→async),
@@ -403,10 +407,12 @@ export async function* runAgent({
       ? cloneFileStateCache(toolUseContext.readFileState)
       : createFileStateCacheWithSizeLimit(READ_FILE_STATE_CACHE_SIZE)
 
+  _initLog('before getUserContext/getSystemContext')
   const [baseUserContext, baseSystemContext] = await Promise.all([
     override?.userContext ?? getUserContext(),
     override?.systemContext ?? getSystemContext(),
   ])
+  _initLog('after getUserContext/getSystemContext')
 
   // Read-only agents (Explore, Plan) don't act on commit/PR/lint rules from
   // CLAUDE.md — the main agent has full context and interprets their output.
@@ -562,6 +568,7 @@ export async function* runAgent({
     appState.toolPermissionContext.additionalWorkingDirectories.keys(),
   )
 
+  _initLog('before getAgentSystemPrompt')
   const agentSystemPrompt = override?.systemPrompt
     ? override.systemPrompt
     : asSystemPrompt(
@@ -573,6 +580,7 @@ export async function* runAgent({
           resolvedTools,
         ),
       )
+  _initLog('after getAgentSystemPrompt')
 
   // Determine abortController:
   // - Override takes precedence
@@ -585,6 +593,7 @@ export async function* runAgent({
       : toolUseContext.abortController
 
   // Execute SubagentStart hooks and collect additional context
+  _initLog('before executeSubagentStartHooks')
   const additionalContexts: string[] = []
   for await (const hookResult of executeSubagentStartHooks(
     agentId,
@@ -598,6 +607,7 @@ export async function* runAgent({
       additionalContexts.push(...hookResult.additionalContexts)
     }
   }
+  _initLog('after executeSubagentStartHooks')
 
   // Add SubagentStart hook context as a user message (consistent with SessionStart/UserPromptSubmit)
   if (additionalContexts.length > 0) {
@@ -632,6 +642,7 @@ export async function* runAgent({
   }
 
   // Preload skills from agent frontmatter
+  _initLog('before skill preloading')
   const skillsToPreload = agentDefinition.skills ?? []
   if (skillsToPreload.length > 0) {
     const allSkills = await getSkillToolCommands(getProjectRoot())
@@ -703,6 +714,7 @@ export async function* runAgent({
   }
 
   // Initialize agent-specific MCP servers (additive to parent's servers)
+  _initLog('before initializeAgentMcpServers')
   const {
     clients: mergedMcpClients,
     tools: agentMcpTools,
@@ -711,6 +723,7 @@ export async function* runAgent({
     agentDefinition,
     toolUseContext.options.mcpClients,
   )
+  _initLog('after initializeAgentMcpServers')
 
   // Merge agent MCP tools with resolved agent tools, deduplicating by name.
   // resolvedTools is already deduplicated (see resolveAgentTools), so skip
@@ -824,6 +837,7 @@ export async function* runAgent({
   // Track the last assistant message text for validation gate
   let lastAssistantMessageText = ''
 
+  _initLog('before query() call')
   try {
     for await (const message of query({
       messages: initialMessages,
@@ -835,6 +849,7 @@ export async function* runAgent({
       querySource,
       maxTurns: maxTurns ?? agentDefinition.maxTurns,
     })) {
+      _initLog(`first message from query(): type=${message.type}`)
       onQueryProgress?.()
 
       // Accumulate output tokens from stream events

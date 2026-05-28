@@ -94,7 +94,7 @@ function getBuiltinBinaryPath(): string | null {
  * 获取 codegraph 二进制文件路径
  * 优先使用内置版本，否则使用下载版本
  */
-function getBinaryPath(): string {
+function getBinaryPath(): string | null {
   // 优先尝试内置版本
   const builtinPath = getBuiltinBinaryPath();
   if (builtinPath) {
@@ -104,7 +104,8 @@ function getBinaryPath(): string {
   // 回退到下载版本
   const platform = process.platform;
   const arch = process.arch === 'arm64' ? 'arm64' : 'x64';
-  return join(VENDOR_DIR, `codegraph-${CODEGRAPH_VERSION}-${platform}-${arch}`, 'codegraph');
+  const vendorPath = join(VENDOR_DIR, `codegraph-${CODEGRAPH_VERSION}-${platform}-${arch}`, 'codegraph');
+  return existsSync(vendorPath) ? vendorPath : null;
 }
 
 // ============================================================
@@ -141,7 +142,7 @@ async function ensureCodegraphBinary(): Promise<string> {
 
   // 检查已下载的版本
   const binPath = getBinaryPath();
-  if (existsSync(binPath)) {
+  if (binPath && existsSync(binPath)) {
     try { await chmod(binPath, 0o755); } catch { /* ignore */ }
     return binPath;
   }
@@ -154,6 +155,7 @@ async function ensureCodegraphBinary(): Promise<string> {
     const arch = process.arch === 'arm64' ? 'arm64' : 'x64';
     const assetName = `codegraph-${platform}-${arch}.tar.gz`;
     const downloadUrl = `https://github.com/colbymchenry/codegraph/releases/download/v${CODEGRAPH_VERSION}/${assetName}`;
+    const expectedPath = join(VENDOR_DIR, `codegraph-${CODEGRAPH_VERSION}-${platform}-${arch}`, 'codegraph');
 
     mkdirSync(VENDOR_DIR, { recursive: true });
 
@@ -164,14 +166,15 @@ async function ensureCodegraphBinary(): Promise<string> {
     await extractTarGz(tempFile, VENDOR_DIR);
 
     try { await unlink(tempFile); } catch { /* ignore */ }
-    try { await chmod(binPath, 0o755); } catch { /* ignore */ }
+    try { await chmod(expectedPath, 0o755); } catch { /* ignore */ }
 
-    logInfo(`Binary ready at ${binPath}`);
+    logInfo(`Binary ready at ${expectedPath}`);
+    return expectedPath;
   })();
 
-  await downloadPromise;
+  const result = await downloadPromise;
   downloadPromise = null;
-  return binPath;
+  return result;
 }
 
 /**
@@ -212,9 +215,14 @@ async function downloadWithRetry(url: string, dest: string): Promise<void> {
 }
 
 /**
- * 单次下载（带 HTTP 状态码检查和超时）
+ * 单次下载（带 HTTP 状态码检查、超时和重定向循环保护）
  */
-function downloadFile(url: string, dest: string): Promise<void> {
+function downloadFile(url: string, dest: string, redirectCount = 0): Promise<void> {
+  const MAX_REDIRECTS = 5;
+  if (redirectCount > MAX_REDIRECTS) {
+    return Promise.reject(new Error(`Too many redirects (${redirectCount}), possible redirect loop`));
+  }
+
   return new Promise((resolve, reject) => {
     const file = createWriteStream(dest);
     let timeoutId: NodeJS.Timeout | null = null;
@@ -246,9 +254,9 @@ function downloadFile(url: string, dest: string): Promise<void> {
           handleError(new Error('Redirect location missing'));
           return;
         }
-        logInfo(`Following redirect to ${redirectUrl}`);
-        // 递归下载重定向目标
-        downloadFile(redirectUrl, dest).then(resolve).catch(reject);
+        logInfo(`Following redirect to ${redirectUrl} (${redirectCount + 1}/${MAX_REDIRECTS})`);
+        // 递归下载重定向目标（带循环保护）
+        downloadFile(redirectUrl, dest, redirectCount + 1).then(resolve).catch(reject);
         return;
       }
 
@@ -355,7 +363,14 @@ export async function ensureReady(projectRoot: string): Promise<{ binPath: strin
 
   if (!isCodegraphInitialized(projectRoot)) {
     // 自动初始化 + 建索引
-    await runCodegraph(binPath, projectRoot, ['init', projectRoot, '--index'], 120_000, true);
+    const result = await runCodegraph(binPath, projectRoot, ['init', projectRoot, '--index'], 120_000, true);
+    if (!result.ok) {
+      throw new Error(`CodeGraph 初始化失败: ${result.stderr || result.stdout}`);
+    }
+    // 验证初始化确实创建了数据库
+    if (!isCodegraphInitialized(projectRoot)) {
+      throw new Error('CodeGraph 初始化命令成功但未创建数据库文件');
+    }
   }
 
   return { binPath, initialized: true };

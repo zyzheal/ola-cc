@@ -59,7 +59,10 @@ export const codegraphTool = buildTool({
       if (!CodegraphManager.isCodegraphInitialized(projectRoot)) {
         if (input.operation === 'codegraph_init') {
           // 显式 init → 前台执行，返回进度
-          const result = await CodegraphManager.initProject(projectRoot);
+          const initResult = await CodegraphManager.initProject(projectRoot);
+          if (!initResult.ok) {
+            return errorResult(`初始化失败: ${initResult.stderr || initResult.stdout}`);
+          }
           return successResult(input.operation, { message: 'CodeGraph 索引已创建', initialized: true });
         }
         // 非 init 操作 → 后台静默初始化
@@ -125,9 +128,28 @@ export const codegraphTool = buildTool({
             const fromParsed = parseJsonOrError(fromNodes);
             const toParsed = parseJsonOrError(toNodes);
             if (Array.isArray(fromParsed) && fromParsed.length > 0 && Array.isArray(toParsed) && toParsed.length > 0) {
-              // 用 callers 遍历找路径（简化版 trace）
-              const callers = await CodegraphManager.getCallers(projectRoot, toParsed[0].name, { limit: 50 });
-              result = parseJsonOrError(callers);
+              // 用 impact 做双向分析，找出从 from 到 to 的路径
+              const [fromImpact, toImpact] = await Promise.all([
+                CodegraphManager.getImpact(projectRoot, fromParsed[0].name, input.depth ?? 3),
+                CodegraphManager.getImpact(projectRoot, toParsed[0].name, input.depth ?? 3),
+              ]);
+              const fromGraph = parseJsonOrError(fromImpact);
+              const toGraph = parseJsonOrError(toImpact);
+              // 找交集：同时出现在 from 的下游和 to 的上游的节点
+              const fromSet = new Set(
+                Array.isArray(fromGraph) ? fromGraph.map((n: any) => n.name) : []
+              );
+              const pathNodes = Array.isArray(toGraph)
+                ? toGraph.filter((n: any) => fromSet.has(n.name))
+                : [];
+              result = {
+                from: fromParsed[0].name,
+                to: toParsed[0].name,
+                connectingNodes: pathNodes.slice(0, 10),
+                message: pathNodes.length > 0
+                  ? `找到 ${pathNodes.length} 个连接节点`
+                  : '未找到直接连接路径，可能需要增加 depth 参数',
+              };
             } else {
               result = { error: `未找到符号: ${fromParsed.length === 0 ? parts[0] : parts[1]}` };
             }
@@ -163,7 +185,7 @@ export const codegraphTool = buildTool({
 
         case 'codegraph_files': {
           const r = await CodegraphManager.getFiles(projectRoot, {
-            maxDepth: input.maxNodes ?? 3,
+            maxDepth: input.depth ?? 3,
             format: 'json',
           });
           result = parseJsonOrError(r);

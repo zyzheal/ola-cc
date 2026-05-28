@@ -104,6 +104,35 @@ export function getProgressUpdate(tracker: ProgressTracker): AgentProgress {
 }
 
 /**
+ * Re-reads token usage from an assistant message that was previously processed
+ * by `updateProgressFromMessage` when usage was still stale (0 tokens at
+ * `content_block_stop` time). The `message_delta` stream event mutates the
+ * same message object in place with real values. Call this on the NEXT
+ * iteration (or after the loop) to correct the tracker.
+ *
+ * Since `cumulativeOutputTokens` is additive and the stale value was 0,
+ * we can safely add the real output_tokens without double-counting.
+ * `latestInputTokens` is a direct overwrite so it's always correct.
+ */
+export function reReadMessageUsage(tracker: ProgressTracker, message: Message): void {
+  if (message.type !== 'assistant' || !message.message?.usage) return;
+  const usage = message.message.usage;
+  const realInput = usage.input_tokens + (usage.cache_creation_input_tokens ?? 0) + (usage.cache_read_input_tokens ?? 0);
+  const realOutput = usage.output_tokens;
+  // If output hasn't been updated yet (still 0), skip.
+  // input_tokens is set at message_start (before content_block_stop),
+  // so it's always non-zero — checking only output is sufficient.
+  if (realOutput === 0) return;
+  // latestInputTokens: overwrite with real value (it's a snapshot, not cumulative)
+  tracker.latestInputTokens = realInput;
+  // cumulativeOutputTokens: the stale add from updateProgressFromMessage was 0,
+  // so adding the real value here gives the correct cumulative total.
+  // Guard: only add if we haven't already added this message's output.
+  // Since stale was 0, realOutput is the net addition needed.
+  tracker.cumulativeOutputTokens += realOutput;
+}
+
+/**
  * Creates an ActivityDescriptionResolver from a tools list.
  * Looks up the tool by name and calls getActivityDescription if available.
  */

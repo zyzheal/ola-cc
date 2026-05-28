@@ -12,7 +12,7 @@ import { startAgentSummarization } from '../../services/AgentSummary/agentSummar
 import { getFeatureValue_CACHED_MAY_BE_STALE } from '../../services/analytics/growthbook.js';
 import { type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS, logEvent } from '../../services/analytics/index.js';
 import { clearDumpState } from '../../services/api/dumpPrompts.js';
-import { completeAgentTask as completeAsyncAgent, createActivityDescriptionResolver, createProgressTracker, enqueueAgentNotification, failAgentTask as failAsyncAgent, getProgressUpdate, getTokenCountFromTracker, isLocalAgentTask, killAsyncAgent, registerAgentForeground, registerAsyncAgent, unregisterAgentForeground, updateAgentProgress as updateAsyncAgentProgress, updateProgressFromMessage } from '../../tasks/LocalAgentTask/LocalAgentTask.js';
+import { completeAgentTask as completeAsyncAgent, createActivityDescriptionResolver, createProgressTracker, enqueueAgentNotification, failAgentTask as failAsyncAgent, getProgressUpdate, getTokenCountFromTracker, isLocalAgentTask, killAsyncAgent, reReadMessageUsage, registerAgentForeground, registerAsyncAgent, unregisterAgentForeground, updateAgentProgress as updateAsyncAgentProgress, updateProgressFromMessage } from '../../tasks/LocalAgentTask/LocalAgentTask.js';
 import { checkRemoteAgentEligibility, formatPreconditionError, getRemoteTaskSessionUrl, registerRemoteAgentTask } from '../../tasks/RemoteAgentTask/RemoteAgentTask.js';
 // Registration-based approach to break circular dependency:
 // tools.ts → AgentTool.tsx → assembleToolPool → tools.ts
@@ -612,6 +612,7 @@ export const AgentTool = buildTool({
 
     // Resolve agent params for logging (these are already resolved in runAgent)
     const resolvedAgentModel = getAgentModel(selectedAgent.model, toolUseContext.options.mainLoopModel, isForkPath ? undefined : model, permissionMode);
+    logForDebugging(`[AgentTool] ${selectedAgent.agentType}: agentModel=${selectedAgent.model}, parentModel=${toolUseContext.options.mainLoopModel}, resolvedModel=${resolvedAgentModel}`);
     logEvent('tengu_agent_tool_selected', {
       agent_type: selectedAgent.agentType as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
       model: resolvedAgentModel as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
@@ -728,7 +729,9 @@ export const AgentTool = buildTool({
 
         // Apply environment details enhancement
         const settings = getInitialSettings()
+        logForDebugging(`[AgentTool] ${selectedAgent.agentType}: before enhanceSystemPromptWithEnvDetails`);
         enhancedSystemPrompt = await enhanceSystemPromptWithEnvDetails([agentPrompt, getLanguageSection(settings.language)], resolvedAgentModel, additionalWorkingDirectories);
+        logForDebugging(`[AgentTool] ${selectedAgent.agentType}: after enhanceSystemPromptWithEnvDetails`);
       } catch (error) {
         logForDebugging(`Failed to get system prompt for agent ${selectedAgent.agentType}: ${errorMessage(error)}`);
       }
@@ -809,7 +812,9 @@ export const AgentTool = buildTool({
     };
     let workerTools: import('../../Tool.js').Tools;
     try {
+      logForDebugging(`[AgentTool] ${selectedAgent.agentType}: before assembleToolPool`);
       workerTools = getAssembleToolPool()(workerPermissionContext, appState.mcp.tools);
+      logForDebugging(`[AgentTool] ${selectedAgent.agentType}: after assembleToolPool (${workerTools.length} tools)`);
     } catch {
       // If assembleToolPool fails (e.g., Bun bytecode TDZ during module init),
       // fall back to the parent's tool list so the agent can still function.
@@ -1122,8 +1127,24 @@ export const AgentTool = buildTool({
           worktreePath?: string;
           worktreeBranch?: string;
         } = {};
+        // Deferred token counting: messages are yielded at content_block_stop
+        // with usage=0. The real usage arrives in message_delta which mutates
+        // the same object. We re-read the previous message's usage on the
+        // next iteration to capture the updated values.
+        let prevSyncAssistantMsg: Message | undefined;
         try {
           while (true) {
+            // Re-read previous message's usage now that message_delta has
+            // had a chance to mutate it with real token counts.
+            // Clear immediately after to prevent double-counting when
+            // multiple non-assistant messages appear between assistant messages.
+            if (prevSyncAssistantMsg) {
+              reReadMessageUsage(syncTracker, prevSyncAssistantMsg);
+              prevSyncAssistantMsg = undefined;
+              if (foregroundTaskId) {
+                updateAsyncAgentProgress(foregroundTaskId, getProgressUpdate(syncTracker), rootSetAppState);
+              }
+            }
             const elapsed = Date.now() - agentStartTime;
 
             // Show background hint after threshold (but task is already registered)
@@ -1181,6 +1202,7 @@ export const AgentTool = buildTool({
                     for (const existingMsg of agentMessages) {
                       updateProgressFromMessage(tracker, existingMsg, resolveActivity2, toolUseContext.options.tools);
                     }
+                    let prevBgAssistantMsg: Message | undefined;
                     for await (const msg of runAgent({
                       ...runAgentParams,
                       isAsync: true,
@@ -1197,15 +1219,28 @@ export const AgentTool = buildTool({
                         stopBackgroundedSummarization = stop;
                       } : undefined
                     })) {
+                      // Re-read previous message's usage (message_delta mutation)
+                      if (prevBgAssistantMsg) {
+                        reReadMessageUsage(tracker, prevBgAssistantMsg);
+                        prevBgAssistantMsg = undefined;
+                      }
                       agentMessages.push(msg);
 
                       // Track progress for backgrounded agents
                       updateProgressFromMessage(tracker, msg, resolveActivity2, toolUseContext.options.tools);
+                      if (msg.type === 'assistant') {
+                        prevBgAssistantMsg = msg;
+                      }
                       updateAsyncAgentProgress(backgroundedTaskId, getProgressUpdate(tracker), rootSetAppState);
                       const lastToolName = getLastToolUseName(msg);
                       if (lastToolName) {
                         emitTaskProgress(tracker, backgroundedTaskId, toolUseContext.toolUseId, description, startTime, lastToolName);
                       }
+                    }
+                    // Final re-read for last message
+                    if (prevBgAssistantMsg) {
+                      reReadMessageUsage(tracker, prevBgAssistantMsg);
+                      updateAsyncAgentProgress(backgroundedTaskId, getProgressUpdate(tracker), rootSetAppState);
                     }
                     const agentResult = finalizeAgentTool(agentMessages, backgroundedTaskId, metadata);
 
@@ -1341,6 +1376,10 @@ export const AgentTool = buildTool({
 
             // Emit task_progress for the VS Code subagent panel
             updateProgressFromMessage(syncTracker, message, syncResolveActivity, toolUseContext.options.tools);
+            // Save for deferred usage re-reading on next iteration
+            if (message.type === 'assistant') {
+              prevSyncAssistantMsg = message;
+            }
             if (foregroundTaskId) {
               const lastToolName = getLastToolUseName(message);
               if (lastToolName) {
@@ -1402,6 +1441,14 @@ export const AgentTool = buildTool({
                   });
                 }
               }
+            }
+          }
+          // Final re-read: the last message's usage may have been updated
+          // by message_delta after the loop's last iteration.
+          if (prevSyncAssistantMsg) {
+            reReadMessageUsage(syncTracker, prevSyncAssistantMsg);
+            if (foregroundTaskId) {
+              updateAsyncAgentProgress(foregroundTaskId, getProgressUpdate(syncTracker), rootSetAppState);
             }
           }
         } catch (error) {
