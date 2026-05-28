@@ -334,29 +334,7 @@ export function processGoalRuntimeEvent(
 						runtime.accounting.wallClock.lastAccountedAt,
 					);
 
-					// Auto-progress tasks after each turn
-					const todos = context.getTodos?.();
-					// NOTE: Removed autoProgressTasks — let the model control task
-					// progression via TodoWrite to prevent premature advancement.
-
-					// Check if all tasks are completed — if so, stop accumulating
-					// time/tokens and prompt model to call update_goal("complete")
-					const allTasksDone = todos && todos.length > 0 &&
-						todos.every(t => t.status === 'completed');
-					if (allTasksDone) {
-						// Still update token usage for accuracy, but don't accumulate time
-						let updatedGoal: Goal = {
-							...goal,
-							tokensUsed: goal.tokensUsed + tokenDelta,
-							updatedAt: Date.now(),
-						};
-						updatedGoalRef = updatedGoal;
-						context.updateGoal(updatedGoal);
-						return {
-							shouldContinue: true,
-							injectedPrompt: 'All tasks are completed. Call update_goal(status: "complete", summary: "...") to finish the goal.',
-						};
-					}
+					// NOTE: allTasksDone check is handled by orchestrator (checks both todos and goalTasks)
 
 					let updatedGoal: Goal = {
 						...goal,
@@ -564,17 +542,7 @@ export function processGoalRuntimeEvent(
 				// progression via TodoWrite to prevent premature advancement.
 
 				// Check if all GoalTasks are completed — stop time accumulation
-				const goalTasks = context.getGoalTasks?.();
-				const allGoalTasksDone = goalTasks && goalTasks.length > 0 &&
-					goalTasks.every(t => t.status === 'completed');
-				if (allGoalTasksDone && updatedGoalRef?.status === Status.Active) {
-					// Don't update timeUsedSeconds — goal is logically done
-					context.updateGoal({ ...updatedGoalRef, updatedAt: Date.now() });
-					return {
-						shouldContinue: true,
-						injectedPrompt: 'All tasks are completed. Call update_goal(status: "complete", summary: "...") to finish the goal.',
-					};
-				}
+				// NOTE: allGoalTasksDone check is handled by orchestrator
 
 				// Use updated goal status for continuation check
 				const effectiveGoal = updatedGoalRef;
