@@ -1,6 +1,6 @@
 // src/tools/GrokTool/GrokManager.ts
 
-import { existsSync, mkdirSync } from 'fs'
+import { existsSync, mkdirSync, readFileSync } from 'fs'
 import { execSync } from 'child_process'
 import { resolve } from 'path'
 import Anthropic from '@anthropic-ai/sdk'
@@ -465,8 +465,27 @@ Output JSON array of analysis results.`
    * 检查图谱状态
    */
   async getGraphStatus(): Promise<GrokGraphStatus> {
-    // TODO: 实现状态检查
-    throw new Error('Not implemented')
+    const graphPath = resolve(this.projectRoot, GROK_GRAPH_FILE)
+
+    try {
+      const content = readFileSync(graphPath, 'utf-8')
+      const graph = JSON.parse(content)
+
+      const lastUpdated = graph.metadata?.lastUpdated
+      const stale = lastUpdated
+        ? Date.now() - new Date(lastUpdated).getTime() > 24 * 60 * 60 * 1000
+        : true
+
+      return {
+        exists: true,
+        nodeCount: graph.nodes?.length || 0,
+        edgeCount: graph.edges?.length || 0,
+        lastUpdated,
+        stale,
+      }
+    } catch {
+      return { exists: false }
+    }
   }
 }
 
