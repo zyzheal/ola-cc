@@ -190,7 +190,8 @@ const externals = publish
       'sharp',
       'turndown',
       'url-handler-napi',
-      'zod',
+      // zod 是核心依赖，必须打包进二进制
+      // 'zod',
     ]
 
 const defines = {
