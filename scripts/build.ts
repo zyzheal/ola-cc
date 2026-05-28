@@ -168,7 +168,8 @@ const externals = publish
       '@anthropic-ai/claude-agent-sdk',
       '@anthropic-ai/foundry-sdk',
       '@anthropic-ai/vertex-sdk',
-      '@anthropic-ai/sdk',
+      // SDK 已通过 sdk-exports.ts 统一导入，不再标记为 external
+      // '@anthropic-ai/sdk',
       '@aws-sdk/client-bedrock',
       '@aws-sdk/client-sts',
       '@azure/identity',
