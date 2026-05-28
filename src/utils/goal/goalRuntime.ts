@@ -21,10 +21,12 @@ import {
 	buildContinuationPrompt,
 } from "./goalSteering.js";
 import { checkMemoryIfNeeded, disposeGoalMemory } from "./goalMemory.js";
-import { initOrchestratorState, processTurn } from "./goalOrchestrator.js";
+import { initOrchestratorState, processTurn, formatSkillRecommendations } from "./goalOrchestrator.js";
 import { resolveScenario } from "./goalScenario.js";
 import { observeTurn } from "./goalReActObserver.js";
 import { recordError, shouldPause as trackerShouldPause } from "./goalErrorTracker.js";
+import { getSkillMetadata } from "./skillRegistry.js";
+import { rankSkills } from "./goalSkillRanker.js";
 
 /**
  * Options for building the GoalRuntimeContext callbacks.
@@ -596,8 +598,16 @@ export function processGoalRuntimeEvent(
 					const inProgressTodo = currentTodos?.find(t => t.status === "in_progress");
 					const currentTask = inProgressGoalTask?.content ?? inProgressTodo?.content;
 
-					const continuationPrompt =
+					let continuationPrompt =
 						buildContinuationPrompt(effectiveGoal, currentTask) + strategyCheck;
+
+					// Inject skill recommendations if cached skills are available
+					if (runtime.cachedSkills && runtime.cachedSkills.length > 0) {
+						const query = currentTask ?? effectiveGoal.objective
+						const ranked = rankSkills(query, runtime.cachedSkills, scenarioConfig, 3)
+						continuationPrompt += formatSkillRecommendations(ranked)
+					}
+
 					return { shouldContinue: true, injectedPrompt: continuationPrompt };
 				}
 
@@ -647,6 +657,11 @@ export function processGoalRuntimeEvent(
 
 				// Initialize orchestrator state (scenario, convergence, error tracker)
 				initOrchestratorState(runtime, event.goal.objective);
+
+				// Pre-fetch skills for recommendation injection (fire-and-forget)
+				getSkillMetadata()
+					.then((skills) => { runtime.cachedSkills = skills })
+					.catch(() => { /* graceful: no recommendations if fetch fails */ });
 
 				// Start first task as in_progress
 				const todos = context.getTodos?.();

@@ -117,6 +117,9 @@ export interface GoalRuntimeState {
 		phases: string[];
 		qualitySignals: { hasErrors: boolean; hasSuccess: boolean; hasProgress: boolean };
 	};
+
+	// v3 orchestrator — 技能缓存（goal 创建时加载，避免每轮异步）
+	cachedSkills?: import("../utils/goal/skillRegistry.js").SkillMetadata[];
 }
 
 export interface TokenUsage {
