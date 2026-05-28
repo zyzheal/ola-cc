@@ -340,20 +340,9 @@ export function processGoalRuntimeEvent(
 					event.toolName,
 				];
 
-				// Auto-progress task after significant tool completion
-				const todos = context.getTodos?.();
-				const inProgressTask = todos?.find((t) => t.status === "in_progress");
-				// Only progress if there's an in-progress task and this is a work-related tool
-				if (inProgressTask && isWorkTool(event.toolName)) {
-					autoProgressTasks(todos, context.updateTodos);
-				}
-
-				// Also check goalTasks for work tool completions
-				const goalTasks = context.getGoalTasks?.();
-				const inProgressGoalTask = goalTasks?.find((t) => t.status === "in_progress");
-				if (inProgressGoalTask && isWorkTool(event.toolName)) {
-					autoAdvanceGoalTasks(goalTasks, context.updateGoalTasks);
-				}
+				// NOTE: Do NOT auto-advance tasks on every tool completion.
+				// Tasks are advanced only at turn_finished to avoid
+				// a single turn's multiple tool calls advancing multiple tasks.
 
 				return { shouldContinue: true };
 			}
@@ -459,7 +448,8 @@ export function processGoalRuntimeEvent(
 
 					// Auto-progress tasks after each turn
 					const todos = context.getTodos?.();
-					autoProgressTasks(todos, context.updateTodos);
+					// NOTE: Removed autoProgressTasks — let the model control task
+					// progression via TodoWrite to prevent premature advancement.
 
 					// Check if all tasks are completed — if so, stop accumulating
 					// time/tokens and prompt model to call update_goal("complete")
@@ -584,10 +574,8 @@ export function processGoalRuntimeEvent(
 				runtime.totalApiTokens = (runtime.totalApiTokens ?? 0) + thisTurnTokens;
 				runtime.totalApiWallMs = (runtime.totalApiWallMs ?? 0) + thisTurnWall;
 
-				// Auto-advance goal tasks when a turn produces observable changes
-				if (analysisResult?.hadObservableChanges) {
-					autoAdvanceGoalTasks(context.getGoalTasks?.(), context.updateGoalTasks);
-				}
+				// NOTE: Removed autoAdvanceGoalTasks — let the model control task
+				// progression via TodoWrite to prevent premature advancement.
 
 				// Check if all GoalTasks are completed — stop time accumulation
 				const goalTasks = context.getGoalTasks?.();
@@ -631,8 +619,15 @@ export function processGoalRuntimeEvent(
 				}
 
 				if (effectiveGoal.status === Status.Active) {
+					// Get current in-progress task for the continuation prompt
+					const currentGoalTasks = context.getGoalTasks?.();
+					const currentTodos = context.getTodos?.();
+					const inProgressGoalTask = currentGoalTasks?.find(t => t.status === "in_progress");
+					const inProgressTodo = currentTodos?.find(t => t.status === "in_progress");
+					const currentTask = inProgressGoalTask?.content ?? inProgressTodo?.content;
+
 					const continuationPrompt =
-						buildContinuationPrompt(effectiveGoal) + strategyCheck;
+						buildContinuationPrompt(effectiveGoal, currentTask) + strategyCheck;
 					return { shouldContinue: true, injectedPrompt: continuationPrompt };
 				}
 
@@ -645,7 +640,11 @@ export function processGoalRuntimeEvent(
 					return { shouldContinue: false };
 				}
 				if (goal.status === Status.Active) {
-					const continuationPrompt = buildContinuationPrompt(goal);
+					const idleGoalTasks = context.getGoalTasks?.();
+					const idleTodos = context.getTodos?.();
+					const idleCurrentTask = idleGoalTasks?.find(t => t.status === "in_progress")?.content
+						?? idleTodos?.find(t => t.status === "in_progress")?.content;
+					const continuationPrompt = buildContinuationPrompt(goal, idleCurrentTask);
 					return { shouldContinue: true, injectedPrompt: continuationPrompt };
 				}
 				return { shouldContinue: false };
