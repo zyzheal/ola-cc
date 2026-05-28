@@ -305,7 +305,9 @@ export function getMergedTools(
   return [...builtInTools, ...mcpTools]
 }
 
-// Register assembleToolPool with AgentTool after all tool imports are complete.
-// Use setTimeout to defer until after module initialization, avoiding TDZ errors
-// when other tools trigger AgentTool loading during their own initialization.
-setTimeout(() => registerAssembleToolPool(assembleToolPool), 0)
+// Register assembleToolPool with AgentTool synchronously after all tool imports are complete.
+// Previous setTimeout approach failed in Bun bytecode mode — the callback didn't fire
+// before subagent spawn, causing "Cannot access 'qq' before initialization" TDZ errors.
+// Synchronous registration is safe here because tools.ts is the leaf of the dependency chain:
+// tools.ts → AgentTool.tsx (via import) → ... (no reverse import back to tools.ts)
+registerAssembleToolPool(assembleToolPool)
