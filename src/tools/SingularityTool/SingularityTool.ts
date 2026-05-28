@@ -58,6 +58,12 @@ import {
   isWhitelistedPath,
   getWhitelist,
 } from '../../services/singularity/storage'
+import {
+  AdaptiveTriggerEngine,
+} from '../../services/singularity/AdaptiveTrigger'
+import {
+  ReflectEngine,
+} from '../../services/singularity/ReflectEngine'
 
 // ============================================
 // 操作枚举 (纯字符串，无 Zod 依赖)
@@ -503,12 +509,10 @@ type SingularityInput = {
 // Tool 定义
 // ============================================
 
-import { buildTool, type ToolDef, type ToolInputJSONSchema } from '../../Tool'
-
 export const singularityToolDef: ToolDef = {
   name: 'singularity',
   description:
-    'Singularity 自进化引擎 API — 评分/遥测/注册表/门控/成熟度/对比分析/审计/进化状态机/持久化/白名单/DiverseStrategies/GT契约/自适应触发/反思/知识迁移/预测进化 (44 operations)',
+    'Singularity 自进化引擎 API — 评分/遥测/注册表/5维门控/成熟度/对比分析/代码审计/进化状态机/持久化/白名单/DiverseStrategies/GT契约/自适应触发/反思/知识迁移/预测进化/Harness契约 (48 operations)',
 
   inputJSONSchema: singularityInputSchema,
 
@@ -729,6 +733,166 @@ export const singularityToolDef: ToolDef = {
           result = { strategies, surgicalChecks: checks }
           break
 
+        // ---- Adaptive Trigger (智能增强1) ----
+        case 'trigger_check':
+          if (!input.skill) {
+            return { content: [{ type: 'text', text: JSON.stringify({ error: true, operation: op, message: 'trigger_check 需要 skill 参数' }, null, 2) }] }
+          }
+          const signals = AdaptiveTriggerEngine.detectSignals(input.skill)
+          result = { skill: input.skill, signals, signalCount: signals.length }
+          break
+        case 'trigger_analysis':
+          if (!input.skill) {
+            return { content: [{ type: 'text', text: JSON.stringify({ error: true, operation: op, message: 'trigger_analysis 需要 skill 参数' }, null, 2) }] }
+          }
+          const allSignals = AdaptiveTriggerEngine.detectSignals(input.skill)
+          const decision = AdaptiveTriggerEngine.makeDecision(input.skill, allSignals)
+          result = { skill: input.skill, decision, signals: allSignals }
+          break
+
+        // ---- Reflect (智能增强4: 自我反思闭环) ----
+        case 'reflect_execute':
+          if (!input.skill || input.score === undefined) {
+            return { content: [{ type: 'text', text: JSON.stringify({ error: true, operation: op, message: 'reflect_execute 需要 skill 和 score 参数' }, null, 2) }] }
+          }
+          const reflectResult = ReflectEngine.diagnose(
+            input.skill,
+            input.score,
+            input.summary ?? '',
+            input.avgScore ?? input.score,
+          )
+          result = reflectResult
+          break
+        case 'reflect_apply':
+          if (!input.skill) {
+            return { content: [{ type: 'text', text: JSON.stringify({ error: true, operation: op, message: 'reflect_apply 需要 skill 参数' }, null, 2) }] }
+          }
+          const changes = ReflectEngine.mapToExecutableChanges({
+            skill: input.skill,
+            signalType: (input.signalType as any) ?? 'OPTIMIZATION',
+            diagnosis: input.signalInsight ?? '',
+            targetSegment: input.summary ?? '',
+            suggestedFix: input.context ?? '',
+            estimatedLines: 5,
+            confidence: 0.7,
+            improvementType: 'modify_step',
+            recommendedLayer: 2,
+          })
+          result = { skill: input.skill, changes }
+          break
+        case 'reflect_history':
+          if (!input.skill) {
+            return { content: [{ type: 'text', text: JSON.stringify({ error: true, operation: op, message: 'reflect_history 需要 skill 参数' }, null, 2) }] }
+          }
+          const allReflects = ReflectEngine.reflectAll()
+          const skillReflects = allReflects.filter(r => r.skill === input.skill)
+          result = { skill: input.skill, reflects: skillReflects, totalCount: allReflects.length }
+          break
+
+        // ---- Knowledge Transfer (智能增强2: 跨skill迁移) ----
+        case 'knowledge_extract':
+          if (!input.skill) {
+            return { content: [{ type: 'text', text: JSON.stringify({ error: true, operation: op, message: 'knowledge_extract 需要 skill 参数' }, null, 2) }] }
+          }
+          const ls5 = new LearningSystem({ enablePersistence: true })
+          ls5.loadFromDisk(input.skill)
+          const contrast = ls5.contrastAnalysis(input.skill, input.windowSize ?? 20)
+          result = {
+            skill: input.skill,
+            winnerSignals: contrast.delta?.uniqueToWinners ?? [],
+            loserSignals: contrast.delta?.uniqueToLosers ?? [],
+            scoreDelta: contrast.delta?.scoreDelta ?? 0,
+            insight: contrast.insight,
+          }
+          break
+        case 'knowledge_query':
+          if (!input.skill) {
+            return { content: [{ type: 'text', text: JSON.stringify({ error: true, operation: op, message: 'knowledge_query 需要 skill 参数' }, null, 2) }] }
+          }
+          const ls6 = new LearningSystem({ enablePersistence: true })
+          ls6.loadFromDisk(input.skill)
+          const stats = ls6.getExecutionStats(input.skill)
+          const history = ls6.getExecutionHistory(input.skill, input.lastN ?? 20)
+          result = { skill: input.skill, stats, history: history.map(h => ({
+            outcome: h.outcome, score: h.score, signal: h.signal?.signal_type, timestamp: h.timestamp,
+          }))}
+          break
+        case 'knowledge_transfer':
+          if (!input.skill) {
+            return { content: [{ type: 'text', text: JSON.stringify({ error: true, operation: op, message: 'knowledge_transfer 需要 skill 参数（源技能）' }, null, 2) }] }
+          }
+          const sourceLs = new LearningSystem({ enablePersistence: true })
+          sourceLs.loadFromDisk(input.skill)
+          const sourceContrast = sourceLs.contrastAnalysis(input.skill, 20)
+          const targetLs = new LearningSystem({ enablePersistence: true })
+          if (input.context) {
+            targetLs.loadFromDisk(input.context)
+            const targetContrast = targetLs.contrastAnalysis(input.context, 20)
+            result = {
+              sourceSkill: input.skill,
+              targetSkill: input.context,
+              sourceWinnerSignals: sourceContrast.delta?.uniqueToWinners ?? [],
+              transferableSignals: (sourceContrast.delta?.uniqueToWinners ?? []).filter(s =>
+                !(targetContrast.delta?.uniqueToWinners ?? []).includes(s),
+              ),
+              insight: `从 ${input.skill} 迁移 ${(sourceContrast.delta?.uniqueToWinners ?? []).length} 个成功模式到 ${input.context}`,
+            }
+          } else {
+            result = {
+              sourceSkill: input.skill,
+              winnerSignals: sourceContrast.delta?.uniqueToWinners ?? [],
+              insight: '提供 context 参数指定目标技能以完成迁移',
+            }
+          }
+          break
+
+        // ---- Predictive Evolution (智能增强3: 预测性进化) ----
+        case 'predict_trend':
+          if (!input.skill) {
+            return { content: [{ type: 'text', text: JSON.stringify({ error: true, operation: op, message: 'predict_trend 需要 skill 参数' }, null, 2) }] }
+          }
+          const trend = ScoreManager.getTrend(input.skill)
+          const versions = trend.versions.slice(-5)
+          const scores = versions.map(v => v.avg)
+          // 简单线性趋势预测
+          const avgDelta = scores.length >= 2
+            ? (scores[scores.length - 1] - scores[0]) / (scores.length - 1)
+            : 0
+          const predictedNext = scores.length > 0 ? scores[scores.length - 1] + avgDelta : 0
+          result = {
+            skill: input.skill,
+            historicalScores: versions.map((v, i) => ({ version: v.version, score: v.avg })),
+            trend: avgDelta > 2 ? 'improving' : avgDelta < -2 ? 'degrading' : 'stable',
+            predictedNextScore: Math.max(0, Math.min(100, Math.round(predictedNext))),
+            confidence: scores.length >= 3 ? 0.8 : scores.length >= 2 ? 0.6 : 0.3,
+          }
+          break
+        case 'proactive_optimize':
+          if (!input.skill) {
+            return { content: [{ type: 'text', text: JSON.stringify({ error: true, operation: op, message: 'proactive_optimize 需要 skill 参数' }, null, 2) }] }
+          }
+          const triggerDecision = AdaptiveTriggerEngine.makeDecision(
+            input.skill,
+            AdaptiveTriggerEngine.detectSignals(input.skill),
+          )
+          const reflectResult2 = ReflectEngine.diagnose(
+            input.skill,
+            ScoreManager.getAverage(input.skill),
+            '',
+            ScoreManager.getAverage(input.skill),
+          )
+          result = {
+            skill: input.skill,
+            triggerDecision,
+            reflectDiagnosis: reflectResult2,
+            recommendedActions: [
+              triggerDecision.shouldEvolve ? '触发进化流程' : '暂无退化信号',
+              reflectResult2.confidence >= 0.7 ? `执行${reflectResult2.signalType}修复` : '继续观察',
+              `当前层级: L${triggerDecision.recommendedLayer}`,
+            ],
+          }
+          break
+
         // ---- Harness ----
         case 'harness_create_spec': {
           if (!input.title || !input.scope || !input.acceptanceCriteria) {
@@ -790,20 +954,20 @@ export const singularityToolDef: ToolDef = {
           break
         }
         case 'harness_validate_completion': {
+          if (!input.title || !input.scope || !input.acceptanceCriteria) {
+            return { content: [{ type: 'text', text: JSON.stringify({ error: true, operation: op, message: 'harness_validate_completion 需要 title, scope, acceptanceCriteria 参数来创建契约后验证' }, null, 2) }] }
+          }
           const validateEngine = new EvolutionEngine(input.skill ?? 'default', {
             maxIterations: input.maxIterations ?? 10,
           })
-          // 先创建 spec（如果提供了参数）
-          if (input.title && input.scope && input.acceptanceCriteria) {
-            validateEngine.createSpecContract({
-              title: input.title,
-              scope: input.scope,
-              acceptanceCriteria: input.acceptanceCriteria,
-              unknowns: input.unknowns,
-              stopConditions: input.stopConditions,
-              dependencies: input.dependencies,
-            })
-          }
+          validateEngine.createSpecContract({
+            title: input.title,
+            scope: input.scope,
+            acceptanceCriteria: input.acceptanceCriteria,
+            unknowns: input.unknowns,
+            stopConditions: input.stopConditions,
+            dependencies: input.dependencies,
+          })
           const validation = validateEngine.validateContractCompletion()
           result = validation
           break
