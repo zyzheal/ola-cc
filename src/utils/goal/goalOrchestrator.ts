@@ -6,7 +6,7 @@
 
 import type { Goal, GoalRuntimeState, GoalTask, TurnRecord } from "../../commands/goal/types.js"
 import type { ScenarioConfig, ScenarioType } from "./goalScenario.js"
-import { resolveScenario, getScenarioConfig } from "./goalScenario.js"
+import { resolveScenario } from "./goalScenario.js"
 import { observeTurn } from "./goalReActObserver.js"
 import { checkConvergence, updateConvergenceState } from "./goalConvergence.js"
 import {
