@@ -5,6 +5,11 @@
  * P0(准备) → P1(回顾) → P2(构思) → P3(修改) → P4(提交) → P5(验证) → P6(门控) → P7(记录) → P8(循环)
  *
  * 每个阶段有明确定义的 I/O 与副作用，禁止跨阶段跳跃。
+ *
+ * Harness 设计模式融合（Phase 2）：
+ * - P0 增强：spec.md 契约模式（来自 Harness harness_plan）
+ * - P5 增强：独立评审模式（来自 Harness harness_review）
+ * - P7 增强：证据打包模式（来自 Harness harness_release）
  */
 
 // ============================================
@@ -34,6 +39,75 @@ export interface EvolutionState {
   history: { phase: EvolutionPhase; iteration: number; timestamp: Date }[]
   /** 当前阶段的输入/输出 */
   context: Record<string, unknown>
+}
+
+// ============================================
+// Harness 设计模式融合：契约类型定义
+// ============================================
+
+/**
+ * SpecContract — 来自 Harness harness_plan 的契约模式
+ *
+ * 定义进化任务的范围、验收标准和约束条件
+ */
+export interface SpecContract {
+  title: string
+  scope: string
+  acceptanceCriteria: string[]
+  unknowns: string[]
+  stopConditions: string[]
+  dependencies: string[]
+  createdAt: Date
+  iteration: number
+}
+
+/**
+ * ReviewReport — 来自 Harness harness_review 的独立评审模式
+ *
+ * 评审者 ≠ 实现者，避免自我审查偏差
+ */
+export interface ReviewReport {
+  taskId: string
+  reviewer: 'independent-auditor'
+  passed: boolean
+  findings: {
+    severity: 'blocker' | 'advisory' | 'info'
+    dimension: string
+    description: string
+    evidence: string
+  }[]
+  score: number
+  recommendation: 'approve' | 'revise' | 'reject'
+  reviewedAt: Date
+}
+
+/**
+ * EvidencePackage — 来自 Harness harness_release 的证据打包模式
+ *
+ * 结构化验证证据，而非仅靠记忆
+ */
+export interface EvidencePackage {
+  skill: string
+  iteration: number
+  spec: SpecContract
+  review: ReviewReport | null
+  testResults: {
+    passed: number
+    failed: number
+    total: number
+    details: { name: string; passed: boolean; duration: number }[]
+  }
+  artifacts: {
+    type: 'diff' | 'log' | 'screenshot' | 'metric'
+    name: string
+    content: string
+  }[]
+  metrics: {
+    scoreDelta: number
+    costRatio: number
+    passRate: number
+  }
+  packagedAt: Date
 }
 
 /** 门控决策结果 */
@@ -84,6 +158,11 @@ export class EvolutionEngine {
   /** P0 创建的 git worktree 路径（用于隔离进化过程） */
   private workspacePath: string | null = null
 
+  /** Harness 设计模式融合：契约管理 */
+  private specContract: SpecContract | null = null
+  private reviewReport: ReviewReport | null = null
+  private evidencePackage: EvidencePackage | null = null
+
   constructor(
     skill: string,
     config?: Partial<EvolutionConfig>,
@@ -114,6 +193,227 @@ export class EvolutionEngine {
   /** 注册阶段执行器 */
   registerExecutor(phase: EvolutionPhase, executor: PhaseExecutor): void {
     this.executors.set(phase, executor)
+  }
+
+  // ============================================
+  // Harness 设计模式融合：契约管理 API
+  // ============================================
+
+  /**
+   * P0 增强：创建 spec.md 契约（来自 Harness harness_plan）
+   *
+   * 在准备阶段定义进化任务的范围、验收标准和约束条件
+   */
+  createSpecContract(params: {
+    title: string
+    scope: string
+    acceptanceCriteria: string[]
+    unknowns?: string[]
+    stopConditions?: string[]
+    dependencies?: string[]
+  }): SpecContract {
+    this.specContract = {
+      title: params.title,
+      scope: params.scope,
+      acceptanceCriteria: params.acceptanceCriteria,
+      unknowns: params.unknowns ?? [],
+      stopConditions: params.stopConditions ?? ['所有测试通过', '无回归'],
+      dependencies: params.dependencies ?? [],
+      createdAt: new Date(),
+      iteration: this.state.iteration,
+    }
+
+    // 将契约注入状态上下文
+    this.state.context.specContract = this.specContract
+    return this.specContract
+  }
+
+  /**
+   * 获取当前 spec 契约
+   */
+  getSpecContract(): SpecContract | null {
+    return this.specContract ?? (this.state.context.specContract as SpecContract | null)
+  }
+
+  /**
+   * P5 增强：执行独立评审（来自 Harness harness_review）
+   *
+   * 评审者 ≠ 实现者，避免自我审查偏差
+   */
+  async executeIndependentReview(params: {
+    taskId: string
+    testResults: { passed: boolean; name: string; regression: boolean }[]
+    score: number
+    weakDimensions: string[]
+  }): Promise<ReviewReport> {
+    const spec = this.getSpecContract()
+    const findings: ReviewReport['findings'] = []
+
+    // 检查验收标准
+    if (spec) {
+      for (const criteria of spec.acceptanceCriteria) {
+        // 这里应该由独立的 LLM 评审，简化为基于测试结果的检查
+        const criteriaMet = params.testResults.some(r => r.passed && r.name.includes(criteria.substring(0, 20)))
+        if (!criteriaMet) {
+          findings.push({
+            severity: 'blocker',
+            dimension: 'acceptance-criteria',
+            description: `未满足验收标准: ${criteria}`,
+            evidence: '测试结果中未找到匹配的通过测试',
+          })
+        }
+      }
+    }
+
+    // 检查弱维度
+    for (const dim of params.weakDimensions) {
+      findings.push({
+        severity: 'advisory',
+        dimension: dim,
+        description: `维度 ${dim} 评分较低，建议优化`,
+        evidence: `当前评分: ${params.score}`,
+      })
+    }
+
+    // 检查停止条件
+    if (spec) {
+      for (const condition of spec.stopConditions) {
+        if (condition.includes('测试通过') && params.testResults.some(r => !r.passed)) {
+          findings.push({
+            severity: 'blocker',
+            dimension: 'stop-condition',
+            description: `停止条件未满足: ${condition}`,
+            evidence: `${params.testResults.filter(r => !r.passed).length} 个测试失败`,
+          })
+        }
+      }
+    }
+
+    const blockerCount = findings.filter(f => f.severity === 'blocker').length
+    const passed = blockerCount === 0 && params.score >= 60
+
+    this.reviewReport = {
+      taskId: params.taskId,
+      reviewer: 'independent-auditor',
+      passed,
+      findings,
+      score: params.score,
+      recommendation: passed ? 'approve' : blockerCount > 0 ? 'reject' : 'revise',
+      reviewedAt: new Date(),
+    }
+
+    // 将评审报告注入状态上下文
+    this.state.context.reviewReport = this.reviewReport
+    return this.reviewReport
+  }
+
+  /**
+   * 获取评审报告
+   */
+  getReviewReport(): ReviewReport | null {
+    return this.reviewReport ?? (this.state.context.reviewReport as ReviewReport | null)
+  }
+
+  /**
+   * P7 增强：打包证据（来自 Harness harness_release）
+   *
+   * 结构化验证证据，而非仅靠记忆
+   */
+  packageEvidence(params: {
+    testResults: EvidencePackage['testResults']
+    artifacts?: EvidencePackage['artifacts']
+    scoreDelta: number
+    costRatio: number
+  }): EvidencePackage {
+    const spec = this.getSpecContract()
+    const review = this.getReviewReport()
+
+    this.evidencePackage = {
+      skill: this.state.skill,
+      iteration: this.state.iteration,
+      spec: spec ?? {
+        title: this.state.skill,
+        scope: '未定义',
+        acceptanceCriteria: [],
+        unknowns: [],
+        stopConditions: [],
+        dependencies: [],
+        createdAt: new Date(),
+        iteration: this.state.iteration,
+      },
+      review,
+      testResults: params.testResults,
+      artifacts: params.artifacts ?? [],
+      metrics: {
+        scoreDelta: params.scoreDelta,
+        costRatio: params.costRatio,
+        passRate: params.testResults.total > 0
+          ? params.testResults.passed / params.testResults.total
+          : 0,
+      },
+      packagedAt: new Date(),
+    }
+
+    // 将证据包注入状态上下文
+    this.state.context.evidencePackage = this.evidencePackage
+    return this.evidencePackage
+  }
+
+  /**
+   * 获取证据包
+   */
+  getEvidencePackage(): EvidencePackage | null {
+    return this.evidencePackage ?? (this.state.context.evidencePackage as EvidencePackage | null)
+  }
+
+  /**
+   * 验证契约完成度
+   *
+   * 检查所有验收标准是否满足，所有停止条件是否达成
+   */
+  validateContractCompletion(): {
+    passed: boolean
+    blockers: string[]
+    advisories: string[]
+  } {
+    const spec = this.getSpecContract()
+    const review = this.getReviewReport()
+
+    if (!spec) {
+      return { passed: true, blockers: [], advisories: [] }
+    }
+
+    const blockers: string[] = []
+    const advisories: string[] = []
+
+    // 检查验收标准
+    for (const criteria of spec.acceptanceCriteria) {
+      // 简化检查：如果评审通过则认为满足
+      if (review && !review.passed) {
+        const relatedFinding = review.findings.find(f =>
+          f.description.includes(criteria.substring(0, 20))
+        )
+        if (relatedFinding && relatedFinding.severity === 'blocker') {
+          blockers.push(`未满足: ${criteria}`)
+        }
+      }
+    }
+
+    // 检查停止条件
+    for (const condition of spec.stopConditions) {
+      if (condition.includes('测试通过')) {
+        const evidence = this.getEvidencePackage()
+        if (evidence && evidence.testResults.failed > 0) {
+          blockers.push(`停止条件未达成: ${condition}`)
+        }
+      }
+    }
+
+    return {
+      passed: blockers.length === 0,
+      blockers,
+      advisories,
+    }
   }
 
   /**

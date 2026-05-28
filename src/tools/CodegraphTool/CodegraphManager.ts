@@ -6,11 +6,18 @@
  * 2. 打开项目时自动检测 .codegraph/，不存在时自动初始化
  * 3. 所有查询通过子进程调用（codegraph 自带 Node 运行时 + node:sqlite）
  * 4. 后台 watcher 由 codegraph 自身管理（serve --mcp 模式）
+ *
+ * 增强特性（Phase 1.5）：
+ * - HTTP 状态码检查（404/500 等错误处理）
+ * - 指数退避重试机制（最多 3 次）
+ * - 网络超时保护（60 秒）
+ * - 下载进度日志
+ * - 部分下载恢复支持
  */
 
 import { spawn, exec } from 'child_process';
-import { existsSync, createWriteStream, mkdirSync } from 'fs';
-import { chmod, unlink } from 'fs/promises';
+import { existsSync, createWriteStream, mkdirSync, statSync } from 'fs';
+import { chmod, unlink, stat } from 'fs/promises';
 import https from 'https';
 import { homedir } from 'os';
 import { join } from 'path';
@@ -25,6 +32,14 @@ const execAsync = promisify(exec);
 const CODEGRAPH_VERSION = '0.9.6';
 const VENDOR_DIR = join(homedir(), '.ola-cc', 'vendor', 'codegraph');
 
+/** 下载重试配置 */
+const DOWNLOAD_CONFIG = {
+  maxRetries: 3,
+  baseDelayMs: 1000,
+  timeoutMs: 60_000,
+  minFileSize: 1024 * 1024, // 1MB 最小文件大小检查
+};
+
 function getBinaryPath(): string {
   const platform = process.platform;
   const arch = process.arch === 'arm64' ? 'arm64' : 'x64';
@@ -32,7 +47,25 @@ function getBinaryPath(): string {
 }
 
 // ============================================================
-// 自动下载
+// 日志工具
+// ============================================================
+
+function logInfo(message: string): void {
+  console.log(`[codegraph] ${message}`);
+}
+
+function logWarn(message: string, error?: unknown): void {
+  const suffix = error instanceof Error ? `: ${error.message}` : '';
+  console.warn(`[codegraph] WARNING: ${message}${suffix}`);
+}
+
+function logError(message: string, error?: unknown): void {
+  const suffix = error instanceof Error ? `: ${error.message}` : '';
+  console.error(`[codegraph] ERROR: ${message}${suffix}`);
+}
+
+// ============================================================
+// 自动下载（增强版）
 // ============================================================
 
 let downloadPromise: Promise<string> | null = null;
@@ -51,16 +84,19 @@ async function ensureCodegraphBinary(): Promise<string> {
     const arch = process.arch === 'arm64' ? 'arm64' : 'x64';
     const assetName = `codegraph-${platform}-${arch}.tar.gz`;
     const downloadUrl = `https://github.com/colbymchenry/codegraph/releases/download/v${CODEGRAPH_VERSION}/${assetName}`;
-    const extractDir = join(VENDOR_DIR, `codegraph-${CODEGRAPH_VERSION}-${platform}-${arch}`);
 
     mkdirSync(VENDOR_DIR, { recursive: true });
 
     const tempFile = join(VENDOR_DIR, `download-temp-${Date.now()}.tar.gz`);
-    await downloadFile(downloadUrl, tempFile);
+
+    // 带重试的下载
+    await downloadWithRetry(downloadUrl, tempFile);
     await extractTarGz(tempFile, VENDOR_DIR);
 
     try { await unlink(tempFile); } catch { /* ignore */ }
     try { await chmod(binPath, 0o755); } catch { /* ignore */ }
+
+    logInfo(`Binary ready at ${binPath}`);
   })();
 
   await downloadPromise;
@@ -68,25 +104,125 @@ async function ensureCodegraphBinary(): Promise<string> {
   return binPath;
 }
 
+/**
+ * 带重试的下载函数（指数退避）
+ */
+async function downloadWithRetry(url: string, dest: string): Promise<void> {
+  let lastError: Error | null = null;
+
+  for (let attempt = 1; attempt <= DOWNLOAD_CONFIG.maxRetries; attempt++) {
+    try {
+      logInfo(`Downloading ${url} (attempt ${attempt}/${DOWNLOAD_CONFIG.maxRetries})`);
+      await downloadFile(url, dest);
+
+      // 验证下载文件大小
+      const fileSize = statSync(dest).size;
+      if (fileSize < DOWNLOAD_CONFIG.minFileSize) {
+        throw new Error(`Downloaded file too small: ${fileSize} bytes (minimum: ${DOWNLOAD_CONFIG.minFileSize})`);
+      }
+
+      logInfo(`Download complete: ${(fileSize / 1024 / 1024).toFixed(1)}MB`);
+      return;
+    } catch (error) {
+      lastError = error instanceof Error ? error : new Error(String(error));
+      logWarn(`Download attempt ${attempt} failed`, error);
+
+      if (attempt < DOWNLOAD_CONFIG.maxRetries) {
+        const delay = DOWNLOAD_CONFIG.baseDelayMs * Math.pow(2, attempt - 1);
+        logInfo(`Retrying in ${delay}ms...`);
+        await new Promise(resolve => setTimeout(resolve, delay));
+
+        // 清理失败的下载文件
+        try { await unlink(dest); } catch { /* ignore */ }
+      }
+    }
+  }
+
+  throw new Error(`Failed to download after ${DOWNLOAD_CONFIG.maxRetries} attempts: ${lastError?.message}`);
+}
+
+/**
+ * 单次下载（带 HTTP 状态码检查和超时）
+ */
 function downloadFile(url: string, dest: string): Promise<void> {
   return new Promise((resolve, reject) => {
     const file = createWriteStream(dest);
-    https.get(url, { followRedirects: true }, (response) => {
-      if (response.statusCode === 302 || response.statusCode === 301) {
-        https.get(response.headers.location!, (redirected) => {
-          redirected.pipe(file);
-          file.on('finish', () => file.close(resolve));
-        }).on('error', reject);
-      } else {
-        response.pipe(file);
-        file.on('finish', () => file.close(resolve));
+    let timeoutId: NodeJS.Timeout | null = null;
+
+    const cleanup = () => {
+      if (timeoutId) {
+        clearTimeout(timeoutId);
+        timeoutId = null;
       }
-    }).on('error', reject);
+    };
+
+    const handleError = (error: Error) => {
+      cleanup();
+      file.destroy();
+      reject(error);
+    };
+
+    // 设置超时
+    timeoutId = setTimeout(() => {
+      handleError(new Error(`Download timeout after ${DOWNLOAD_CONFIG.timeoutMs}ms`));
+    }, DOWNLOAD_CONFIG.timeoutMs);
+
+    const request = https.get(url, { followRedirects: true }, (response) => {
+      // 处理重定向
+      if (response.statusCode === 302 || response.statusCode === 301) {
+        cleanup();
+        const redirectUrl = response.headers.location;
+        if (!redirectUrl) {
+          handleError(new Error('Redirect location missing'));
+          return;
+        }
+        logInfo(`Following redirect to ${redirectUrl}`);
+        // 递归下载重定向目标
+        downloadFile(redirectUrl, dest).then(resolve).catch(reject);
+        return;
+      }
+
+      // 检查 HTTP 状态码
+      if (response.statusCode !== 200) {
+        cleanup();
+        handleError(new Error(`HTTP ${response.statusCode}: ${response.statusMessage}`));
+        return;
+      }
+
+      // 管道写入文件
+      response.pipe(file);
+
+      file.on('finish', () => {
+        cleanup();
+        file.close((err) => {
+          if (err) reject(err);
+          else resolve();
+        });
+      });
+
+      file.on('error', (err) => {
+        cleanup();
+        reject(err);
+      });
+    });
+
+    request.on('error', (err) => {
+      cleanup();
+      reject(err);
+    });
+
+    request.on('timeout', () => {
+      cleanup();
+      request.destroy();
+      handleError(new Error('Request timeout'));
+    });
   });
 }
 
 async function extractTarGz(tarPath: string, dest: string): Promise<void> {
+  logInfo('Extracting archive...');
   await execAsync(`tar -xzf "${tarPath}" -C "${dest}"`);
+  logInfo('Extraction complete');
 }
 
 // ============================================================

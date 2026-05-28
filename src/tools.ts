@@ -2,9 +2,7 @@
 import { type Tool, type Tools } from './Tool.js'
 import { AgentTool, registerAssembleToolPool } from './tools/AgentTool/AgentTool.js'
 import { agentDetectorTool } from './tools/AgentTool/AgentDetectorTool.js'
-// TEMPORARILY DISABLED: SingularityTool causes bytecode crash (schema._zod undefined)
-let singularityTool: any = null
-// try { singularityTool = require('./tools/SingularityTool/SingularityTool.js').singularityTool } catch (e) { console.error('[tools] Failed to load SingularityTool:', e) }
+import { singularityTool } from './tools/SingularityTool/SingularityTool.js'
 let codegraphTool: any = null
 try { codegraphTool = require('./tools/CodegraphTool/CodegraphTool.js').codegraphTool } catch (e) { console.error('[tools] Failed to load CodegraphTool:', e) }
 import { SkillTool } from './tools/SkillTool/SkillTool.js'

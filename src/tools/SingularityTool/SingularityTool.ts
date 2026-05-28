@@ -1,6 +1,8 @@
 /**
  * SingularityTool — 将 TS singularity API 包装为 Tool
  *
+ * 使用 inputJSONSchema 替代 Zod schema，避免 bytecode 编译时的 Zod 实例冲突。
+ *
  * 暴露 singularity 基础设施给 model/Skill，替代 shell scripts 调用：
  * - ScoreManager (评分/趋势/成熟度)
  * - TelemetryWriter (遥测记录)
@@ -11,20 +13,12 @@
  * - codeAuditor (5项静态审计)
  * - EvolutionEngine (8阶段状态机 — 仅状态查询，无执行器注册时为空跑)
  * - storage (持久化/trainTestSplit)
- *
- * Audit 修复记录:
- * - C1: LearningSystem 传入 enablePersistence=true，确保 JSONL 持久化
- * - V1: skill-required 操作前置校验，避免 input.skill! runtime crash
- * - V2: telemetry_prune/storage_prune 从 readOnly 移除（实际删除数据）
- * - Dead ops: 删除 rubric_failed_dims 和 rubric_gate_to_score（返回固定错误文本）
- * - C2: registry_update 使用 maturity 参数而非 context 字段
  */
 
-import { z } from 'zod/v4'
 import * as path from 'path'
 import * as os from 'os'
 import * as fs from 'fs'
-import { buildTool, type ToolDef } from '../../Tool'
+import { buildTool, type ToolDef, type ToolInputJSONSchema } from '../../Tool'
 import {
   ScoreManager,
   TelemetryWriter,
@@ -66,70 +60,45 @@ import {
 } from '../../services/singularity/storage'
 
 // ============================================
-// 操作枚举 & Zod Schema
+// 操作枚举 (纯字符串，无 Zod 依赖)
 // ============================================
 
-const operationEnum = z.enum([
-  // Score 操作
-  'score_init',
-  'score_add',
-  'score_get',
-  'score_avg',
-  'score_trend',
-  'score_maturity',
-  // Telemetry 操作
-  'telemetry_log',
-  'telemetry_list',
-  'telemetry_prune',
-  // Registry 操作
-  'registry_get',
-  'registry_register',
-  'registry_update',
-  'registry_bump',
-  // Rubric 操作
-  'rubric_eval',
-  'rubric_score_v',
-  // Maturity 操作
-  'maturity_calc',
-  'maturity_hint',
-  // Learning 操作
-  'learning_log',
-  'learning_contrast',
-  'learning_stats',
-  'learning_history',
-  // Audit 操作
+type Operation =
+  | 'score_init' | 'score_add' | 'score_get' | 'score_avg' | 'score_trend' | 'score_maturity'
+  | 'telemetry_log' | 'telemetry_list' | 'telemetry_prune'
+  | 'registry_get' | 'registry_register' | 'registry_update' | 'registry_bump'
+  | 'rubric_eval' | 'rubric_score_v'
+  | 'maturity_calc' | 'maturity_hint'
+  | 'learning_log' | 'learning_contrast' | 'learning_stats' | 'learning_history'
+  | 'audit_run'
+  | 'evolve_status' | 'evolve_run_once' | 'evolve_run_to_completion' | 'evolve_diverse_strategies' | 'evolve_surgical_check'
+  | 'storage_split' | 'storage_stats' | 'storage_prune'
+  | 'whitelist_check' | 'whitelist_list'
+  | 'evals_check' | 'evals_validate'
+  | 'trigger_check' | 'trigger_analysis'
+  | 'reflect_execute' | 'reflect_apply' | 'reflect_history'
+  | 'knowledge_extract' | 'knowledge_query' | 'knowledge_transfer'
+  | 'predict_trend' | 'proactive_optimize'
+  | 'harness_create_spec' | 'harness_review' | 'harness_package_evidence' | 'harness_validate_completion'
+
+const ALL_OPERATIONS: Operation[] = [
+  'score_init', 'score_add', 'score_get', 'score_avg', 'score_trend', 'score_maturity',
+  'telemetry_log', 'telemetry_list', 'telemetry_prune',
+  'registry_get', 'registry_register', 'registry_update', 'registry_bump',
+  'rubric_eval', 'rubric_score_v',
+  'maturity_calc', 'maturity_hint',
+  'learning_log', 'learning_contrast', 'learning_stats', 'learning_history',
   'audit_run',
-  // Evolution 操作
-  'evolve_status',
-  'evolve_run_once',
-  'evolve_run_to_completion',
-  'evolve_diverse_strategies',
-  'evolve_surgical_check',
-  // Storage 操作
-  'storage_split',
-  'storage_stats',
-  'storage_prune',
-  // Whitelist 操作
-  'whitelist_check',
-  'whitelist_list',
-  // Evals 操作 (GT契约)
-  'evals_check',
-  'evals_validate',
-  // Adaptive Trigger 操作 (智能增强1: 自适应进化触发)
-  'trigger_check',
-  'trigger_analysis',
-  // Reflect 操作 (智能增强4: 自我反思闭环)
-  'reflect_execute',
-  'reflect_apply',
-  'reflect_history',
-  // Knowledge Transfer 操作 (智能增强2: 跨skill迁移)
-  'knowledge_extract',
-  'knowledge_query',
-  'knowledge_transfer',
-  // Predictive Evolution 操作 (智能增强3: 预测性进化)
-  'predict_trend',
-  'proactive_optimize',
-])
+  'evolve_status', 'evolve_run_once', 'evolve_run_to_completion', 'evolve_diverse_strategies', 'evolve_surgical_check',
+  'storage_split', 'storage_stats', 'storage_prune',
+  'whitelist_check', 'whitelist_list',
+  'evals_check', 'evals_validate',
+  'trigger_check', 'trigger_analysis',
+  'reflect_execute', 'reflect_apply', 'reflect_history',
+  'knowledge_extract', 'knowledge_query', 'knowledge_transfer',
+  'predict_trend', 'proactive_optimize',
+  'harness_create_spec', 'harness_review', 'harness_package_evidence', 'harness_validate_completion',
+]
 
 // skill-required 操作集合
 const SKILL_REQUIRED_OPS = new Set([
@@ -166,84 +135,382 @@ const READ_ONLY_OPS = new Set([
   'evals_check', 'evals_validate',
 ])
 
+// ============================================
+// JSON Schema 定义（替代 Zod）
+// ============================================
+
+const singularityInputSchema: ToolInputJSONSchema = {
+  $schema: 'http://json-schema.org/draft-07/schema#',
+  type: 'object',
+  properties: {
+    operation: {
+      type: 'string',
+      enum: ALL_OPERATIONS,
+      description: '操作类型',
+    },
+    skill: {
+      type: 'string',
+      description: '技能名称 (如 orion-scoring)',
+    },
+    score: {
+      type: 'number',
+      minimum: 0,
+      maximum: 100,
+      description: '评分 (0-100)',
+    },
+    context: {
+      type: 'string',
+      description: '评分上下文描述',
+    },
+    strengths: {
+      type: 'array',
+      items: { type: 'string' },
+      description: '评分优点列表',
+    },
+    weaknesses: {
+      type: 'array',
+      items: { type: 'string' },
+      description: '评分缺点列表',
+    },
+    edgeCases: {
+      type: 'array',
+      items: { type: 'string' },
+      description: '遇到的边缘情况',
+    },
+    version: {
+      type: 'string',
+      description: '版本号 (如 v1.0.0)',
+    },
+    maturity: {
+      type: 'string',
+      enum: ['draft', 'tested', 'hardened', 'crystallized'],
+      description: '成熟度等级',
+    },
+    // Quality input (rubric)
+    quality: {
+      type: 'object',
+      properties: {
+        tokenBudget: { type: ['number', 'null'] },
+        tokensUsed: { type: 'number' },
+        baselineTokens: { type: 'number' },
+        passRateDelta: { type: 'number' },
+        triggerAccuracy: { type: 'number' },
+        testResults: {
+          type: 'array',
+          items: {
+            type: 'object',
+            properties: {
+              passed: { type: 'boolean' },
+              name: { type: 'string' },
+              regression: { type: 'boolean' },
+            },
+            required: ['passed', 'name', 'regression'],
+          },
+        },
+      },
+      description: '5维门控质量输入',
+    },
+    // Maturity
+    executionCount: {
+      type: 'number',
+      description: '执行次数',
+    },
+    avgScore: {
+      type: 'number',
+      description: '平均分',
+    },
+    edgeCasesHandled: {
+      type: 'number',
+      description: '已处理的边缘情况数',
+    },
+    // Learning
+    outcome: {
+      type: 'string',
+      enum: ['success', 'failure'],
+      description: '执行结果',
+    },
+    signalType: {
+      type: 'string',
+      description: '反思类型',
+    },
+    signalInsight: {
+      type: 'string',
+      description: '反思洞察',
+    },
+    windowSize: {
+      type: 'number',
+      description: '对比分析窗口大小',
+    },
+    // Audit
+    code: {
+      type: 'string',
+      description: '要审计的代码',
+    },
+    fileType: {
+      type: 'string',
+      enum: ['ts', 'tsx', 'js', 'jsx'],
+      description: '文件类型',
+    },
+    // Evolution
+    evolveSkill: {
+      type: 'string',
+      description: '进化引擎技能',
+    },
+    maxIterations: {
+      type: 'number',
+      description: '最大迭代次数',
+    },
+    // DiverseStrategies
+    weakDimensions: {
+      type: 'array',
+      items: { type: 'string' },
+      description: '低分维度列表',
+    },
+    currentLayer: {
+      type: 'string',
+      enum: ['1', '2', '3'],
+      description: '当前变异层级',
+    },
+    totalLines: {
+      type: 'number',
+      description: 'SKILL.md总行数(用于SurgicalPatch检查)',
+    },
+    maxChangeRatio: {
+      type: 'number',
+      description: 'SurgicalPatch最大改动比例(默认0.15)',
+    },
+    maxAbsoluteLines: {
+      type: 'number',
+      description: 'SurgicalPatch最大改动行数(默认30)',
+    },
+    // Telemetry
+    trigger: {
+      type: 'string',
+      description: '遥测触发方式',
+    },
+    summary: {
+      type: 'string',
+      description: '遥测摘要',
+    },
+    duration_ms: {
+      type: 'number',
+      description: '执行时长(ms)',
+    },
+    filesCreated: {
+      type: 'array',
+      items: { type: 'string' },
+      description: '创建的文件',
+    },
+    filesModified: {
+      type: 'array',
+      items: { type: 'string' },
+      description: '修改的文件',
+    },
+    // Trace steps (Meta-Harness step-level trace)
+    steps: {
+      type: 'array',
+      items: {
+        type: 'object',
+        properties: {
+          step: { type: 'number' },
+          stepName: { type: 'string' },
+          tool: { type: 'string' },
+          toolInput: { type: 'object' },
+          toolOutput: { type: 'string' },
+          startedAt: { type: 'string' },
+          endedAt: { type: 'string' },
+          duration_ms: { type: 'number' },
+          outcome: { type: 'string', enum: ['success', 'failure', 'skipped'] },
+          error: { type: 'string' },
+        },
+        required: ['step', 'stepName', 'tool', 'toolOutput', 'startedAt', 'endedAt', 'duration_ms', 'outcome'],
+      },
+      description: 'Step-level execution trace (Meta-Harness)',
+    },
+    // Registry
+    location: {
+      type: 'string',
+      description: '技能路径',
+    },
+    createdBy: {
+      type: 'string',
+      description: '创建者',
+    },
+    tags: {
+      type: 'array',
+      items: { type: 'string' },
+      description: '技能标签',
+    },
+    // Storage
+    testRatio: {
+      type: 'number',
+      description: '测试集比例 (0-1)',
+    },
+    maxRecords: {
+      type: 'number',
+      description: '最大保留条数',
+    },
+    lastN: {
+      type: 'number',
+      description: '最近N条',
+    },
+    // Harness
+    title: {
+      type: 'string',
+      description: '契约标题',
+    },
+    scope: {
+      type: 'string',
+      description: '契约范围',
+    },
+    acceptanceCriteria: {
+      type: 'array',
+      items: { type: 'string' },
+      description: '验收标准',
+    },
+    unknowns: {
+      type: 'array',
+      items: { type: 'string' },
+      description: '未知项',
+    },
+    stopConditions: {
+      type: 'array',
+      items: { type: 'string' },
+      description: '停止条件',
+    },
+    dependencies: {
+      type: 'array',
+      items: { type: 'string' },
+      description: '依赖项',
+    },
+    taskId: {
+      type: 'string',
+      description: '任务ID',
+    },
+    testResults: {
+      type: 'array',
+      items: {
+        type: 'object',
+        properties: {
+          passed: { type: 'boolean' },
+          name: { type: 'string' },
+          regression: { type: 'boolean' },
+        },
+        required: ['passed', 'name', 'regression'],
+      },
+      description: '测试结果',
+    },
+    artifacts: {
+      type: 'array',
+      items: {
+        type: 'object',
+        properties: {
+          type: { type: 'string', enum: ['diff', 'log', 'screenshot', 'metric'] },
+          name: { type: 'string' },
+          content: { type: 'string' },
+        },
+        required: ['type', 'name', 'content'],
+      },
+      description: '证据制品',
+    },
+    scoreDelta: {
+      type: 'number',
+      description: '评分变化',
+    },
+    costRatio: {
+      type: 'number',
+      description: '成本比率',
+    },
+  },
+  required: ['operation'],
+  additionalProperties: false,
+}
+
+type SingularityInput = {
+  operation: Operation
+  skill?: string
+  score?: number
+  context?: string
+  strengths?: string[]
+  weaknesses?: string[]
+  edgeCases?: string[]
+  version?: string
+  maturity?: 'draft' | 'tested' | 'hardened' | 'crystallized'
+  quality?: {
+    tokenBudget?: number | null
+    tokensUsed?: number
+    baselineTokens?: number
+    passRateDelta?: number
+    triggerAccuracy?: number
+    testResults?: { passed: boolean; name: string; regression: boolean }[]
+  }
+  executionCount?: number
+  avgScore?: number
+  edgeCasesHandled?: number
+  outcome?: 'success' | 'failure'
+  signalType?: string
+  signalInsight?: string
+  windowSize?: number
+  code?: string
+  fileType?: 'ts' | 'tsx' | 'js' | 'jsx'
+  evolveSkill?: string
+  maxIterations?: number
+  weakDimensions?: string[]
+  currentLayer?: '1' | '2' | '3'
+  totalLines?: number
+  maxChangeRatio?: number
+  maxAbsoluteLines?: number
+  trigger?: string
+  summary?: string
+  duration_ms?: number
+  filesCreated?: string[]
+  filesModified?: string[]
+  steps?: Array<{
+    step: number
+    stepName: string
+    tool: string
+    toolInput?: Record<string, unknown>
+    toolOutput: string
+    startedAt: string
+    endedAt: string
+    duration_ms: number
+    outcome: 'success' | 'failure' | 'skipped'
+    error?: string
+  }>
+  location?: string
+  createdBy?: string
+  tags?: string[]
+  testRatio?: number
+  maxRecords?: number
+  lastN?: number
+  // Harness
+  title?: string
+  scope?: string
+  acceptanceCriteria?: string[]
+  unknowns?: string[]
+  stopConditions?: string[]
+  dependencies?: string[]
+  taskId?: string
+  testResults?: { passed: boolean; name: string; regression: boolean }[]
+  artifacts?: { type: 'diff' | 'log' | 'screenshot' | 'metric'; name: string; content: string }[]
+  scoreDelta?: number
+  costRatio?: number
+}
+
+// ============================================
+// Tool 定义
+// ============================================
+
+import { buildTool, type ToolDef, type ToolInputJSONSchema } from '../../Tool'
+
 export const singularityToolDef: ToolDef = {
   name: 'singularity',
   description:
     'Singularity 自进化引擎 API — 评分/遥测/注册表/门控/成熟度/对比分析/审计/进化状态机/持久化/白名单/DiverseStrategies/GT契约/自适应触发/反思/知识迁移/预测进化 (44 operations)',
-  inputSchema: z.object({
-    operation: operationEnum.describe('操作类型'),
-    skill: z.string().optional().describe('技能名称 (如 orion-scoring)'),
-    score: z.number().min(0).max(100).optional().describe('评分 (0-100)'),
-    context: z.string().optional().describe('评分上下文描述'),
-    strengths: z.array(z.string()).optional().describe('评分优点列表'),
-    weaknesses: z.array(z.string()).optional().describe('评分缺点列表'),
-    edgeCases: z.array(z.string()).optional().describe('遇到的边缘情况'),
-    version: z.string().optional().describe('版本号 (如 v1.0.0)'),
-    maturity: z.enum(['draft', 'tested', 'hardened', 'crystallized']).optional().describe('成熟度等级'),
-    // Quality input (rubric)
-    quality: z.object({
-      tokenBudget: z.number().nullable().optional(),
-      tokensUsed: z.number().optional(),
-      baselineTokens: z.number().optional(),
-      passRateDelta: z.number().optional(),
-      triggerAccuracy: z.number().optional(),
-      testResults: z.array(z.object({
-        passed: z.boolean(),
-        name: z.string(),
-        regression: z.boolean(),
-      })).optional(),
-    }).optional().describe('5维门控质量输入'),
-    // Maturity
-    executionCount: z.number().optional().describe('执行次数'),
-    avgScore: z.number().optional().describe('平均分'),
-    edgeCasesHandled: z.number().optional().describe('已处理的边缘情况数'),
-    // Learning
-    outcome: z.enum(['success', 'failure']).optional().describe('执行结果'),
-    signalType: z.string().optional().describe('反思类型'),
-    signalInsight: z.string().optional().describe('反思洞察'),
-    windowSize: z.number().optional().describe('对比分析窗口大小'),
-    // Audit
-    code: z.string().optional().describe('要审计的代码'),
-    fileType: z.enum(['ts', 'tsx', 'js', 'jsx']).optional().describe('文件类型'),
-    // Evolution
-    evolveSkill: z.string().optional().describe('进化引擎技能'),
-    maxIterations: z.number().optional().describe('最大迭代次数'),
-    // DiverseStrategies
-    weakDimensions: z.array(z.string()).optional().describe('低分维度列表'),
-    currentLayer: z.enum(['1', '2', '3']).optional().describe('当前变异层级'),
-    totalLines: z.number().optional().describe('SKILL.md总行数(用于SurgicalPatch检查)'),
-    maxChangeRatio: z.number().optional().describe('SurgicalPatch最大改动比例(默认0.15)'),
-    maxAbsoluteLines: z.number().optional().describe('SurgicalPatch最大改动行数(默认30)'),
-    // Telemetry
-    trigger: z.string().optional().describe('遥测触发方式'),
-    summary: z.string().optional().describe('遥测摘要'),
-    duration_ms: z.number().optional().describe('执行时长(ms)'),
-    filesCreated: z.array(z.string()).optional().describe('创建的文件'),
-    filesModified: z.array(z.string()).optional().describe('修改的文件'),
-    // Trace steps (Meta-Harness step-level trace)
-    steps: z.array(z.object({
-      step: z.number(),
-      stepName: z.string(),
-      tool: z.string(),
-      toolInput: z.record(z.unknown()),
-      toolOutput: z.string(),
-      startedAt: z.string(),
-      endedAt: z.string(),
-      duration_ms: z.number(),
-      outcome: z.enum(['success', 'failure', 'skipped']),
-      error: z.string().optional(),
-    })).optional().describe('Step-level execution trace (Meta-Harness)'),
-    // Registry
-    location: z.string().optional().describe('技能路径'),
-    createdBy: z.string().optional().describe('创建者'),
-    tags: z.array(z.string()).optional().describe('技能标签'),
-    // Storage
-    testRatio: z.number().optional().describe('测试集比例 (0-1)'),
-    maxRecords: z.number().optional().describe('最大保留条数'),
-    lastN: z.number().optional().describe('最近N条'),
-  }),
 
-  async call(input: z.infer<typeof singularityToolDef.inputSchema>, _context, _canUseTool) {
+  inputJSONSchema: singularityInputSchema,
+
+  async call(input: SingularityInput, _context, _canUseTool) {
     const op = input.operation
 
     // 前置校验: skill-required 操作必须传入 skill
@@ -460,6 +727,86 @@ export const singularityToolDef: ToolDef = {
           result = { strategies, surgicalChecks: checks }
           break
 
+        // ---- Harness ----
+        case 'harness_create_spec': {
+          if (!input.title || !input.scope || !input.acceptanceCriteria) {
+            return { content: [{ type: 'text', text: JSON.stringify({ error: true, operation: op, message: 'harness_create_spec 需要 title, scope, acceptanceCriteria 参数' }, null, 2) }] }
+          }
+          const harnessEngine = new EvolutionEngine(input.skill ?? 'default', {
+            maxIterations: input.maxIterations ?? 10,
+          })
+          const spec = harnessEngine.createSpecContract({
+            title: input.title,
+            scope: input.scope,
+            acceptanceCriteria: input.acceptanceCriteria,
+            unknowns: input.unknowns,
+            stopConditions: input.stopConditions,
+            dependencies: input.dependencies,
+          })
+          result = spec
+          break
+        }
+        case 'harness_review': {
+          if (!input.taskId || !input.testResults || input.score === undefined || !input.weakDimensions) {
+            return { content: [{ type: 'text', text: JSON.stringify({ error: true, operation: op, message: 'harness_review 需要 taskId, testResults, score, weakDimensions 参数' }, null, 2) }] }
+          }
+          const reviewEngine = new EvolutionEngine(input.skill ?? 'default', {
+            maxIterations: input.maxIterations ?? 10,
+          })
+          const review = await reviewEngine.executeIndependentReview({
+            taskId: input.taskId,
+            testResults: input.testResults,
+            score: input.score,
+            weakDimensions: input.weakDimensions,
+          })
+          result = review
+          break
+        }
+        case 'harness_package_evidence': {
+          if (!input.testResults || input.scoreDelta === undefined || input.costRatio === undefined) {
+            return { content: [{ type: 'text', text: JSON.stringify({ error: true, operation: op, message: 'harness_package_evidence 需要 testResults, scoreDelta, costRatio 参数' }, null, 2) }] }
+          }
+          const evidenceEngine = new EvolutionEngine(input.skill ?? 'default', {
+            maxIterations: input.maxIterations ?? 10,
+          })
+          const evidence = evidenceEngine.packageEvidence({
+            testResults: {
+              passed: input.testResults.filter(r => r.passed).length,
+              failed: input.testResults.filter(r => !r.passed).length,
+              total: input.testResults.length,
+              details: input.testResults.map(r => ({
+                name: r.name,
+                passed: r.passed,
+                duration: 0,
+              })),
+            },
+            artifacts: input.artifacts,
+            scoreDelta: input.scoreDelta,
+            costRatio: input.costRatio,
+          })
+          result = evidence
+          break
+        }
+        case 'harness_validate_completion': {
+          const validateEngine = new EvolutionEngine(input.skill ?? 'default', {
+            maxIterations: input.maxIterations ?? 10,
+          })
+          // 先创建 spec（如果提供了参数）
+          if (input.title && input.scope && input.acceptanceCriteria) {
+            validateEngine.createSpecContract({
+              title: input.title,
+              scope: input.scope,
+              acceptanceCriteria: input.acceptanceCriteria,
+              unknowns: input.unknowns,
+              stopConditions: input.stopConditions,
+              dependencies: input.dependencies,
+            })
+          }
+          const validation = validateEngine.validateContractCompletion()
+          result = validation
+          break
+        }
+
         // ---- Storage ----
         case 'storage_split':
           const raw = loadExecutionHistory(input.skill)
@@ -614,6 +961,16 @@ export const singularityToolDef: ToolDef = {
       whitelist_list: '列出workspace白名单路径',
       evals_check: '检查GT契约(evals.json)是否存在及基本结构',
       evals_validate: '验证GT契约(evals.json)的断言完整性和有效性',
+      trigger_check: '检查自适应退化信号',
+      trigger_analysis: '分析自适应进化触发决策',
+      reflect_execute: '执行反思闭环诊断',
+      reflect_apply: '应用反思结果修改 SKILL.md',
+      reflect_history: '查看反思诊断历史',
+      knowledge_extract: `提取成功/失败模式${skillLabel}`,
+      knowledge_query: `查询已知模式${skillLabel}`,
+      knowledge_transfer: `迁移模式到目标技能`,
+      predict_trend: `预测评分趋势${skillLabel}`,
+      proactive_optimize: `主动优化建议${skillLabel}`,
     }
     return descriptions[op] ?? `Singularity ${op}`
   },
@@ -625,9 +982,7 @@ export const singularityToolDef: ToolDef = {
   isConcurrencySafe: () => true,
   isEnabled: () => true,
   isReadOnly: (input) => {
-    const op = typeof input === 'object' && input !== null && 'operation' in input
-      ? (input as { operation?: string }).operation ?? ''
-      : ''
+    const op = input?.operation ?? ''
     return READ_ONLY_OPS.has(op)
   },
 }
