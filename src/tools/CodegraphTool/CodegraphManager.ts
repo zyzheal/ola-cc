@@ -16,7 +16,7 @@
  * - 部分下载恢复支持
  */
 
-import { spawn, exec } from 'child_process';
+import { spawn, execFile } from 'child_process';
 import { existsSync, createWriteStream, mkdirSync, statSync } from 'fs';
 import { chmod, unlink } from 'fs/promises';
 import https from 'https';
@@ -25,7 +25,7 @@ import { join, dirname } from 'path';
 import { promisify } from 'util';
 import { createRequire } from 'module';
 
-const execAsync = promisify(exec);
+const execFileAsync = promisify(execFile);
 const require = createRequire(import.meta.url);
 
 // ============================================================
@@ -131,6 +131,7 @@ function logError(message: string, error?: unknown): void {
 // ============================================================
 
 let downloadPromise: Promise<string> | null = null;
+let initPromise: Promise<void> | null = null;
 
 async function ensureCodegraphBinary(): Promise<string> {
   // 优先检查内置版本
@@ -172,9 +173,12 @@ async function ensureCodegraphBinary(): Promise<string> {
     return expectedPath;
   })();
 
-  const result = await downloadPromise;
-  downloadPromise = null;
-  return result;
+  try {
+    const result = await downloadPromise;
+    return result;
+  } finally {
+    downloadPromise = null;
+  }
 }
 
 /**
@@ -245,13 +249,14 @@ function downloadFile(url: string, dest: string, redirectCount = 0): Promise<voi
       handleError(new Error(`Download timeout after ${DOWNLOAD_CONFIG.timeoutMs}ms`));
     }, DOWNLOAD_CONFIG.timeoutMs);
 
-    const request = https.get(url, { followRedirects: true }, (response) => {
+    const request = https.get(url, (response) => {
       // 处理重定向
       if (response.statusCode === 302 || response.statusCode === 301) {
         cleanup();
+        file.destroy(); // 关闭当前 WriteStream，防止文件描述符泄漏
         const redirectUrl = response.headers.location;
         if (!redirectUrl) {
-          handleError(new Error('Redirect location missing'));
+          reject(new Error('Redirect location missing'));
           return;
         }
         logInfo(`Following redirect to ${redirectUrl} (${redirectCount + 1}/${MAX_REDIRECTS})`);
@@ -299,7 +304,7 @@ function downloadFile(url: string, dest: string, redirectCount = 0): Promise<voi
 
 async function extractTarGz(tarPath: string, dest: string): Promise<void> {
   logInfo('Extracting archive...');
-  await execAsync(`tar -xzf "${tarPath}" -C "${dest}"`);
+  await execFileAsync('tar', ['-xzf', tarPath, '-C', dest]);
   logInfo('Extraction complete');
 }
 
@@ -335,17 +340,50 @@ function runCodegraph(binPath: string, projectRoot: string, args: string[], time
 
     let stdout = '';
     let stderr = '';
+    let stdoutSize = 0;
+    let stderrSize = 0;
+    let settled = false;
+    const MAX_OUTPUT_SIZE = 50 * 1024 * 1024; // 50MB 上限，防止 OOM
 
-    child.stdout.on('data', (data: Buffer) => { stdout += data.toString(); });
-    child.stderr.on('data', (data: Buffer) => { stderr += data.toString(); });
+    const settle = (fn: () => void) => {
+      if (settled) return;
+      settled = true;
+      fn();
+    };
 
-    child.on('error', reject);
+    child.stdout.on('data', (data: Buffer) => {
+      stdoutSize += data.length;
+      if (stdoutSize > MAX_OUTPUT_SIZE) {
+        child.kill('SIGKILL');
+        settle(() => reject(new Error('stdout output exceeded 50MB limit')));
+        return;
+      }
+      stdout += data.toString();
+    });
+    child.stderr.on('data', (data: Buffer) => {
+      stderrSize += data.length;
+      if (stderrSize > MAX_OUTPUT_SIZE) {
+        child.kill('SIGKILL');
+        settle(() => reject(new Error('stderr output exceeded 50MB limit')));
+        return;
+      }
+      stderr += data.toString();
+    });
+
+    // 手动超时保险（spawn timeout 不可靠）
+    const timer = setTimeout(() => {
+      child.kill('SIGKILL');
+      settle(() => reject(new Error(`codegraph process timed out after ${timeoutMs}ms`)));
+    }, timeoutMs);
+
+    child.on('error', (err) => { clearTimeout(timer); settle(() => reject(err)); });
     child.on('exit', (code) => {
-      resolve({
+      clearTimeout(timer);
+      settle(() => resolve({
         ok: code === 0,
         stdout,
         stderr,
-      });
+      }));
     });
   });
 }
@@ -362,15 +400,20 @@ export async function ensureReady(projectRoot: string): Promise<{ binPath: strin
   const binPath = await ensureCodegraphBinary();
 
   if (!isCodegraphInitialized(projectRoot)) {
-    // 自动初始化 + 建索引
-    const result = await runCodegraph(binPath, projectRoot, ['init', projectRoot, '--index'], 120_000, true);
-    if (!result.ok) {
-      throw new Error(`CodeGraph 初始化失败: ${result.stderr || result.stdout}`);
+    // 单一飞行锁：防止并发触发多次 init
+    if (!initPromise) {
+      initPromise = runCodegraph(binPath, projectRoot, ['init', projectRoot, '--index'], 120_000, true)
+        .then((result) => {
+          if (!result.ok) {
+            throw new Error(`CodeGraph 初始化失败: ${result.stderr || result.stdout}`);
+          }
+          if (!isCodegraphInitialized(projectRoot)) {
+            throw new Error('CodeGraph 初始化命令成功但未创建数据库文件');
+          }
+        })
+        .finally(() => { initPromise = null })
     }
-    // 验证初始化确实创建了数据库
-    if (!isCodegraphInitialized(projectRoot)) {
-      throw new Error('CodeGraph 初始化命令成功但未创建数据库文件');
-    }
+    await initPromise
   }
 
   return { binPath, initialized: true };

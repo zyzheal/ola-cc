@@ -161,9 +161,9 @@ describe('ensureGrokSource', () => {
 // ============================================
 
 describe('stub methods', () => {
-  it('queryGraph should throw not implemented', async () => {
+  it('queryGraph should throw when graph missing', async () => {
     const manager = new GrokManager(TEST_DIR)
-    await expect(manager.queryGraph('test')).rejects.toThrow('Not implemented')
+    await expect(manager.queryGraph('test')).rejects.toThrow('知识图谱未生成')
   })
 
   it('startDashboard should throw when graph missing', async () => {
@@ -171,8 +171,11 @@ describe('stub methods', () => {
     await expect(manager.startDashboard()).rejects.toThrow('知识图谱未生成')
   })
 
-  it('runAgentPipeline should throw not implemented', async () => {
+  it('runAgentPipeline should return failed when no files', async () => {
     const manager = new GrokManager(TEST_DIR)
-    await expect(manager.runAgentPipeline({})).rejects.toThrow('Not implemented')
+    const result = await manager.runAgentPipeline({})
+    expect(result.status).toBe('failed')
+    expect(result.errors).toBeDefined()
+    expect(result.errors![0].code).toBe('NO_FILES')
   })
 })

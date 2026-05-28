@@ -101,15 +101,21 @@ function parseGoalArgs(args: string[]): GoalCommandArgs {
   return { objective: args.join(' '), tokenBudget, autoAccept, autoEdit, mode, retryInterval, maxRetryHours }
 }
 
+function formatTokens(n: number): string {
+  if (n < 1000) return n.toString()
+  if (n < 1000000) return `${(n / 1000).toFixed(n < 10000 ? 1 : 0)}k`
+  return `${(n / 1000000).toFixed(1)}M`
+}
+
 function formatGoalStatus(goal: Goal | undefined, todos: TodoItem[] | undefined): string {
   if (!goal || !goal.id || !goal.status || goal.status === ThreadGoalStatus.Complete) {
     return '当前未设置活跃目标。使用 /goal <目标描述> [--budget <tokens>] 创建一个。'
   }
   const remaining = goal.tokenBudget
-    ? `剩余 ${goal.tokenBudget - goal.tokensUsed} tokens`
+    ? `剩余 ${formatTokens(goal.tokenBudget - goal.tokensUsed)} tokens`
     : '无上限'
 
-  let statusMessage = `目标：${goal.objective}\n状态：${goal.status}\nTokens：${goal.tokensUsed} / ${goal.tokenBudget ?? '无上限'} (${remaining})\n用时：${goal.timeUsedSeconds}s`
+  let statusMessage = `目标：${goal.objective}\n状态：${goal.status}\nTokens：${formatTokens(goal.tokensUsed)} / ${goal.tokenBudget ? formatTokens(goal.tokenBudget) : '无上限'} (${remaining})\n用时：${goal.timeUsedSeconds}s`
 
   // Add task progress if available
   if (todos && todos.length > 0) {

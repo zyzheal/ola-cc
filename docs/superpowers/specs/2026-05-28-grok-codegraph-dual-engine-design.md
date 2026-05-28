@@ -1,7 +1,7 @@
 # Grok + CodeGraph 双引擎互补集成设计
 
 > 设计日期：2026-05-28
-> 状态：待实施
+> 状态：已实施（Phase 1-6 完成，4 轮深度评审通过，33 项修复）
 
 ---
 
@@ -688,4 +688,99 @@ vendor/
 
 ---
 
-*文档版本：v1.0*
+---
+
+## 十三、实施状态与评审记录
+
+### 13.1 实施完成度
+
+| 模块 | 文件 | 行数 | 状态 |
+|------|------|------|------|
+| GrokManager.ts | `src/tools/GrokTool/GrokManager.ts` | ~1300 | ✅ 完成 |
+| GrokTool.ts | `src/tools/GrokTool/GrokTool.ts` | ~180 | ✅ 完成 |
+| GrokSkill.ts | `src/tools/GrokTool/GrokSkill.ts` | ~140 | ✅ 完成 |
+| CodegraphTool.ts | `src/tools/CodegraphTool/CodegraphTool.ts` | ~280 | ✅ 增强（sync 操作 + buildTool 适配） |
+| CodegraphManager.ts | `src/tools/CodegraphTool/CodegraphManager.ts` | ~470 | ✅ 修复（execFile + settled guard + initLock） |
+| 测试 | `src/tools/GrokTool/__tests__/` | ~400 | ✅ 37 用例通过 |
+
+### 13.2 设计偏差记录
+
+实现过程中与原始设计的偏差：
+
+| 设计项 | 原始设计 | 实际实现 | 偏差原因 |
+|--------|---------|---------|---------|
+| 文件指纹 | mtime + size | SHA-256 content hash + size | mtime 在 git checkout 后不可靠 |
+| projectRoot | 构造时固定 | 惰性 getter `get projectRoot()` | 适配 worktree 切换 |
+| pipelineLock | 模块级变量 | 类实例级 | 避免多实例共享锁 |
+| LLM Client | `getAnthropicClient()` | `new Anthropic()` + provider 检测 | 轻量级调用不需要完整 provider 栈 |
+| Skill 层 | Tool 调用 Skill 格式化 | Tool 自行格式化，Skill 未集成 | Skill 层当前为死代码，待后续集成 |
+| 增量架构分析 | 始终重新分析 | 变更 <20% 时复用已有 | 减少 LLM 调用成本 |
+| 边过滤 | — | Set 提升到循环外 O(n+m) | 评审发现 O(E*N) 性能 bug |
+
+### 13.3 三轮深度评审修复汇总
+
+#### 第一轮：安全/架构/测试评审（15 项）
+
+| # | 级别 | 问题 | 修复 |
+|---|------|------|------|
+| 1 | Critical | Dashboard XSS — innerHTML 渲染 LLM 输出 | `esc()` 转义函数 |
+| 2 | Critical | execSync 无超时 — git clone 可无限阻塞 | 添加 timeout: 120_000/60_000 |
+| 3 | Critical | 路径穿越 — scope 参数未校验 | `basePath.startsWith(projectRoot)` 校验 |
+| 4 | P0 | GrokManager 绕过 provider 体系 | 引入 `getAPIProvider()` 检测 |
+| 5 | Important | Promise.race 定时器泄漏 | `.finally(() => clearTimeout(timer))` |
+| 6 | Important | queryGraph JSON.parse 崩溃 | try/catch + GrokError |
+| 7 | Important | HOME 环境变量 Windows 不兼容 | `os.homedir()` |
+| 8 | Important | discoverFiles 无递归深度限制 | `depth > 20` 上限 |
+| 9 | Important | Dashboard 可重复启动 | `dashboardServer` 字段跟踪 |
+| 10 | P1 | codegraph_init 对已初始化项目重复执行 | switch 短路判断 |
+| 11 | P1 | 单例 projectRoot 不适应 worktree | 惰性 getter |
+| 12 | P1 | parseAnalysisResult 正则 `/m` 误剥离 | 只剥离字符串首尾 code fence |
+| 13 | P2 | pipelineLock 模块级变量 | 移入类实例 |
+| 14 | P2 | isConcurrencySafe 语义不精确 | 排除 generate/dashboard |
+| 15 | P2 | assembleGraph O(E*N) 边过滤 | Set 提升到 filter 外 |
+
+#### 第二轮：灾难性风险评审（6 项）
+
+| # | 级别 | 问题 | 修复 |
+|---|------|------|------|
+| 16 | Critical | 增量模式 LLM 失败丢失旧节点 | 仅在有新分析结果时删除旧节点 |
+| 17 | Important | Dashboard err.message XSS | `esc()` 转义 |
+| 18 | Important | 图谱 JSON 结构无校验 | 检查 nodes/edges 数组存在 |
+| 19 | Important | 写入中断无恢复 | 写前备份 + 启动清理 .tmp |
+| 20 | Important | 图谱损坏无回退 | 自动读取 .backup 文件 |
+| 21 | — | require('fs') 替代 | 使用已导入的 fs 函数 |
+
+#### 第三轮：深度灾难性评审（3 项）
+
+| # | 级别 | 问题 | 修复 |
+|---|------|------|------|
+| 22 | Critical | mapToolResultToToolResultBlockParam 双重编码 | 提取 `output.content[0].text` |
+| 23 | Critical | downloadPromise reject 后不重置 → 永久故障 | try/finally 确保重置 |
+| 24 | Critical | stdout/stderr 无大小限制 → OOM | 50MB 上限 + 手动超时保险 |
+
+#### 第四轮：并行架构/质量/安全评审（9 项）
+
+| # | 级别 | 问题 | 修复 |
+|---|------|------|------|
+| 25 | P0 | runCodegraph double-reject（stdout 超限后 timer 未清除） | `settled` flag guard，所有 settle 路径检查 |
+| 26 | P0 | downloadFile 重定向时 WriteStream 未关闭 → FD 泄漏 | 重定向分支 `file.destroy()` |
+| 27 | P0 | ensureReady TOCTOU 竞态 → 并发触发多次 init | `initPromise` 单一飞行锁 |
+| 28 | P0 | extractTarGz shell 注入风险 | `exec` → `execFile`（数组参数） |
+| 29 | P0 | Dashboard `close()` 不关闭活跃连接 | `closeAllConnections()` + `close()` |
+| 30 | P0 | GrokError interface/class 命名冲突 | 移除重复 interface，统一用 class |
+| 31 | P0 | codegraph_trace 不安全 `any[]` 转换 | `Array.isArray` guard 替代 `as any[]` |
+| 32 | P1 | `includeCode` schema 参数从未传递到后端 | 从 schema 移除 |
+| 33 | P1 | `parseWithTimeout` 死代码（零调用点） | 移除方法和 `PARSE_TIMEOUT` 常量 |
+
+### 13.4 已知遗留项
+
+| 优先级 | 项目 | 说明 |
+|--------|------|------|
+| P2 | CodegraphSkill 测试 | parseCgCommand、formatCodegraphResult 纯函数测试 |
+| P2 | GrokTool.call() 测试 | mock grokManager 后测试 8 个 operation 分发 |
+| P2 | Skill 层集成 | GrokSkill/CodegraphSkill 格式化函数是死代码，Tool 层绕过了它们 |
+| P2 | 跨引擎联动 | CodeGraph sync 后提示 Grok 图谱过期 |
+| P3 | 二进制校验 | CodegraphManager 下载后 SHA-256 验证 |
+| P3 | 流式写入 | 大项目（10 万+ 文件）的内存优化 |
+
+*文档版本：v3.0（实施完成 + 4 轮评审，33 项修复）*
