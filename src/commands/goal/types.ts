@@ -26,7 +26,7 @@ export interface TurnRecord {
 export interface GoalTask {
 	id: string;
 	content: string;
-	status: "pending" | "in_progress" | "completed";
+	status: "pending" | "in_progress" | "completed" | "skipped";
 	order: number;
 }
 
@@ -92,6 +92,31 @@ export interface GoalRuntimeState {
 
 	// NEW: Consecutive critical analysis counter (auto-pause threshold)
 	consecutiveCritical?: number;
+
+	// v3 orchestrator — 场景
+	currentScenario?: string; // ScenarioType
+
+	// v3 orchestrator — 收敛检测
+	convergenceState?: {
+		informationGains: number[];
+		qualityScores: number[];
+		changeMagnitudes: number[];
+		round: number;
+	};
+
+	// v3 orchestrator — 统一错误追踪
+	errorTracker?: {
+		categories: Record<string, { count: number; threshold: number }>;
+		recoveryLayer: string; // RecoveryLayer
+		fullRestartUsed: boolean;
+	};
+
+	// v3 orchestrator — ReAct 观测（每轮覆盖）
+	lastObservation?: {
+		mainPhase: string | null; // ReActPhase
+		phases: string[];
+		qualitySignals: { hasErrors: boolean; hasSuccess: boolean; hasProgress: boolean };
+	};
 }
 
 export interface TokenUsage {
