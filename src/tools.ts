@@ -5,6 +5,8 @@ import { agentDetectorTool } from './tools/AgentTool/AgentDetectorTool.js'
 import { singularityTool } from './tools/SingularityTool/SingularityTool.js'
 let codegraphTool: any = null
 try { codegraphTool = require('./tools/CodegraphTool/CodegraphTool.js').codegraphTool } catch (e) { console.error('[tools] Failed to load CodegraphTool:', e) }
+let grokTool: any = null
+try { grokTool = require('./tools/GrokTool/GrokTool.js').grokTool } catch (e) { console.error('[tools] Failed to load GrokTool:', e) }
 import { SkillTool } from './tools/SkillTool/SkillTool.js'
 import { BashTool } from './tools/BashTool/BashTool.js'
 import { FileEditTool } from './tools/FileEditTool/FileEditTool.js'
@@ -159,6 +161,7 @@ export function getAllBaseTools(): Tools {
     agentDetectorTool,
     singularityTool,
     codegraphTool,
+    grokTool,
     TaskOutputTool,
     getShellTool(),
     GlobTool,
