@@ -1610,6 +1610,9 @@ export default class Ink {
       // Filter harmless React Compiler useMemoCache size mismatch warnings
       const msg = args.map(a => typeof a === 'string' ? a : '').join(' ');
       if (msg.includes('useMemoCache') && msg.includes('previous cache')) return;
+      // Filter React 18 "setState during render" warning — benign with useSyncExternalStore
+      // and React Compiler. React auto-recovers via synchronous re-render.
+      if (msg.includes('Cannot update a component') && msg.includes('while rendering a different component')) return;
       // Use original console.error to avoid infinite recursion
       originalConsoleError('[ERROR]', format(...args));
     };
