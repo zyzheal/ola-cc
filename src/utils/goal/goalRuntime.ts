@@ -437,6 +437,7 @@ export function processGoalRuntimeEvent(
 					currentTurn: currentTurnRecord,
 					previousTurn: prevTurn,
 					todos: allTodos,
+					goalTasks: orchGoalTasks,
 					currentTask: currentTaskContent,
 					observation,
 					scenarioConfig,

@@ -4,7 +4,7 @@
  * Does NOT modify GoalRuntimeState directly (single writer principle).
  */
 
-import type { Goal, GoalRuntimeState, TurnRecord } from "../../commands/goal/types.js"
+import type { Goal, GoalRuntimeState, GoalTask, TurnRecord } from "../../commands/goal/types.js"
 import type { ScenarioConfig, ScenarioType } from "./goalScenario.js"
 import { resolveScenario, getScenarioConfig } from "./goalScenario.js"
 import { observeTurn } from "./goalReActObserver.js"
@@ -29,6 +29,7 @@ export interface TurnAnalysisContext {
   currentTurn: TurnRecord | undefined
   previousTurn: TurnRecord | undefined
   todos: TodoItem[]
+  goalTasks?: GoalTask[]
   currentTask: string | undefined
   observation: ReturnType<typeof observeTurn>
   scenarioConfig: ScenarioConfig
@@ -80,6 +81,7 @@ export function processTurn(ctx: TurnAnalysisContext): OrchestratorDecision {
     currentTurn,
     previousTurn,
     todos,
+    goalTasks,
     observation,
     scenarioConfig,
   } = ctx
@@ -109,9 +111,10 @@ export function processTurn(ctx: TurnAnalysisContext): OrchestratorDecision {
   const tracker = runtime.errorTracker
   const errorPause = tracker ? trackerShouldPause(tracker) : false
 
-  // Check task completion
-  const allTasksDone =
-    todos.length > 0 && todos.every((t) => t.status === "completed")
+  // Check task completion (todos OR goalTasks)
+  const allTodosDone = todos.length > 0 && todos.every((t) => t.status === "completed")
+  const allGoalTasksDone = goalTasks && goalTasks.length > 0 && goalTasks.every((t) => t.status === "completed")
+  const allTasksDone = allTodosDone || !!allGoalTasksDone
 
   // Check circuit breaker
   const breaker = SCENARIO_CIRCUIT_BREAKER[scenarioConfig.type]
