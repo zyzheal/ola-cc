@@ -24,14 +24,14 @@
 
 ---
 
-## Task 1: 消除 `as any` 类型断言
+## Task 1: [DONE] 消除 `as any` 类型断言
 
 **Files:**
 - Modify: `src/components/goal/GoalProgress.tsx`
 
 **前置条件:** orchestrator plan Task 1 已完成（GoalRuntimeState 新字段已添加）。
 
-- [ ] **Step 1: 识别所有 `as any` 使用**
+- [x] **Step 1: 识别所有 `as any` 使用**
 
 ```bash
 grep -n "as any" src/components/goal/GoalProgress.tsx
@@ -45,7 +45,7 @@ Expected output:
 141:  const errorTracker = useAppState(s => (s.goalRuntime as any)?.errorTracker as {...} | undefined)
 ```
 
-- [ ] **Step 2: 写失败测试 — 验证类型安全**
+- [x] **Step 2: 写失败测试 — 验证类型安全**
 
 ```typescript
 // src/components/goal/GoalProgress.test.tsx (新建)
@@ -60,12 +60,12 @@ describe("GoalProgress type safety", () => {
 })
 ```
 
-- [ ] **Step 3: 运行测试确认当前状态**
+- [x] **Step 3: 运行测试确认当前状态**
 
 Run: `bun test src/components/goal/GoalProgress.test.tsx -v`
 Expected: PASS (trivial test, but validates import chain)
 
-- [ ] **Step 4: 替换 `as any` 为类型安全访问**
+- [x] **Step 4: 替换 `as any` 为类型安全访问**
 
 将 `GoalProgress.tsx` 中的 4 处 `as any` 替换为直接属性访问：
 
@@ -108,12 +108,12 @@ const errorTracker = useAppState(s => (s.goalRuntime as any)?.errorTracker as {
 const errorTracker = useAppState(s => s.goalRuntime?.errorTracker)
 ```
 
-- [ ] **Step 5: 验证构建**
+- [x] **Step 5: 验证构建**
 
 Run: `bun run build:dev 2>&1 | tail -5`
 Expected: 构建成功，无类型错误
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add src/components/goal/GoalProgress.tsx
@@ -127,7 +127,7 @@ git commit -m "refactor: remove 'as any' casts from GoalProgress — use type-sa
 **Files:**
 - Modify: `src/components/goal/GoalProgress.tsx`
 
-- [ ] **Step 1: 写失败测试 — Skills 区域渲染条件**
+- [x] **Step 1: 写失败测试 — Skills 区域渲染条件**
 
 在 `GoalProgress.test.tsx` 中添加：
 
@@ -142,12 +142,12 @@ describe("GoalProgress Skills section", () => {
 })
 ```
 
-- [ ] **Step 2: 运行测试**
+- [x] **Step 2: 运行测试**
 
 Run: `bun test src/components/goal/GoalProgress.test.tsx -v`
 Expected: PASS
 
-- [ ] **Step 3: 添加 Skills 区域到面板**
+- [x] **Step 3: 添加 Skills 区域到面板**
 
 在 `GoalProgress.tsx` 的 `Budget` 区域之后、`Legacy Analysis` 区域之前，添加 Skills 展示区域：
 
@@ -198,12 +198,12 @@ const scenarioConfig = useAppState(s => {
 
 **注意**: 完整的 skills 推荐需要 orchestrator 的 `goalSkillRanker` 输出。当前实现为占位，orchestrator 集成后自动填充。
 
-- [ ] **Step 4: 验证构建**
+- [x] **Step 4: 验证构建**
 
 Run: `bun run build:dev 2>&1 | tail -5`
 Expected: 构建成功
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/components/goal/GoalProgress.tsx
@@ -217,7 +217,7 @@ git commit -m "feat: add Skills section to GoalProgress panel"
 **Files:**
 - Modify: `src/components/goal/GoalProgress.tsx`
 
-- [ ] **Step 1: 增强 recovery layer 展示**
+- [x] **Step 1: 增强 recovery layer 展示**
 
 当前代码（line 220-222）只在 `recoveryLayer !== 'FIX_RETRY'` 时显示。增强为显示具体恢复层级和错误计数：
 
@@ -242,12 +242,12 @@ git commit -m "feat: add Skills section to GoalProgress panel"
 )}
 ```
 
-- [ ] **Step 2: 验证构建**
+- [x] **Step 2: 验证构建**
 
 Run: `bun run build:dev 2>&1 | tail -5`
 Expected: 构建成功
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```bash
 git add src/components/goal/GoalProgress.tsx
@@ -261,7 +261,7 @@ git commit -m "feat: enhance error recovery display in GoalProgress — show cat
 **Files:**
 - Modify: `src/components/goal/GoalProgress.tsx`
 
-- [ ] **Step 1: 添加收敛状态文字描述**
+- [x] **Step 1: 添加收敛状态文字描述**
 
 当前 Convergence 区域只显示数值趋势。添加状态文字（如 "converging"、"ready to converge"）：
 
@@ -276,12 +276,12 @@ git commit -m "feat: enhance error recovery display in GoalProgress — show cat
 
 `convergenceStatus` 已在现有代码（lines 199-205）中计算，但未在 JSX 中渲染。只需在 Convergence section 末尾添加上面的代码块。
 
-- [ ] **Step 2: 验证构建**
+- [x] **Step 2: 验证构建**
 
 Run: `bun run build:dev 2>&1 | tail -5`
 Expected: 构建成功
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```bash
 git add src/components/goal/GoalProgress.tsx
@@ -295,7 +295,7 @@ git commit -m "feat: render convergence status text in GoalProgress panel"
 **Files:**
 - Modify: `src/components/goal/GoalProgress.tsx` (if needed)
 
-- [ ] **Step 1: 验证无 orchestrator 时面板正常渲染**
+- [x] **Step 1: 验证无 orchestrator 时面板正常渲染**
 
 确认所有 orchestrator 字段使用可选链（`?.`），在字段不存在时面板降级到基础显示：
 
@@ -306,17 +306,17 @@ grep -n "goalRuntime\." src/components/goal/GoalProgress.tsx | grep -v "?."
 
 Expected: 所有行都应使用 `?.` 或在已确认非空的上下文中。
 
-- [ ] **Step 2: 验证构建**
+- [x] **Step 2: 验证构建**
 
 Run: `bun run build:dev 2>&1 | tail -5`
 Expected: 构建成功
 
-- [ ] **Step 3: 运行 smoke test**
+- [x] **Step 3: 运行 smoke test**
 
 Run: `bun run dev --help`
 Expected: 正常输出
 
-- [ ] **Step 4: Final commit**
+- [x] **Step 4: Final commit**
 
 ```bash
 git status
@@ -328,7 +328,7 @@ git add -A && git commit -m "chore: verify GoalProgress panel builds and degrade
 
 ## Self-Review Checklist
 
-- [ ] 所有 `as any` 类型断言已消除
+- [x] 所有 `as any` 类型断言已消除
 - [ ] GoalProgress.tsx 中所有 orchestrator 字段使用可选链
 - [ ] Skills 区域在有/无 orchestrator 数据时都能正确渲染
 - [ ] 错误恢复展示包含分类计数
