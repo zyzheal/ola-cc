@@ -552,16 +552,64 @@ Issue: { type, location, message }`,
 }
 
 // ============================================================
+// Configuration Validation
+// ============================================================
+
+const GrokConfigSchema = z.object({
+  storage: z.enum(['project', 'user']).default('project'),
+  portRange: z.string().regex(/^\d{5}-\d{5}$/).default('63000-63100'),
+  language: z.string().min(2).max(5).default('en'),
+  maxBatch: z.number().int().min(1).max(10).default(5),
+  autoUpdate: z.boolean().default(false),
+})
+
+type GrokConfig = z.infer<typeof GrokConfigSchema>
+
+/**
+ * 从环境变量加载并验证配置
+ */
+function loadGrokConfig(): GrokConfig {
+  const raw = {
+    storage: process.env.OLA_CC_GROK_STORAGE,
+    portRange: process.env.OLA_CC_GROK_PORT_RANGE,
+    language: process.env.OLA_CC_GROK_LANGUAGE,
+    maxBatch: process.env.OLA_CC_GROK_MAX_BATCH ? parseInt(process.env.OLA_CC_GROK_MAX_BATCH) : undefined,
+    autoUpdate: process.env.OLA_CC_GROK_AUTO_UPDATE === 'true',
+  }
+
+  // 移除 undefined 值，让 Zod 使用默认值
+  const cleaned = Object.fromEntries(
+    Object.entries(raw).filter(([_, v]) => v !== undefined)
+  )
+
+  try {
+    return GrokConfigSchema.parse(cleaned)
+  } catch (error) {
+    if (error instanceof z.ZodError) {
+      const issues = error.issues.map(i => `  ${i.path.join('.')}: ${i.message}`).join('\n')
+      logForDebugging(`[grok] Invalid configuration:\n${issues}`)
+      // 使用默认值
+      return GrokConfigSchema.parse({})
+    }
+    throw error
+  }
+}
+
+// ============================================================
 // GrokManager Class
 // ============================================================
 
 export class GrokManager {
   private projectRoot: string
   private vendorDir: string
+  private config: GrokConfig
 
   constructor(projectRoot?: string) {
     this.projectRoot = projectRoot || getCwd()
     this.vendorDir = GROK_VENDOR_DIR.replace('~', process.env.HOME || '~')
+    this.config = loadGrokConfig()
+
+    logForDebugging(`[grok] Config loaded: ${JSON.stringify(this.config)}`)
   }
 
   /**
@@ -728,16 +776,90 @@ export const ERROR_SUGGESTIONS: Record<string, string> = {
 }
 ```
 
-- [ ] **Step 3: 验证编译**
+- [ ] **Step 3: 添加重试机制**
+
+```typescript
+// 在 GrokManager 类中添加
+
+/**
+ * 带指数退避的重试机制
+ * @param fn 要执行的函数
+ * @param maxRetries 最大重试次数（默认 3）
+ * @param baseDelay 基础延迟（毫秒，默认 1000）
+ */
+private async retryWithBackoff<T>(
+  fn: () => Promise<T>,
+  maxRetries: number = 3,
+  baseDelay: number = 1000
+): Promise<T> {
+  for (let i = 0; i < maxRetries; i++) {
+    try {
+      return await fn()
+    } catch (error) {
+      if (i === maxRetries - 1) throw error
+      const delay = baseDelay * Math.pow(2, i)
+      logForDebugging(`[grok] Retry ${i + 1}/${maxRetries} after ${delay}ms`)
+      await new Promise(resolve => setTimeout(resolve, delay))
+    }
+  }
+  throw new Error('Unreachable')
+}
+```
+
+- [ ] **Step 4: 更新 ensureGrokSource() 使用重试**
+
+```typescript
+// 更新 ensureGrokSource() 方法
+
+/**
+ * 确保 Grok 源码已克隆（带重试）
+ * @returns 源码目录路径
+ */
+async ensureGrokSource(): Promise<string> {
+  const sourceDir = resolve(this.vendorDir, 'understand-anything')
+
+  // 检查是否已存在
+  if (existsSync(sourceDir)) {
+    logForDebugging(`[grok] Source already exists at ${sourceDir}`)
+    return sourceDir
+  }
+
+  // 创建目录
+  mkdirSync(this.vendorDir, { recursive: true })
+
+  // 带重试的克隆
+  return this.retryWithBackoff(async () => {
+    logForDebugging(`[grok] Cloning Understand-Anything to ${sourceDir}`)
+    try {
+      execSync(
+        `git clone --depth 1 https://github.com/Lum1104/Understand-Anything.git ${sourceDir}`,
+        { stdio: 'pipe' }
+      )
+      logForDebugging(`[grok] Clone complete`)
+      return sourceDir
+    } catch (error) {
+      throw new GrokError(
+        'SOURCE_CLONE_FAILED',
+        'clone',
+        `Failed to clone source: ${error instanceof Error ? error.message : String(error)}`,
+        true,  // 可恢复，会重试
+        'Check network connection and try again'
+      )
+    }
+  })
+}
+```
+
+- [ ] **Step 5: 验证编译**
 
 Run: `bun run build:dev 2>&1 | tail -20`
 Expected: 编译成功
 
-- [ ] **Step 4: Commit**
+- [ ] **Step 6: Commit**
 
 ```bash
 git add src/tools/GrokTool/GrokManager.ts
-git commit -m "feat(grok): implement source cloning with error handling"
+git commit -m "feat(grok): implement source cloning with retry mechanism"
 ```
 
 ---
@@ -931,6 +1053,139 @@ Expected: 编译成功
 ```bash
 git add src/tools/GrokTool/GrokManager.ts
 git commit -m "feat(grok): implement graph status check"
+```
+
+---
+
+### Task 2.5: GrokManager 单元测试
+
+**Files:**
+- Create: `src/tools/GrokTool/__tests__/GrokManager.test.ts`
+
+- [ ] **Step 1: 创建测试文件**
+
+```typescript
+// src/tools/GrokTool/__tests__/GrokManager.test.ts
+
+import { describe, it, expect, beforeEach, afterEach, mock } from 'bun:test'
+import { GrokManager, GrokError } from '../GrokManager.js'
+
+// Mock 外部依赖
+mock.module('fs', () => ({
+  existsSync: mock(() => false),
+  readFileSync: mock(() => '{}'),
+  writeFileSync: mock(() => {}),
+  mkdirSync: mock(() => {}),
+}))
+
+mock.module('child_process', () => ({
+  spawn: mock(() => ({
+    stdout: { on: mock() },
+    stderr: { on: mock() },
+    on: mock((event, cb) => { if (event === 'close') cb(0) }),
+  })),
+}))
+
+describe('GrokManager', () => {
+  let manager: GrokManager
+
+  beforeEach(() => {
+    manager = new GrokManager('/tmp/test-project')
+  })
+
+  describe('loadGrokConfig', () => {
+    it('should load valid config from environment', () => {
+      process.env.GROK_SOURCE_REPO = 'https://github.com/test/repo.git'
+      process.env.GROK_SOURCE_BRANCH = 'main'
+      process.env.GROK_LLM_MODEL = 'claude-sonnet-4-20250514'
+
+      const config = manager.loadGrokConfig()
+
+      expect(config.sourceRepo).toBe('https://github.com/test/repo.git')
+      expect(config.sourceBranch).toBe('main')
+      expect(config.llmModel).toBe('claude-sonnet-4-20250514')
+
+      delete process.env.GROK_SOURCE_REPO
+      delete process.env.GROK_SOURCE_BRANCH
+      delete process.env.GROK_LLM_MODEL
+    })
+
+    it('should use defaults for missing optional config', () => {
+      const config = manager.loadGrokConfig()
+
+      expect(config.sourceBranch).toBe('main')
+      expect(config.llmModel).toBe('claude-sonnet-4-20250514')
+      expect(config.maxConcurrentBatches).toBe(5)
+    })
+
+    it('should throw on invalid GROK_MAX_CONCURRENT value', () => {
+      process.env.GROK_MAX_CONCURRENT = '25'
+
+      expect(() => manager.loadGrokConfig()).toThrow('GROK_MAX_CONCURRENT 必须在 1-20 之间')
+
+      delete process.env.GROK_MAX_CONCURRENT
+    })
+  })
+
+  describe('retryWithBackoff', () => {
+    it('should succeed on first attempt', async () => {
+      const fn = mock(() => Promise.resolve('success'))
+
+      const result = await manager.retryWithBackoff(fn, 3, 100)
+
+      expect(result).toBe('success')
+      expect(fn).toHaveBeenCalledTimes(1)
+    })
+
+    it('should retry on failure and succeed', async () => {
+      let attempts = 0
+      const fn = mock(() => {
+        attempts++
+        if (attempts < 3) return Promise.reject(new Error('fail'))
+        return Promise.resolve('success')
+      })
+
+      const result = await manager.retryWithBackoff(fn, 3, 10)
+
+      expect(result).toBe('success')
+      expect(fn).toHaveBeenCalledTimes(3)
+    })
+
+    it('should throw after max retries', async () => {
+      const fn = mock(() => Promise.reject(new Error('always fail')))
+
+      await expect(manager.retryWithBackoff(fn, 2, 10)).rejects.toThrow('always fail')
+      expect(fn).toHaveBeenCalledTimes(2)
+    })
+  })
+
+  describe('getGraphStatus', () => {
+    it('should return exists=false when graph file missing', async () => {
+      const status = await manager.getGraphStatus()
+
+      expect(status.exists).toBe(false)
+    })
+  })
+
+  describe('queryGraph', () => {
+    it('should throw GRAPH_NOT_FOUND when graph does not exist', async () => {
+      await expect(manager.queryGraph('test')).rejects.toThrow(GrokError)
+      await expect(manager.queryGraph('test')).rejects.toThrow('知识图谱未生成')
+    })
+  })
+})
+```
+
+- [ ] **Step 2: 运行测试**
+
+Run: `bun test src/tools/GrokTool/__tests__/GrokManager.test.ts 2>&1`
+Expected: 所有测试通过
+
+- [ ] **Step 3: Commit**
+
+```bash
+git add src/tools/GrokTool/__tests__/GrokManager.test.ts
+git commit -m "test(grok): add GrokManager unit tests"
 ```
 
 ---
@@ -1586,8 +1841,21 @@ async startDashboard(port?: number): Promise<{ url: string; port: number }> {
 
   // 创建 HTTP 服务
   const server = createServer((req, res) => {
-    // 验证 token
     const url = new URL(req.url || '/', `http://localhost:${actualPort}`)
+
+    // 健康检查端点（不需要 token）
+    if (url.pathname === '/health') {
+      res.writeHead(200, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({
+        status: 'ok',
+        uptime: process.uptime(),
+        timestamp: new Date().toISOString(),
+        graphExists: existsSync(resolve(this.projectRoot, GROK_GRAPH_FILE)),
+      }))
+      return
+    }
+
+    // 验证 token（其他端点需要）
     if (url.searchParams.get('token') !== token) {
       res.writeHead(403)
       res.end('Forbidden')
@@ -1789,11 +2057,30 @@ git commit -m "feat(grok): implement Dashboard HTTP server with D3 visualization
 // src/tools/GrokTool/GrokSkill.ts
 
 import type { ToolUseContext } from '../../Tool.js'
-import { grokManager } from './GrokManager.js'
+import { grokManager, GrokError } from './GrokManager.js'
 
 export interface GrokSkillResult {
   formatted: string
   raw: unknown
+}
+
+/**
+ * 格式化 Grok 错误为用户友好的消息
+ */
+export function formatGrokError(error: unknown): string {
+  if (error instanceof GrokError) {
+    let msg = `✗ Grok 错误 [${error.code}]: ${error.message}`
+    if (error.recoverable) {
+      msg += `\n  💡 此错误可恢复，请稍后重试`
+    }
+    return msg
+  }
+
+  if (error instanceof Error) {
+    return `✗ Grok 错误: ${error.message}`
+  }
+
+  return `✗ 未知错误: ${String(error)}`
 }
 
 /**
@@ -1919,7 +2206,184 @@ git commit -m "feat(grok): add Skill layer for terminal output formatting"
 
 ## 验收测试
 
-### Task 7.1: 端到端测试
+### Task 7.1: GrokTool 单元测试
+
+**Files:**
+- Create: `src/tools/GrokTool/__tests__/GrokTool.test.ts`
+
+- [ ] **Step 1: 创建测试文件**
+
+```typescript
+// src/tools/GrokTool/__tests__/GrokTool.test.ts
+
+import { describe, it, expect, beforeEach, mock } from 'bun:test'
+import { grokTool } from '../GrokTool.js'
+
+// Mock GrokManager
+mock.module('../GrokManager.js', () => ({
+  grokManager: {
+    ensureGrokSource: mock(() => Promise.resolve()),
+    runAgentPipeline: mock(() => Promise.resolve({
+      filePath: '.understand-anything/knowledge-graph.json',
+      nodeCount: 100,
+      edgeCount: 250,
+      domainCount: 5,
+    })),
+    queryGraph: mock(() => Promise.resolve({
+      answer: 'Test answer',
+      sources: [{ file: 'test.ts', line: 1 }],
+    })),
+    getGraphStatus: mock(() => Promise.resolve({
+      exists: true,
+      nodeCount: 100,
+      edgeCount: 250,
+      lastUpdated: new Date().toISOString(),
+    })),
+    startDashboard: mock(() => Promise.resolve({
+      url: 'http://localhost:63000/dashboard?token=test',
+      port: 63000,
+    })),
+    explainTarget: mock(() => Promise.resolve({
+      summary: 'Test explanation',
+      relationships: [],
+    })),
+    analyzeDomain: mock(() => Promise.resolve({ domains: 'Test domains' })),
+    generateTour: mock(() => Promise.resolve({ tours: 'Test tour' })),
+    analyzeImpact: mock(() => Promise.resolve({ impacted: 'Test impact' })),
+  },
+}))
+
+describe('GrokTool', () => {
+  it('should have correct tool metadata', () => {
+    expect(grokTool.name).toBe('grok')
+    expect(grokTool.description).toContain('知识图谱')
+  })
+
+  it('should have valid input schema', () => {
+    const schema = grokTool.inputSchema
+    expect(schema).toBeDefined()
+  })
+
+  describe('grok_generate operation', () => {
+    it('should call runAgentPipeline with correct params', async () => {
+      const result = await grokTool.call({
+        operation: 'grok_generate',
+        language: 'zh',
+      })
+
+      expect(result).toBeDefined()
+    })
+  })
+
+  describe('grok_chat operation', () => {
+    it('should require question parameter', async () => {
+      const result = await grokTool.call({
+        operation: 'grok_chat',
+      })
+
+      // Should return error when question is missing
+      expect(result).toContain('需要 question 参数')
+    })
+  })
+
+  describe('grok_status operation', () => {
+    it('should return graph status', async () => {
+      const result = await grokTool.call({
+        operation: 'grok_status',
+      })
+
+      expect(result).toBeDefined()
+    })
+  })
+})
+```
+
+- [ ] **Step 2: 运行测试**
+
+Run: `bun test src/tools/GrokTool/__tests__/GrokTool.test.ts 2>&1`
+Expected: 所有测试通过
+
+- [ ] **Step 3: Commit**
+
+```bash
+git add src/tools/GrokTool/__tests__/GrokTool.test.ts
+git commit -m "test(grok): add GrokTool unit tests"
+```
+
+---
+
+### Task 7.2: CodeGraphSkill 单元测试
+
+**Files:**
+- Create: `src/tools/CodegraphTool/__tests__/CodeGraphSkill.test.ts`
+
+- [ ] **Step 1: 创建测试文件**
+
+```typescript
+// src/tools/CodegraphTool/__tests__/CodeGraphSkill.test.ts
+
+import { describe, it, expect } from 'bun:test'
+import { formatCodegraphResult } from '../CodeGraphSkill.js'
+
+describe('CodeGraphSkill', () => {
+  describe('formatCodegraphResult', () => {
+    it('should format codegraph_status result', () => {
+      const result = formatCodegraphResult('codegraph_status', {
+        indexed: true,
+        fileCount: 100,
+        symbolCount: 500,
+      })
+
+      expect(result.formatted).toContain('索引状态')
+      expect(result.formatted).toContain('100')
+      expect(result.formatted).toContain('500')
+    })
+
+    it('should format codegraph_search result', () => {
+      const result = formatCodegraphResult('codegraph_search', {
+        symbols: [
+          { name: 'QueryEngine', file: 'src/QueryEngine.ts', line: 42, kind: 'class' },
+        ],
+      })
+
+      expect(result.formatted).toContain('QueryEngine')
+      expect(result.formatted).toContain('src/QueryEngine.ts')
+    })
+
+    it('should format codegraph_impact result', () => {
+      const result = formatCodegraphResult('codegraph_impact', {
+        impactedFiles: ['file1.ts', 'file2.ts'],
+        impactedSymbols: ['sym1', 'sym2'],
+      })
+
+      expect(result.formatted).toContain('影响分析')
+      expect(result.formatted).toContain('file1.ts')
+    })
+
+    it('should handle unknown operation', () => {
+      const result = formatCodegraphResult('unknown_op', { data: 'test' })
+
+      expect(result.formatted).toContain('data')
+    })
+  })
+})
+```
+
+- [ ] **Step 2: 运行测试**
+
+Run: `bun test src/tools/CodegraphTool/__tests__/CodeGraphSkill.test.ts 2>&1`
+Expected: 所有测试通过
+
+- [ ] **Step 3: Commit**
+
+```bash
+git add src/tools/CodegraphTool/__tests__/CodeGraphSkill.test.ts
+git commit -m "test(codegraph): add CodeGraphSkill unit tests"
+```
+
+---
+
+### Task 7.3: 端到端集成测试
 
 - [ ] **Step 1: 启动开发模式**
 
@@ -1972,13 +2436,14 @@ git commit -m "test(grok): verify all commands and tool integrations"
 ## 实施顺序建议
 
 1. **Phase 1** (CodeGraph Skill): Task 1.1 → 1.2 → 1.3 → 1.4
-2. **Phase 2** (GrokManager): Task 2.1 → 2.2 → 2.3 → 2.4
+2. **Phase 2** (GrokManager): Task 2.1 → 2.2 → 2.3 → 2.4 → 2.5 (单元测试)
 3. **Phase 3** (Grok Tool): Task 3.1 → 3.2
 4. **Phase 4** (Grok Skills): Task 4.1 → 4.2
 5. **Phase 5** (Dashboard): Task 5.1
 6. **Phase 6** (Terminal UI): Task 6.1 (可选)
+7. **验收测试**: Task 7.1 → 7.2 → 7.3
 
-Phase 1 和 Phase 2 可以并行开发。
+Phase 1 和 Phase 2 可以并行开发。验收测试在所有 Phase 完成后执行。
 
 ---
 
