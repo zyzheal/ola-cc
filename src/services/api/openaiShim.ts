@@ -14,7 +14,7 @@
  * - OPENAI_EXTRA_BODY: JSON string of extra params
  */
 import { randomUUID } from 'crypto'
-import { APIError, APIConnectionError, APIUserAbortError } from '@anthropic-ai/sdk'
+import { APIError, APIConnectionError, APIUserAbortError } from './sdk-exports.js'
 import { logForDebugging } from '../../utils/debug.js'
 import { sanitizeNestedSchema as sanitizeNestedSchemaBase, sanitizeSchemaForAPI as sanitizeSchemaForAPIBase } from './schemaSanitizer.js'
 
