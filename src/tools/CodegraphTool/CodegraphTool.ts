@@ -174,7 +174,7 @@ export const codegraphTool = buildTool({
           const nodes = parseJsonOrError(r);
           // 对每个节点获取上下文
           if (Array.isArray(nodes) && nodes.length > 0) {
-            result = nodes.slice(0, 5).map((n: any) => ({
+            result = nodes.slice(0, 5).map((n: Record<string, unknown>) => ({
               name: n.name,
               kind: n.kind,
               file: n.file,

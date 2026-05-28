@@ -121,11 +121,6 @@ function logWarn(message: string, error?: unknown): void {
   console.warn(`[codegraph] WARNING: ${message}${suffix}`);
 }
 
-function logError(message: string, error?: unknown): void {
-  const suffix = error instanceof Error ? `: ${error.message}` : '';
-  console.error(`[codegraph] ERROR: ${message}${suffix}`);
-}
-
 // ============================================================
 // 自动下载（增强版）
 // ============================================================
@@ -259,6 +254,11 @@ function downloadFile(url: string, dest: string, redirectCount = 0): Promise<voi
           reject(new Error('Redirect location missing'));
           return;
         }
+        // 安全校验：拒绝非 HTTPS 重定向（防止 MITM 协议降级攻击）
+        if (!redirectUrl.startsWith('https://')) {
+          reject(new Error(`Redirect to non-HTTPS URL blocked: ${redirectUrl}`));
+          return;
+        }
         logInfo(`Following redirect to ${redirectUrl} (${redirectCount + 1}/${MAX_REDIRECTS})`);
         // 递归下载重定向目标（带循环保护）
         downloadFile(redirectUrl, dest, redirectCount + 1).then(resolve).catch(reject);
@@ -304,7 +304,9 @@ function downloadFile(url: string, dest: string, redirectCount = 0): Promise<voi
 
 async function extractTarGz(tarPath: string, dest: string): Promise<void> {
   logInfo('Extracting archive...');
-  await execFileAsync('tar', ['-xzf', tarPath, '-C', dest]);
+  // --no-absolute-filenames: 防止绝对路径穿越（如 /etc/passwd）
+  // --overwrite: 允许覆盖已存在的文件
+  await execFileAsync('tar', ['-xzf', tarPath, '-C', dest, '--no-absolute-filenames', '--overwrite']);
   logInfo('Extraction complete');
 }
 
@@ -329,7 +331,7 @@ function runCodegraph(binPath: string, projectRoot: string, args: string[], time
         FORCE_COLOR: '0',
       },
       stdio: autoConfirm ? ['pipe', 'pipe', 'pipe'] : ['ignore', 'pipe', 'pipe'],
-      timeout: timeoutMs,
+      // 不使用 spawn 的 timeout 选项，改为手动 setTimeout 统一管理超时（SIGKILL）
     });
 
     // Auto-confirm: pipe "y\n" to stdin for clack confirm prompts
