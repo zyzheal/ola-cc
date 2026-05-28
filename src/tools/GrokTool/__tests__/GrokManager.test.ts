@@ -166,9 +166,9 @@ describe('stub methods', () => {
     await expect(manager.queryGraph('test')).rejects.toThrow('Not implemented')
   })
 
-  it('startDashboard should throw not implemented', async () => {
+  it('startDashboard should throw when graph missing', async () => {
     const manager = new GrokManager(TEST_DIR)
-    await expect(manager.startDashboard()).rejects.toThrow('Not implemented')
+    await expect(manager.startDashboard()).rejects.toThrow('知识图谱未生成')
   })
 
   it('runAgentPipeline should throw not implemented', async () => {
