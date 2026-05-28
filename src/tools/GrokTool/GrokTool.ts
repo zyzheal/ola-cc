@@ -39,19 +39,27 @@ const inputSchema = z.object({
   port: z.number().optional().describe('端口号（用于 grok_dashboard）'),
 })
 
+type Input = z.infer<typeof inputSchema>
+
 // ============================================================
 // Tool
 // ============================================================
 
 export const grokTool = buildTool({
   name: 'grok',
-  description:
-    'Grok 代码理解 — 知识图谱生成、自然语言问答、业务域分析、引导式学习。' +
-    '首次使用需要生成知识图谱（约 3-5 分钟），之后查询秒级响应。',
-
+  searchHint: 'knowledge graph code understanding semantic analysis',
+  maxResultSizeChars: 50_000,
   inputSchema,
+  renderToolUseMessage() { return null },
 
-  async call(input: z.infer<typeof inputSchema>) {
+  async description() {
+    return (
+      'Grok 代码理解 — 知识图谱生成、自然语言问答、业务域分析、引导式学习。' +
+      '首次使用需要生成知识图谱（约 3-5 分钟），之后查询秒级响应。'
+    )
+  },
+
+  async call(input: Input, _context, _canUseTool, _parentMessage, _onProgress) {
     try {
       await grokManager.ensureGrokSource()
 
@@ -71,7 +79,7 @@ export const grokTool = buildTool({
 
         case 'grok_chat': {
           if (!input.question) {
-            return errorResult('grok_chat 需要 question 参数')
+            return { data: { error: true, message: 'grok_chat 需要 question 参数' } }
           }
           const chatResult = await grokManager.queryGraph(input.question)
           result = chatResult
@@ -80,7 +88,7 @@ export const grokTool = buildTool({
 
         case 'grok_explain': {
           if (!input.target) {
-            return errorResult('grok_explain 需要 target 参数')
+            return { data: { error: true, message: 'grok_explain 需要 target 参数' } }
           }
           const explainResult = await grokManager.queryGraph(
             `Explain ${input.target}: what it does, its relationships, which layer and domain it belongs to`
@@ -112,7 +120,7 @@ export const grokTool = buildTool({
 
         case 'grok_diff': {
           if (!input.files || input.files.length === 0) {
-            return errorResult('grok_diff 需要 files 参数')
+            return { data: { error: true, message: 'grok_diff 需要 files 参数' } }
           }
           const diffResult = await grokManager.queryGraph(
             `Analyze the impact of changes to these files: ${input.files.join(', ')}`
@@ -134,78 +142,42 @@ export const grokTool = buildTool({
         }
 
         default:
-          return errorResult(`未知操作: ${input.operation}`)
+          return { data: { error: true, message: `未知操作: ${input.operation}` } }
       }
 
-      return successResult(input.operation, result)
+      return { data: { ok: true, operation: input.operation, result } }
     } catch (error) {
       logForDebugging(`[grok] error: ${error}`)
       return {
-        content: [{
-          type: 'text',
-          text: JSON.stringify({
-            error: true,
-            operation: input.operation,
-            message: error instanceof Error ? error.message : String(error),
-          }, null, 2),
-        }],
+        data: {
+          error: true,
+          operation: input.operation,
+          message: error instanceof Error ? error.message : String(error),
+        },
       }
     }
   },
 
-  async prompt(input) {
-    const op = input?.operation ?? ''
-    const question = input?.question ?? ''
-    const target = input?.target ?? ''
-
-    switch (op) {
-      case 'grok_generate': return '生成项目知识图谱'
-      case 'grok_chat': return `回答问题: ${question}`
-      case 'grok_explain': return `解释 ${target}`
-      case 'grok_domain': return '分析业务域'
-      case 'grok_tour': return '生成学习路径'
-      case 'grok_diff': return '分析变更影响'
-      case 'grok_status': return '检查图谱状态'
-      case 'grok_dashboard': return '启动 Dashboard'
-      default: return `Grok ${op}`
-    }
+  async prompt() {
+    return 'Grok 代码理解工具 — 知识图谱生成、自然语言问答、业务域分析'
   },
 
-  isConcurrencySafe: () => true,
-  isEnabled: () => true,
-  isReadOnly: (input) => {
-    const op = typeof input === 'object' && input !== null && 'operation' in input
-      ? (input as { operation?: string }).operation ?? ''
-      : ''
-    return op !== 'grok_generate'
+  isConcurrencySafe(input) {
+    const op = input?.operation
+    return op !== 'grok_generate' && op !== 'grok_dashboard'
+  },
+  isEnabled() {
+    return true
+  },
+  isReadOnly(input) {
+    return input?.operation !== 'grok_generate'
   },
   mapToolResultToToolResultBlockParam(output, toolUseID) {
+    const text = JSON.stringify(output, null, 2)
     return {
       tool_use_id: toolUseID,
       type: 'tool_result',
-      content: JSON.stringify(output, null, 2),
+      content: text,
     }
   },
 })
-
-// ============================================================
-// Helpers
-// ============================================================
-
-function successResult(operation: string, data: unknown) {
-  return {
-    content: [{
-      type: 'text',
-      text: JSON.stringify({ ok: true, operation, result: data }, null, 2),
-    }],
-  }
-}
-
-function errorResult(message: string) {
-  return {
-    content: [{
-      type: 'text',
-      text: JSON.stringify({ error: true, message }, null, 2),
-    }],
-  }
-}

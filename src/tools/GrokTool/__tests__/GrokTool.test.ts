@@ -10,7 +10,12 @@ import { grokTool } from '../GrokTool.js'
 describe('GrokTool', () => {
   it('should have correct tool metadata', () => {
     expect(grokTool.name).toBe('grok')
-    expect(grokTool.description).toContain('知识图谱')
+    expect(typeof grokTool.description).toBe('function')
+  })
+
+  it('should return description containing key terms', async () => {
+    const desc = await (grokTool.description as Function)({}, { isNonInteractiveSession: false, toolPermissionContext: {} as any, tools: [] as any })
+    expect(desc).toContain('知识图谱')
   })
 
   it('should have valid input schema', () => {
@@ -32,40 +37,13 @@ describe('GrokTool', () => {
 
   describe('isReadOnly', () => {
     it('should be read-only for non-generate operations', () => {
-      expect(grokTool.isReadOnly({ operation: 'grok_chat' })).toBe(true)
-      expect(grokTool.isReadOnly({ operation: 'grok_status' })).toBe(true)
-      expect(grokTool.isReadOnly({ operation: 'grok_explain' })).toBe(true)
+      expect(grokTool.isReadOnly({ operation: 'grok_chat' } as any)).toBe(true)
+      expect(grokTool.isReadOnly({ operation: 'grok_status' } as any)).toBe(true)
+      expect(grokTool.isReadOnly({ operation: 'grok_explain' } as any)).toBe(true)
     })
 
     it('should not be read-only for grok_generate', () => {
-      expect(grokTool.isReadOnly({ operation: 'grok_generate' })).toBe(false)
-    })
-  })
-
-  describe('prompt', () => {
-    it('should return generate prompt', async () => {
-      const result = await grokTool.prompt({ operation: 'grok_generate' })
-      expect(result).toContain('生成项目知识图谱')
-    })
-
-    it('should return chat prompt with question', async () => {
-      const result = await grokTool.prompt({ operation: 'grok_chat', question: 'test?' })
-      expect(result).toContain('test?')
-    })
-
-    it('should return explain prompt with target', async () => {
-      const result = await grokTool.prompt({ operation: 'grok_explain', target: 'file.ts' })
-      expect(result).toContain('file.ts')
-    })
-
-    it('should return status prompt', async () => {
-      const result = await grokTool.prompt({ operation: 'grok_status' })
-      expect(result).toContain('检查图谱状态')
-    })
-
-    it('should return default prompt for unknown op', async () => {
-      const result = await grokTool.prompt({ operation: 'unknown' })
-      expect(result).toContain('Grok')
+      expect(grokTool.isReadOnly({ operation: 'grok_generate' } as any)).toBe(false)
     })
   })
 
