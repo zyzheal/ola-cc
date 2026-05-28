@@ -42,7 +42,7 @@
 └────────────────────────────┬────────────────────────────────────────────┘
                              │
 ┌────────────────────────────▼────────────────────────────────────────────┐
-│  ✅ 已实施：Harness 设计模式融入 Orion EvolutionEngine                     │
+│  ✅ 已实施：Harness 设计模式融入 Orion EvolutionEngine + SingularityTool     │
 │  ┌───────────────────────────────────────────────────────────────────┐ │
 │  │ P0 增强：createSpecContract() — spec.md 契约模式                      │ │
 │  │ • 定义进化任务的范围、验收标准和约束条件                                │ │
@@ -338,13 +338,14 @@ validateContractCompletion(): {
 | **Phase 1.5** | 下载可靠性增强 | ✅ 完成 | `CodegraphManager.ts` |
 | **Phase 2** | Harness 设计模式融入 Orion | ✅ 完成 | `EvolutionEngine.ts` |
 | **Phase 3** | Orion 进化循环增强（P2/P5/P7） | ✅ 完成 | `EvolutionEngine.ts` |
-| **Phase 4** | AgentTool 子代理自动注入 | ⏳ 待实施 | — |
-| **Phase 5** | SingularityTool 修复 | ⏳ 待实施 | — |
+| **Phase 4** | AgentTool 子代理自动注入 | ✅ 完成 | `tools.ts` (codegraphTool in getAllBaseTools) |
+| **Phase 5** | SingularityTool Harness 操作 | ✅ 完成 | `SingularityTool.ts` (+4 harness ops) |
 
 **已实施代码量：**
 - `CodegraphManager.ts`: ~250 行（增强版）
 - `EvolutionEngine.ts`: ~200 行新增（Harness 融合）
-- 总计：~450 行新增/修改代码
+- `SingularityTool.ts`: +4 harness 操作（create_spec/review/package_evidence/validate_completion）
+- 总计：~500 行新增/修改代码
 
 ---
 
@@ -391,11 +392,10 @@ validateContractCompletion(): {
 
 ## 八、后续工作
 
-### 8.1 短期（Phase 4-5）
+### 8.1 短期（已完成）
 
-1. AgentTool 子代理自动注入 codegraph 工具
-2. SingularityTool 修复（bytecode crash 问题）
-3. CodeGraph 操作暴露给 SingularityTool
+1. ✅ AgentTool 子代理自动注入 codegraph 工具（codegraphTool in getAllBaseTools）
+2. ✅ SingularityTool Harness 操作（4个新操作：create_spec/review/package_evidence/validate_completion）
 
 ### 8.2 中期
 
