@@ -3,6 +3,7 @@
 import { existsSync, mkdirSync } from 'fs'
 import { execSync } from 'child_process'
 import { resolve } from 'path'
+import Anthropic from '@anthropic-ai/sdk'
 import { z } from 'zod/v4'
 import { getCwd } from '../../utils/cwd.js'
 import { logForDebugging } from '../../utils/debug.js'
@@ -284,6 +285,155 @@ export class GrokManager {
         true,
         'Try running /grok --update manually'
       )
+    }
+  }
+
+  // ============================================================
+  // 超时配置
+  // ============================================================
+
+  private readonly LLM_TIMEOUT = 30_000    // LLM 调用超时 30 秒
+  private readonly PARSE_TIMEOUT = 10_000  // 文件解析超时 10 秒
+
+  private client: Anthropic | null = null
+  private model: string = 'claude-sonnet-4-20250514'
+
+  /**
+   * 获取或创建 Anthropic 客户端（惰性初始化）
+   */
+  private getClient(): Anthropic {
+    if (!this.client) {
+      this.client = new Anthropic()
+      this.model = process.env.ANTHROPIC_MODEL || process.env.OLA_CC_MODEL_SONNET || 'claude-sonnet-4-20250514'
+    }
+    return this.client
+  }
+
+  /**
+   * 轻量级 Agent 调用 — 直接使用 Anthropic SDK
+   */
+  private async callAgent(prompt: string, systemPrompt: string): Promise<string> {
+    const client = this.getClient()
+
+    try {
+      const response = await client.messages.create({
+        model: this.model,
+        max_tokens: 4096,
+        system: systemPrompt,
+        messages: [{ role: 'user', content: prompt }],
+      })
+
+      const textBlock = response.content.find(block => block.type === 'text')
+      return textBlock ? textBlock.text : ''
+    } catch (error) {
+      if (error instanceof Error && error.message.includes('429')) {
+        throw new GrokError(
+          'LLM_RATE_LIMIT',
+          'agent',
+          'API rate limit exceeded',
+          true,
+          'Wait 60 seconds and try again'
+        )
+      }
+      throw error
+    }
+  }
+
+  /**
+   * 带超时的 Agent 调用
+   */
+  private async callAgentWithTimeout(prompt: string, systemPrompt: string): Promise<string> {
+    return Promise.race([
+      this.callAgent(prompt, systemPrompt),
+      new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new GrokError(
+          'LLM_TIMEOUT',
+          'agent',
+          'LLM call timed out after 30s',
+          true,
+          'Try with smaller scope or check API status'
+        )), this.LLM_TIMEOUT)
+      )
+    ])
+  }
+
+  /**
+   * 带超时的文件解析
+   */
+  private async parseWithTimeout<T>(fn: () => T, fileName: string): Promise<T> {
+    return Promise.race([
+      Promise.resolve(fn()),
+      new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new GrokError(
+          'PARSE_TIMEOUT',
+          'parse',
+          `Parsing ${fileName} timed out after 10s`,
+          true,
+          'File too large, use --exclude to skip'
+        )), this.PARSE_TIMEOUT)
+      )
+    ])
+  }
+
+  /**
+   * 并行分析文件批次
+   */
+  private async analyzeFilesBatch(
+    files: string[],
+    batchSize: number = 25,
+    maxParallel: number = 5
+  ): Promise<any[]> {
+    // 内联 chunkArray
+    const batches: string[][] = []
+    for (let i = 0; i < files.length; i += batchSize) {
+      batches.push(files.slice(i, i + batchSize))
+    }
+
+    const results: any[] = []
+
+    for (let i = 0; i < batches.length; i += maxParallel) {
+      const parallelBatches = batches.slice(i, i + maxParallel)
+      const batchResults = await Promise.all(
+        parallelBatches.map(batch =>
+          this.callAgentWithTimeout(
+            this.buildFileAnalyzerPrompt(batch),
+            AGENT_SYSTEM_PROMPTS.analyzer
+          )
+        )
+      )
+      results.push(...batchResults.flatMap(r => this.parseAnalysisResult(r)))
+    }
+
+    return results
+  }
+
+  /**
+   * 构建 file-analyzer 提示词
+   */
+  private buildFileAnalyzerPrompt(files: string[]): string {
+    return `Analyze the following files and extract symbols, relationships, and summaries:
+
+${files.map(f => `- ${f}`).join('\n')}
+
+For each file, identify:
+1. Functions, classes, types, interfaces (symbols)
+2. Import/export relationships
+3. Function calls and dependencies
+4. Brief summary of purpose
+
+Output JSON array of analysis results.`
+  }
+
+  /**
+   * 解析分析结果
+   */
+  private parseAnalysisResult(result: string): any[] {
+    try {
+      const parsed = JSON.parse(result)
+      return Array.isArray(parsed) ? parsed : [parsed]
+    } catch {
+      logForDebugging(`[grok] Failed to parse analysis result: ${result.slice(0, 200)}`)
+      return []
     }
   }
 
