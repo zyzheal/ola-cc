@@ -2,6 +2,14 @@
 import addDir from './commands/add-dir/index.js'
 import auth from './commands/auth/index.js'
 import cg from './commands/cg/index.js'
+import grok from './commands/grok/index.js'
+import gc from './commands/gc/index.js'
+import gd from './commands/gd/index.js'
+import ge from './commands/ge/index.js'
+import gt from './commands/gt/index.js'
+import gdiff from './commands/gdiff/index.js'
+import goCmd from './commands/go/index.js'
+import gdomain from './commands/gdomain/index.js'
 import autofixPr from './commands/autofix-pr/index.js'
 import backfillSessions from './commands/backfill-sessions/index.js'
 import btw from './commands/btw/index.js'
@@ -219,6 +227,14 @@ const COMMANDS = memoize((): Command[] => [
   branch,
   btw,
   cg,
+  gc,
+  gd,
+  gdiff,
+  gdomain,
+  ge,
+  goCmd,
+  grok,
+  gt,
   chrome,
   clear,
   color,
