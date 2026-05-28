@@ -259,6 +259,20 @@ function downloadFile(url: string, dest: string, redirectCount = 0): Promise<voi
           reject(new Error(`Redirect to non-HTTPS URL blocked: ${redirectUrl}`));
           return;
         }
+        // 安全校验：限制重定向目标域名（防止恶意服务器投递二进制）
+        try {
+          const redirectHost = new URL(redirectUrl).hostname;
+          const allowed = redirectHost === 'github.com'
+            || redirectHost === 'githubusercontent.com'
+            || redirectHost.endsWith('.githubusercontent.com');
+          if (!allowed) {
+            reject(new Error(`Redirect to unauthorized host blocked: ${redirectHost}`));
+            return;
+          }
+        } catch {
+          reject(new Error(`Invalid redirect URL: ${redirectUrl}`));
+          return;
+        }
         logInfo(`Following redirect to ${redirectUrl} (${redirectCount + 1}/${MAX_REDIRECTS})`);
         // 递归下载重定向目标（带循环保护）
         downloadFile(redirectUrl, dest, redirectCount + 1).then(resolve).catch(reject);
@@ -340,8 +354,8 @@ function runCodegraph(binPath: string, projectRoot: string, args: string[], time
       child.stdin.end();
     }
 
-    let stdout = '';
-    let stderr = '';
+    const stdoutChunks: Buffer[] = [];
+    const stderrChunks: Buffer[] = [];
     let stdoutSize = 0;
     let stderrSize = 0;
     let settled = false;
@@ -360,7 +374,7 @@ function runCodegraph(binPath: string, projectRoot: string, args: string[], time
         settle(() => reject(new Error('stdout output exceeded 50MB limit')));
         return;
       }
-      stdout += data.toString();
+      stdoutChunks.push(data);
     });
     child.stderr.on('data', (data: Buffer) => {
       stderrSize += data.length;
@@ -369,7 +383,7 @@ function runCodegraph(binPath: string, projectRoot: string, args: string[], time
         settle(() => reject(new Error('stderr output exceeded 50MB limit')));
         return;
       }
-      stderr += data.toString();
+      stderrChunks.push(data);
     });
 
     // 手动超时保险（spawn timeout 不可靠）

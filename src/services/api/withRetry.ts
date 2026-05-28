@@ -186,6 +186,12 @@ export async function* withRetry<T>(
   let consecutive529Errors = options.initialConsecutive529Errors ?? 0
   let lastError: unknown
   let persistentAttempt = 0
+  // Persistent mode: the loop must never terminate. We achieve this by clamping
+  // `attempt` back to PERSISTENT_LOOP_ANCHOR whenever it reaches maxRetries,
+  // so the for-loop condition (attempt <= maxRetries + 1) always evaluates true.
+  // `persistentAttempt` tracks the real retry count for backoff (grows unbounded).
+  // Only `attempt` is clamped; `persistentAttempt` drives the exponential delay.
+  const PERSISTENT_LOOP_ANCHOR = maxRetries
   for (let attempt = 1; attempt <= maxRetries + 1; attempt++) {
     if (options.signal?.aborted) {
       throw new APIUserAbortError()
@@ -507,9 +513,9 @@ export async function* withRetry<T>(
           await sleep(chunk, options.signal, { abortError })
           remaining -= chunk
         }
-        // Clamp so the for-loop never terminates. Backoff uses the separate
-        // persistentAttempt counter which keeps growing to the 5-min cap.
-        if (attempt >= maxRetries) attempt = maxRetries
+        // Persistent mode: freeze attempt at PERSISTENT_LOOP_ANCHOR to prevent
+        // the for-loop from terminating. Backoff uses persistentAttempt (unbounded).
+        if (attempt >= PERSISTENT_LOOP_ANCHOR) attempt = PERSISTENT_LOOP_ANCHOR
       } else {
         if (error instanceof APIError) {
           yield createSystemAPIErrorMessage(error, delayMs, attempt, maxRetries)

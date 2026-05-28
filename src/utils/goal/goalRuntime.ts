@@ -24,7 +24,8 @@ import { checkMemoryIfNeeded, disposeGoalMemory } from "./goalMemory.js";
 import { initOrchestratorState, processTurn, formatSkillRecommendations } from "./goalOrchestrator.js";
 import { resolveScenario } from "./goalScenario.js";
 import { observeTurn } from "./goalReActObserver.js";
-import { recordError, shouldPause as trackerShouldPause } from "./goalErrorTracker.js";
+import { recordError, resetOnProgress, shouldPause as trackerShouldPause } from "./goalErrorTracker.js";
+import { handleVerifyFailure } from "./goalErrorRecovery.js";
 import { getSkillMetadata } from "./skillRegistry.js";
 import { rankSkills } from "./goalSkillRanker.js";
 
@@ -318,8 +319,10 @@ export function processGoalRuntimeEvent(
 
 				if (!hadObservableChanges) {
 					turnsWithNoChanges++;
+					if (runtime.errorTracker) recordError(runtime.errorTracker, "dead_turn");
 				} else {
 					turnsWithNoChanges = 0;
+					if (runtime.errorTracker) resetOnProgress(runtime.errorTracker);
 				}
 				runtime.turnsWithNoChanges = turnsWithNoChanges;
 
@@ -421,6 +424,27 @@ export function processGoalRuntimeEvent(
 					scenarioConfig,
 				})
 
+				// Apply recovery layer escalation when errors detected but orchestrator says continue
+				if (decision.action === "continue" && runtime.errorTracker) {
+					const hasErrors = observation.qualitySignals.hasErrors
+						|| !observation.qualitySignals.hasSuccess
+						|| (runtime.consecutiveCritical ?? 0) > 0
+					if (hasErrors) {
+						const recoveryDecision = handleVerifyFailure(
+							runtime.errorTracker,
+							`quality issue: hasErrors=${observation.qualitySignals.hasErrors}, hasSuccess=${observation.qualitySignals.hasSuccess}`,
+						)
+						if (recoveryDecision.action === "pause") {
+							decision.action = "pause"
+							decision.pauseReason = recoveryDecision.recoveryPrompt
+						} else if (recoveryDecision.action === "escalate") {
+							decision.action = "retry"
+							decision.prompt = recoveryDecision.recoveryPrompt
+							decision.reason = `recovery_escalation: ${recoveryDecision.layer}`
+						}
+					}
+				}
+
 				// Apply orchestrator decision
 				if (decision.action === "pause") {
 					const pausedGoal = {
@@ -494,6 +518,7 @@ export function processGoalRuntimeEvent(
 				// Track consecutive critical analyses (auto-pause circuit breaker)
 				if (analysisResult.status === "critical") {
 					runtime.consecutiveCritical = (runtime.consecutiveCritical ?? 0) + 1;
+					if (runtime.errorTracker) recordError(runtime.errorTracker, "critical_analysis");
 				} else {
 					runtime.consecutiveCritical = 0;
 				}

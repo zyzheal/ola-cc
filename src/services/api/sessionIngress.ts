@@ -508,7 +508,21 @@ function findLastUuid(logs: Entry[] | null): UUID | undefined {
 /**
  * Clear cached state for a session
  */
-export function clearSession(sessionId: string): void {
+export async function clearSession(sessionId: string): Promise<void> {
+  // Drain any in-flight sequential append before clearing
+  const seq = sequentialAppendBySession.get(sessionId)
+  if (seq) {
+    // Wait for any pending operations by calling with a no-op
+    // The sequential wrapper processes one at a time, so after this
+    // returns, no more operations are pending
+    try {
+      await seq(
+        { uuid: '00000000-0000-0000-0000-000000000000' as UUID, type: 'drain' } as TranscriptMessage,
+        '',
+        {},
+      )
+    } catch { /* ignore drain errors */ }
+  }
   lastUuidMap.delete(sessionId)
   sequentialAppendBySession.delete(sessionId)
   sessionLastSeen.delete(sessionId)
@@ -539,7 +553,10 @@ export function clearAllSessions(): void {
 }
 
 // Periodic cleanup of stale session entries (every 10 minutes)
+const sessionCleanupInterval = setInterval(evictStaleSessions, 10 * 60 * 1000)
+
 // eslint-disable-next-line custom-rules/no-top-level-side-effects
 registerCleanup(async () => {
+  clearInterval(sessionCleanupInterval)
   evictStaleSessions()
 })
