@@ -1,7 +1,53 @@
 // src/tools/CodegraphTool/CodegraphSkill.ts
 
-import type { ToolUseContext } from '../../Tool.js'
 import * as CodegraphManager from './CodegraphManager.js'
+
+// --- Interfaces ---
+
+interface CodegraphNode {
+  name: string
+  kind?: string
+  file: string
+  line: number
+  signature?: string
+  depth?: number
+}
+
+interface CodegraphTraceResult {
+  from: string
+  to: string
+  connectingNodes?: CodegraphNode[]
+  error?: string
+}
+
+interface CodegraphStatusResult {
+  initialized: boolean
+  nodeCount?: number
+  fileCount?: number
+}
+
+interface CodegraphInitResult {
+  message?: string
+}
+
+// --- Type literals ---
+
+type CodegraphOperation =
+  | 'codegraph_search'
+  | 'codegraph_impact'
+  | 'codegraph_trace'
+  | 'codegraph_callers'
+  | 'codegraph_callees'
+  | 'codegraph_init'
+  | 'codegraph_status'
+  | 'codegraph_context'
+
+// --- Constants ---
+
+const MAX_SEARCH_RESULTS_DISPLAY = 10
+const MAX_IMPACT_RESULTS_DISPLAY = 15
+
+// --- Exported types ---
 
 export interface CodegraphSkillResult {
   formatted: string  // 终端友好的格式化输出
@@ -21,7 +67,7 @@ export interface CodegraphSkillResult {
  *   /cg st                → 状态
  */
 export function parseCgCommand(args: string): {
-  operation: string
+  operation: CodegraphOperation
   query?: string
   symbol?: string
 } {
@@ -32,7 +78,7 @@ export function parseCgCommand(args: string): {
   }
 
   // 子命令映射
-  const subcommands: Record<string, string> = {
+  const subcommands: Record<string, CodegraphOperation> = {
     's': 'codegraph_search',
     'search': 'codegraph_search',
     'i': 'codegraph_impact',
@@ -85,29 +131,29 @@ export function parseCgCommand(args: string): {
  * 格式化 CodeGraph 结果为终端友好输出
  */
 export function formatCodegraphResult(
-  operation: string,
+  operation: CodegraphOperation,
   result: unknown,
 ): CodegraphSkillResult {
   let formatted = ''
 
   switch (operation) {
     case 'codegraph_search': {
-      const nodes = Array.isArray(result) ? result : []
+      const nodes: CodegraphNode[] = Array.isArray(result) ? result as CodegraphNode[] : []
       if (nodes.length === 0) {
         formatted = '未找到匹配的符号'
       } else {
         formatted = `找到 ${nodes.length} 个符号：\n\n`
-        for (const node of nodes.slice(0, 10)) {
-          const n = node as any
-          formatted += `  ${n.name} (${n.kind})\n`
+        for (const n of nodes.slice(0, MAX_SEARCH_RESULTS_DISPLAY)) {
+          if (typeof n !== 'object' || n === null) continue
+          formatted += `  ${n.name}${n.kind ? ` (${n.kind})` : ''}\n`
           formatted += `    文件: ${n.file}:${n.line}\n`
           if (n.signature) {
             formatted += `    签名: ${n.signature}\n`
           }
           formatted += '\n'
         }
-        if (nodes.length > 10) {
-          formatted += `  ... 还有 ${nodes.length - 10} 个结果\n`
+        if (nodes.length > MAX_SEARCH_RESULTS_DISPLAY) {
+          formatted += `  ... 还有 ${nodes.length - MAX_SEARCH_RESULTS_DISPLAY} 个结果\n`
         }
       }
       break
@@ -115,14 +161,14 @@ export function formatCodegraphResult(
 
     case 'codegraph_callers':
     case 'codegraph_callees': {
-      const nodes = Array.isArray(result) ? result : []
+      const nodes: CodegraphNode[] = Array.isArray(result) ? result as CodegraphNode[] : []
       const label = operation === 'codegraph_callers' ? '调用者' : '被调用'
       if (nodes.length === 0) {
         formatted = `未找到${label}关系`
       } else {
         formatted = `找到 ${nodes.length} 个${label}：\n\n`
-        for (const node of nodes.slice(0, 10)) {
-          const n = node as any
+        for (const n of nodes.slice(0, MAX_SEARCH_RESULTS_DISPLAY)) {
+          if (typeof n !== 'object' || n === null) continue
           formatted += `  ${n.name}\n`
           formatted += `    文件: ${n.file}:${n.line}\n\n`
         }
@@ -131,13 +177,13 @@ export function formatCodegraphResult(
     }
 
     case 'codegraph_impact': {
-      const nodes = Array.isArray(result) ? result : []
+      const nodes: CodegraphNode[] = Array.isArray(result) ? result as CodegraphNode[] : []
       if (nodes.length === 0) {
         formatted = '未找到影响范围'
       } else {
         formatted = `影响分析（${nodes.length} 个文件）：\n\n`
-        for (const node of nodes.slice(0, 15)) {
-          const n = node as any
+        for (const n of nodes.slice(0, MAX_IMPACT_RESULTS_DISPLAY)) {
+          if (typeof n !== 'object' || n === null) continue
           formatted += `  ${n.name}\n`
           formatted += `    文件: ${n.file}\n`
           if (n.depth !== undefined) {
@@ -145,15 +191,19 @@ export function formatCodegraphResult(
           }
           formatted += '\n'
         }
-        if (nodes.length > 15) {
-          formatted += `  ... 还有 ${nodes.length - 15} 个文件\n`
+        if (nodes.length > MAX_IMPACT_RESULTS_DISPLAY) {
+          formatted += `  ... 还有 ${nodes.length - MAX_IMPACT_RESULTS_DISPLAY} 个文件\n`
         }
       }
       break
     }
 
     case 'codegraph_trace': {
-      const data = result as any
+      const data = result as CodegraphTraceResult
+      if (typeof data !== 'object' || data === null) {
+        formatted = '错误: 无效的追踪结果'
+        break
+      }
       if (data.error) {
         formatted = `错误: ${data.error}`
       } else {
@@ -171,7 +221,11 @@ export function formatCodegraphResult(
     }
 
     case 'codegraph_status': {
-      const data = result as any
+      const data = result as CodegraphStatusResult
+      if (typeof data !== 'object' || data === null) {
+        formatted = '错误: 无效的状态结果'
+        break
+      }
       formatted = `CodeGraph 状态：\n\n`
       formatted += `  已初始化: ${data.initialized ? '是' : '否'}\n`
       if (data.nodeCount !== undefined) {
@@ -184,7 +238,11 @@ export function formatCodegraphResult(
     }
 
     case 'codegraph_init': {
-      const data = result as any
+      const data = result as CodegraphInitResult
+      if (typeof data !== 'object' || data === null) {
+        formatted = '错误: 无效的初始化结果'
+        break
+      }
       formatted = data.message || '初始化完成'
       break
     }
