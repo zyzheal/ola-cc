@@ -195,6 +195,7 @@ export class GrokManager {
   private vendorDir: string
   private config: GrokConfig
   private dashboardServer: ReturnType<typeof createServer> | null = null
+  private dashboardTimer: NodeJS.Timeout | null = null
 
   /** 惰性获取 projectRoot，适配 worktree 切换 */
   private get projectRoot(): string {
@@ -1097,9 +1098,13 @@ Provide a concise answer with file:line references.`
       this.dashboardServer.close()
       this.dashboardServer = null
     }
+    if (this.dashboardTimer) {
+      clearTimeout(this.dashboardTimer)
+      this.dashboardTimer = null
+    }
 
     const actualPort = port || await this.findAvailablePort()
-    const token = Math.random().toString(36).slice(2)
+    const token = crypto.randomUUID()
 
     const server = createServer((req, res) => {
       const url = new URL(req.url || '/', `http://localhost:${actualPort}`)
@@ -1152,9 +1157,11 @@ Provide a concise answer with file:line references.`
         openBrowser(url)
 
         // 30 分钟后自动关闭
-        setTimeout(() => {
+        if (this.dashboardTimer) clearTimeout(this.dashboardTimer)
+        this.dashboardTimer = setTimeout(() => {
           server.close()
           this.dashboardServer = null
+          this.dashboardTimer = null
           logForDebugging(`[grok] Dashboard auto-closed after 30 minutes`)
         }, 30 * 60 * 1000)
 

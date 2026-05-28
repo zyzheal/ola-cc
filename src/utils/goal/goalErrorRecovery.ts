@@ -1,7 +1,8 @@
 /**
  * Three-layer error recovery state machine.
- * Reads tracker state, returns recovery decisions with prompts.
- * Does NOT modify tracker directly — caller applies changes.
+ * Returns recovery decisions with prompts.
+ * NOTE: Directly modifies tracker state (recoveryLayer, category resets, fullRestartUsed)
+ * as a side effect. Caller should NOT additionally modify tracker after calling these functions.
  */
 
 import type { UnifiedErrorTracker, RecoveryLayer } from "./goalErrorTracker.js"

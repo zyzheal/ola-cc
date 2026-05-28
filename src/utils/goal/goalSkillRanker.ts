@@ -5,6 +5,7 @@
 
 import type { SkillMetadata } from "./skillRegistry.js"
 import type { ScenarioConfig } from "./goalScenario.js"
+import { SKILL_SCENARIO_AFFINITY } from "./goalScenario.js"
 
 const STOP_WORDS = new Set([
   "the", "a", "an", "is", "are", "was", "were", "be", "been",
@@ -70,23 +71,4 @@ export function rankSkills(
     .slice(0, limit)
 }
 
-/** 17 skills × 5 scenarios affinity matrix from design doc §4.3 */
-const SKILL_SCENARIO_AFFINITY: Record<string, Record<string, number>> = {
-  "systematic-debugging":         { code_change: 0.3, doc_writing: 0.0, troubleshooting: 1.0, design_improve: 0.1, refactoring: 0.3 },
-  "brainstorming":                { code_change: 0.4, doc_writing: 0.3, troubleshooting: 0.1, design_improve: 1.0, refactoring: 0.2 },
-  "test-driven-development":      { code_change: 0.9, doc_writing: 0.0, troubleshooting: 0.5, design_improve: 0.1, refactoring: 0.8 },
-  "verification-before-completion": { code_change: 0.8, doc_writing: 0.4, troubleshooting: 0.6, design_improve: 0.3, refactoring: 0.8 },
-  "requesting-code-review":       { code_change: 0.7, doc_writing: 0.3, troubleshooting: 0.4, design_improve: 0.4, refactoring: 0.7 },
-  "writing-plans":                { code_change: 0.5, doc_writing: 0.5, troubleshooting: 0.2, design_improve: 0.8, refactoring: 0.6 },
-  "executing-plans":              { code_change: 0.7, doc_writing: 0.3, troubleshooting: 0.2, design_improve: 0.4, refactoring: 0.6 },
-  "design-constraint":            { code_change: 0.5, doc_writing: 0.2, troubleshooting: 0.2, design_improve: 0.9, refactoring: 0.7 },
-  "design-doc-reviewer":          { code_change: 0.2, doc_writing: 0.8, troubleshooting: 0.1, design_improve: 0.9, refactoring: 0.3 },
-  "code-design-analyzer":         { code_change: 0.4, doc_writing: 0.1, troubleshooting: 0.5, design_improve: 0.8, refactoring: 0.8 },
-  "task-decomposer":              { code_change: 0.6, doc_writing: 0.3, troubleshooting: 0.3, design_improve: 0.7, refactoring: 0.5 },
-  "orion-deep-audit":             { code_change: 0.5, doc_writing: 0.0, troubleshooting: 0.8, design_improve: 0.4, refactoring: 0.7 },
-  "orion-repairing":              { code_change: 0.5, doc_writing: 0.0, troubleshooting: 0.7, design_improve: 0.1, refactoring: 0.4 },
-  "orion-reviewing":              { code_change: 0.6, doc_writing: 0.2, troubleshooting: 0.4, design_improve: 0.4, refactoring: 0.6 },
-  "feature-dev:feature-dev":      { code_change: 0.9, doc_writing: 0.1, troubleshooting: 0.2, design_improve: 0.4, refactoring: 0.4 },
-  "simplify":                     { code_change: 0.3, doc_writing: 0.0, troubleshooting: 0.2, design_improve: 0.2, refactoring: 0.9 },
-  "docs-navigator":               { code_change: 0.1, doc_writing: 0.7, troubleshooting: 0.0, design_improve: 0.4, refactoring: 0.1 },
-}
+// Affinity matrix imported from goalScenario.ts (single source of truth)

@@ -190,6 +190,11 @@ export function computeChangeMagnitude(turn: TurnRecord): number {
  * 1. hasHadChanges guard: prevents pure-analysis-turn early convergence
  * 2. Quality gate: qualityScore >= 80 required for convergence
  * 3. maxRounds quality gate: low quality at max rounds -> max_rounds_low_quality
+ *
+ * Edge case: when maxRounds ≤ 2, WINDOW = maxRounds, so infoGainConverged
+ * (needs ≥2 entries) and qualityStable (needs ≥2 entries) may never be true.
+ * In this case, convergence falls through to the round-limit check, which
+ * correctly handles the single-round scenario by checking qualityAbove alone.
  */
 export function checkConvergence(
   state: ConvergenceState,
