@@ -11,11 +11,8 @@ import { observeTurn } from "./goalReActObserver.js"
 import { checkConvergence, updateConvergenceState } from "./goalConvergence.js"
 import {
   createTracker,
-  recordError,
-  resetOnProgress,
   shouldPause as trackerShouldPause,
 } from "./goalErrorTracker.js"
-import { handleVerifyFailure, resetRecovery } from "./goalErrorRecovery.js"
 import type { RankedSkill } from "./goalSkillRanker.js"
 import type { TodoItem } from "../todo/types.js"
 
@@ -72,8 +69,9 @@ export function initOrchestratorState(
  * Process a turn through the orchestrator.
  * Returns an OrchestratorDecision that goalRuntime uses to update state.
  *
- * Pure function contract: does NOT modify GoalRuntimeState directly.
- * goalRuntime is responsible for applying the decision.
+ * Note: mutates runtime.convergenceState and runtime.errorTracker in-place
+ * (single-writer principle — orchestrator owns these fields).
+ * Goal-level state (status, tokens) is NOT modified here.
  */
 export function processTurn(ctx: TurnAnalysisContext): OrchestratorDecision {
   const {
