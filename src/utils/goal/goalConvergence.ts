@@ -1,13 +1,8 @@
 import type { TurnRecord } from "../../commands/goal/types.js";
+import type { ScenarioType } from "./goalScenario.js";
 
-// --- Types ---
-
-export type ScenarioType =
-  | "code_change"
-  | "doc_writing"
-  | "troubleshooting"
-  | "design_improve"
-  | "refactoring";
+// Re-export for consumers
+export type { ScenarioType } from "./goalScenario.js";
 
 export interface ConvergenceState {
   informationGains: number[];
