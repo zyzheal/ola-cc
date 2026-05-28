@@ -1,7 +1,7 @@
 # Grok + CodeGraph 双引擎互补集成设计
 
 > 设计日期：2026-05-28
-> 状态：已实施（Phase 1-6 完成，4 轮深度评审通过，33 项修复）
+> 状态：已实施（Phase 1-6 完成，6 轮深度评审通过，43 项修复，P0 安全问题清零）
 
 ---
 
@@ -772,6 +772,26 @@ vendor/
 | 32 | P1 | `includeCode` schema 参数从未传递到后端 | 从 schema 移除 |
 | 33 | P1 | `parseWithTimeout` 死代码（零调用点） | 移除方法和 `PARSE_TIMEOUT` 常量 |
 
+#### 第五轮：安全评审（1 项）
+
+| # | 级别 | 问题 | 修复 |
+|---|------|------|------|
+| 34 | P1 | GrokManager `execSync` shell 模式（git clone/pull） | `execSync` → `execFileSync`（数组参数） |
+
+#### 第六轮：并行架构/质量/安全评审（9 项）
+
+| # | 级别 | 问题 | 修复 |
+|---|------|------|------|
+| 35 | P0 | 重定向协议降级 — `downloadFile` 未验证 redirect URL 协议 | 添加 HTTPS 校验，拒绝非 HTTPS 重定向 |
+| 36 | P0 | tar 路径穿越 — `extractTarGz` 无路径限制 | 添加 `--no-absolute-filenames` 防护 |
+| 37 | P0 | pipelineLock 竞态 — check-and-set 非原子 | 原子化互斥锁模式（先捕获再创建） |
+| 38 | P0 | callAgentWithTimeout timer 初始化时序 | 先创建 timer Promise 再 race，finally 清理 |
+| 39 | P0 | runCodegraph 双重超时机制冗余 | 移除 spawn 的 timeout 选项，只保留手动 timer |
+| 40 | P1 | `logError` 函数定义但从未调用 | 移除死代码 |
+| 41 | P1 | `GROK_CHECKPOINT_DIR` 常量未使用 | 移除死代码 |
+| 42 | P1 | CodegraphTool.ts 不安全 `any` 类型 | `any` → `Record<string, unknown>` |
+| 43 | P1 | parseAnalysisResult 静默吞掉解析失败 | 添加 `console.warn` 警告日志 |
+
 ### 13.4 已知遗留项
 
 | 优先级 | 项目 | 说明 |
@@ -783,4 +803,4 @@ vendor/
 | P3 | 二进制校验 | CodegraphManager 下载后 SHA-256 验证 |
 | P3 | 流式写入 | 大项目（10 万+ 文件）的内存优化 |
 
-*文档版本：v3.0（实施完成 + 4 轮评审，33 项修复）*
+*文档版本：v3.1（实施完成 + 6 轮评审，43 项修复，P0 安全问题清零）*

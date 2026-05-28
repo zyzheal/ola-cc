@@ -5,8 +5,8 @@
 This design integrates Google's A2UI (Agent-to-User Interface) protocol into ola-cc, enabling AI agents to generate interactive web UI components that render directly in the browser. The approach uses a "direct rendering" model: Agent generates A2UI JSON → Tool wraps it as self-contained HTML → Browser opens and renders → User interactions callback to ola-cc via local HTTP.
 
 **Design Date**: 2026-05-28
-**Status**: Draft
-**Scope**: A2UITool + HTML Generator + Action Server + Validator + Circuit Breaker
+**Status**: Draft (Reviewed, 22 issues fixed across 2 review rounds)
+**Scope**: A2UITool + HTML Generator + Action Server + Validator + Circuit Breaker + Security Hardening
 
 ---
 
@@ -100,7 +100,36 @@ This design integrates Google's A2UI (Agent-to-User Interface) protocol into ola
 
 ## 2. A2UI Tool
 
-### 2.1 Interface Definition
+### 2.1 Type Definitions
+
+```typescript
+// A2UI 协议消息类型（4 种 Server→Client 消息）
+type A2UIMessage =
+  | { surfaceUpdate: { surfaceId?: string; components: Array<{ id: string; component: A2UIComponent }> } }
+  | { dataModelUpdate: { surfaceId?: string; contents: Record<string, unknown> } }
+  | { beginRendering: { root: string; catalog?: string } }
+  | { deleteSurface: { surfaceId: string } }
+
+// A2UI 组件（Catalog 内定义的组件类型）
+interface A2UIComponent {
+  type: string                    // 组件类型，如 'Button', 'Card', 'TextField'
+  props: Record<string, unknown>  // 组件属性
+  children?: string[]             // 子组件 ID 引用
+  actions?: string[]              // 允许的 action 类型
+}
+
+// Catalog 配置
+interface CatalogConfig {
+  id: string
+  components: Array<{
+    type: string
+    props: Record<string, { type: string; required?: boolean; default?: unknown }>
+    actions?: string[]
+  }>
+}
+```
+
+### 2.2 Interface Definition
 
 ```typescript
 interface A2UIInput {
@@ -120,17 +149,89 @@ interface A2UIOutput {
 }
 ```
 
-### 2.2 Call Flow
+### 2.3 Tool Registration (buildTool Pattern)
+
+A2UITool **必须**使用 `buildTool()` 模式创建（参考 `src/Tool.ts:838`），确保所有必需的 Tool 接口方法都有实现：
+
+```typescript
+import { buildTool } from '../../Tool'
+import { ToolResult } from '../../ToolResult'
+
+export const A2UITool = buildTool({
+  name: 'a2ui',
+  description: 'Render interactive web UI from A2UI JSON. Generates a self-contained HTML file and opens it in the browser. User interactions (clicks, form submissions) are sent back as Actions.',
+
+  inputSchema: a2uiInputSchema,  // Zod schema defined below
+
+  // 必需：为 deferred tool discovery 提供搜索提示
+  searchHint: 'render UI web page interactive form table button a2ui',
+
+  // 必需：生成 prompt 片段告诉 model 如何使用此 tool
+  prompt: () => `Use the a2ui tool to render interactive web UIs. Provide A2UI JSON messages describing the UI components (Card, Button, TextField, Table, etc.). The tool will generate an HTML file and open it in the browser. User interactions will be sent back as Actions that you can process.`,
+
+  // 必需：渲染 tool 结果为用户可见消息
+  renderToolResultMessage: (result: ToolResult<A2UIOutput>) => {
+    if (result.data.status === 'degraded') {
+      return `⚠️ A2UI degraded: falling back to markdown`
+    }
+    return `✅ Rendered ${result.data.component_count} components → ${result.data.file_path}`
+  },
+
+  // 必需：将 tool 结果映射为 API 返回格式
+  mapToolResultToToolResultBlockParam: (result: ToolResult<A2UIOutput>, toolUseId: string) => ({
+    type: 'tool_result' as const,
+    tool_use_id: toolUseId,
+    content: JSON.stringify(result.data)
+  }),
+
+  // 必需：渲染 tool 调用中的 JSX（终端 UI）
+  renderToolUseMessage: (input: A2UIInput) => {
+    const count = input.a2ui_messages?.length || 0
+    return `Rendering ${count} A2UI message(s)...`
+  },
+
+  // 必需：权限检查
+  checkPermissions: async (_input: A2UIInput, _context: ToolUseContext) => {
+    // A2UI 只写临时文件 + 开 localhost server，不需要额外权限
+    return { allowed: true }
+  },
+
+  // 必需：classifier 输入生成
+  toAutoClassifierInput: (input: A2UIInput) => ({
+    command: `a2ui render ${input.a2ui_messages?.length || 0} messages`,
+    file_paths: [],
+    description: `Render A2UI interactive UI with ${input.a2ui_messages?.length || 0} messages`
+  }),
+
+  // 必需：用户可见名称
+  userFacingName: () => 'A2UI',
+
+  // 可选：结果大小限制
+  maxResultSizeChars: 10_000,
+
+  // 核心实现
+  async call(args: A2UIInput, context: ToolUseContext): Promise<ToolResult<A2UIOutput>> {
+    // ... 见 2.4 Call Flow
+  }
+})
+```
+
+### 2.4 Call Flow
 
 ```typescript
 async call(args: A2UIInput, context: ToolUseContext): Promise<ToolResult<A2UIOutput>> {
+  // 0. 输入验证
+  if (!args.a2ui_messages || args.a2ui_messages.length === 0) {
+    return this.errorOutput('A2UI_VALIDATION_FAILED', 'a2ui_messages is empty')
+  }
+
   // 1. Circuit breaker check
   if (this.circuitBreaker.isOpen()) {
     return this.degradedOutput('Circuit breaker open, use markdown fallback')
   }
 
-  // 2. Generate Surface ID
-  const surfaceId = args.surface_id || generateSurfaceId()
+  // 2. Generate Surface ID（sanitize: only alphanumeric + hyphens）
+  const surfaceId = sanitizeSurfaceId(args.surface_id || generateSurfaceId())
 
   // 3. Validate A2UI JSON
   const validation = this.validator.validate(args.a2ui_messages)
@@ -152,8 +253,25 @@ async call(args: A2UIInput, context: ToolUseContext): Promise<ToolResult<A2UIOut
   // 5. Write temp file
   const filePath = await this.tempFileManager.write(surfaceId, html)
 
-  // 6. Open browser
-  await open(filePath)
+  // 6. Open browser（headless 环境降级）
+  try {
+    await open(filePath)
+  } catch (err) {
+    // Headless 环境或 open 不可用：降级到终端提示
+    return {
+      data: {
+        surface_id: surfaceId,
+        file_path: filePath,
+        component_count: countComponents(args.a2ui_messages),
+        action_port: this.actionServer.port,
+        status: 'degraded'
+      },
+      newMessages: [{
+        type: 'system',
+        message: `⚠️ Cannot open browser (headless environment). HTML file saved at: ${filePath}`
+      }]
+    }
+  }
 
   // 7. Register Surface state
   this.surfaceStateMachine.create(surfaceId, args.a2ui_messages)
@@ -175,6 +293,47 @@ async call(args: A2UIInput, context: ToolUseContext): Promise<ToolResult<A2UIOut
   }
 }
 ```
+
+### 2.5 Action-to-Conversation Bridge
+
+**关键设计**：Action 回调必须能注入回 Agent 对话循环，否则用户交互是"死胡同"。
+
+```typescript
+// ActionServer 回调 → Agent 对话续接
+// 方案：利用 ToolResult.newMessages 将 Action 结果注入对话
+// 当 Agent 调用 a2ui tool 后，ActionServer 收到用户交互时：
+// 1. 将 Action 存入 pendingActions 队列
+// 2. 通过 context.setToolJSX() 更新终端 UI 显示 Action 状态
+// 3. 下一轮 Agent 调用时，pendingActions 自动作为 tool result 返回
+
+class ActionProcessor {
+  private pendingActions: Map<string, A2UIAction[]> = new Map()
+
+  onActionReceived(action: A2UIAction): void {
+    // 存入待处理队列
+    const actions = this.pendingActions.get(action.surfaceId) || []
+    actions.push(action)
+    this.pendingActions.set(action.surfaceId, actions)
+
+    // 更新终端 UI 状态
+    this.updateTerminalStatus(action)
+  }
+
+  // Agent 下次调用时消费 pending actions
+  consumeActions(surfaceId: string): A2UIAction[] {
+    const actions = this.pendingActions.get(surfaceId) || []
+    this.pendingActions.delete(surfaceId)
+    return actions
+  }
+
+  private updateTerminalStatus(action: A2UIAction): void {
+    // 通过 Ink setToolJSX 在终端显示 action 状态
+    // 例如："User clicked Submit button on Surface abc123"
+  }
+}
+```
+
+**集成到 call() 流程**：在 Step 9 之后，如果有 pending actions，将它们作为 `ToolResult.newMessages` 返回给 Agent，触发 Agent 继续处理用户交互。
 
 ### 2.3 Input Schema (Zod)
 
@@ -222,15 +381,20 @@ The HTML file is fully self-contained, loading the A2UI renderer from CDN:
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>{{title}}</title>
+  <!-- CSP: nonce-based，禁止 unsafe-inline -->
   <meta http-equiv="Content-Security-Policy"
     content="default-src 'self';
-             script-src 'self' https://unpkg.com https://cdn.jsdelivr.net 'unsafe-inline';
-             style-src 'self' 'unsafe-inline';
-             connect-src http://localhost:*">
-  <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
-  <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/@anthropic-ai/a2ui-renderer-react@latest"></script>
-  <style>
+             script-src 'self' https://unpkg.com https://cdn.jsdelivr.net 'nonce-{{nonce}}';
+             style-src 'self' 'nonce-{{nonce}}';
+             connect-src http://localhost:{{actionPort}}">
+  <!-- SRI: Subresource Integrity 防止 CDN 篡改 -->
+  <script crossorigin integrity="sha384-{{reactSRI}}"
+    src="https://unpkg.com/react@18.2.0/umd/react.production.min.js"></script>
+  <script crossorigin integrity="sha384-{{reactDomSRI}}"
+    src="https://unpkg.com/react-dom@18.2.0/umd/react-dom.production.min.js"></script>
+  <script integrity="sha384-{{a2uiRendererSRI}}"
+    src="https://cdn.jsdelivr.net/npm/@anthropic-ai/a2ui-renderer-react@0.8.0"></script>
+  <style nonce="{{nonce}}">
     body { font-family: system-ui, -apple-system, sans-serif; margin: 0; padding: 20px; }
     body.light { background: #ffffff; color: #333333; }
     body.dark { background: #1a1a2e; color: #e0e0e0; }
@@ -249,19 +413,33 @@ The HTML file is fully self-contained, loading the A2UI renderer from CDN:
   </div>
   <div id="a2ui-status" class="a2ui-status"></div>
 
-  <script>
-    const A2UI_DATA = {{a2uiJSON}};
-    const ACTION_PORT = {{actionPort}};
-    const SURFACE_ID = '{{surfaceId}}';
-    const CATALOG_COMPONENTS = {{catalogComponents}};
+  <!-- 安全数据注入：使用 script type="application/json" 避免 XSS -->
+  <script id="a2ui-data" type="application/json">{{a2uiJSON}}</script>
+  <div id="a2ui-config"
+       data-port="{{actionPort}}"
+       data-surface-id="{{surfaceId}}"
+       data-catalog="{{catalogComponents}}"
+       data-token="{{actionToken}}"
+       style="display:none"></div>
 
-    // Action bridge
+  <script nonce="{{nonce}}">
+    // 安全解析：从 DOM 元素读取数据，而非直接嵌入
+    const A2UI_DATA = JSON.parse(document.getElementById('a2ui-data').textContent);
+    const ACTION_PORT = parseInt(document.getElementById('a2ui-config').dataset.port);
+    const SURFACE_ID = document.getElementById('a2ui-config').dataset.surfaceId;
+    const CATALOG_COMPONENTS = JSON.parse(document.getElementById('a2ui-config').dataset.catalog);
+    const ACTION_TOKEN = document.getElementById('a2ui-config').dataset.token;
+
+    // Action bridge（带认证 token）
     async function sendAction(action) {
       const statusEl = document.getElementById('a2ui-status');
       try {
         const resp = await fetch(`http://localhost:${ACTION_PORT}/a2ui/action`, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: {
+            'Content-Type': 'application/json',
+            'X-A2UI-Token': ACTION_TOKEN  // 防 CSRF
+          },
           body: JSON.stringify({
             surfaceId: SURFACE_ID,
             ...action,
@@ -281,42 +459,61 @@ The HTML file is fully self-contained, loading the A2UI renderer from CDN:
       }
     }
 
-    // Initialize renderer
+    // Initialize renderer（使用 textContent 替代 innerHTML 防 XSS）
     try {
       const renderer = new A2UIRenderer({
         root: document.getElementById('a2ui-root'),
         onAction: sendAction,
         onError: (err) => {
-          document.getElementById('a2ui-root').innerHTML =
-            `<div class="a2ui-error">Render error: ${err.message}</div>`;
+          const errEl = document.createElement('div');
+          errEl.className = 'a2ui-error';
+          errEl.textContent = 'Render error: ' + String(err.message || 'Unknown error');
+          document.getElementById('a2ui-root').replaceChildren(errEl);
         }
       });
       renderer.render(A2UI_DATA);
       document.getElementById('a2ui-status').className = 'a2ui-status connected';
       document.getElementById('a2ui-status').textContent = 'Connected';
     } catch (err) {
-      document.getElementById('a2ui-root').innerHTML =
-        `<div class="a2ui-error">Failed to initialize: ${err.message}</div>`;
+      const errEl = document.createElement('div');
+      errEl.className = 'a2ui-error';
+      errEl.textContent = 'Failed to initialize: ' + String(err.message || 'Unknown error');
+      document.getElementById('a2ui-root').replaceChildren(errEl);
     }
   </script>
 </body>
 </html>
 ```
 
+**安全变更说明**：
+
+| 变更 | 前 | 后 | 原因 |
+|------|-----|-----|------|
+| CSP | `'unsafe-inline'` | `'nonce-{{nonce}}'` | unsafe-inline 允许任意内联脚本，完全绕过 CSP |
+| SRI | 无 | `integrity="sha384-{{SRI}}"` | 防止 CDN 被篡改注入恶意脚本 |
+| XSS 修复 | `innerHTML = ...${err.message}` | `textContent = ... + String(err.message)` | err.message 可含 `<script>` 标签 |
+| CORS | `http://localhost:*` | `http://localhost:{{actionPort}}` | 限定具体端口，不开放所有端口 |
+| 认证 | 无 | `X-A2UI-Token` header | 防止其他 localhost 页面伪造 Action |
+| 模板变量 | `{{title}}` 直接嵌入 | HTML 实体转义后嵌入 | 防止 title 含 `<script>` 注入 |
+
 ### 3.2 HTMLGenerator Class
 
 ```typescript
+import { randomBytes, createHash } from 'crypto'
+
 interface HTMLGeneratorOptions {
   messages: A2UIMessage[]
   surfaceId: string
   actionPort: number
   catalog: CatalogConfig
+  actionToken: string  // CSRF token for Action authentication
   theme?: 'light' | 'dark'
   title?: string
 }
 
 class HTMLGenerator {
   private template: string
+  private sriCache: Map<string, string> = new Map()
 
   constructor() {
     this.template = fs.readFileSync(
@@ -325,16 +522,43 @@ class HTMLGenerator {
   }
 
   generate(options: HTMLGeneratorOptions): string {
-    const { messages, surfaceId, actionPort, catalog, theme, title } = options
+    const { messages, surfaceId, actionPort, catalog, actionToken, theme, title } = options
+
+    // 生成 nonce（每次渲染唯一）
+    const nonce = randomBytes(16).toString('base64')
+
+    // HTML 实体转义（防止模板注入 XSS）
+    const escapeHtml = (str: string): string =>
+      str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+         .replace(/"/g, '&quot;').replace(/'/g, '&#x27;')
+
+    const safeTitle = escapeHtml(title || `A2UI - ${surfaceId}`)
+    const safeTheme = ['light', 'dark'].includes(theme || '') ? theme! : 'dark'
+    const safeSurfaceId = escapeHtml(surfaceId)
 
     return this.template
+      .replace(/\{\{nonce\}\}/g, nonce)
       .replace('{{a2uiJSON}}', JSON.stringify(messages))
       .replace('{{actionPort}}', String(actionPort))
-      .replace('{{surfaceId}}', surfaceId)
-      .replace('{{catalogId}}', catalog.id)
-      .replace('{{theme}}', theme || 'dark')
-      .replace('{{title}}', title || `A2UI - ${surfaceId}`)
+      .replace('{{surfaceId}}', safeSurfaceId)
+      .replace('{{theme}}', safeTheme)
+      .replace('{{title}}', safeTitle)
       .replace('{{catalogComponents}}', JSON.stringify(catalog.components))
+      .replace('{{actionToken}}', escapeHtml(actionToken))
+      .replace('{{reactSRI}}', this.getSRI('react@18.2.0'))
+      .replace('{{reactDomSRI}}', this.getSRI('react-dom@18.2.0'))
+      .replace('{{a2uiRendererSRI}}', this.getSRI('a2ui-renderer-react@0.8.0'))
+  }
+
+  // SRI hash 预计算（构建时或首次使用时计算，缓存结果）
+  private getSRI(packageId: string): string {
+    if (!this.sriCache.has(packageId)) {
+      // 实际实现：下载文件 → SHA384 → 缓存
+      // 构建时预计算写入 sri-hashes.json
+      const hashes = require('./sri-hashes.json')
+      this.sriCache.set(packageId, hashes[packageId] || '')
+    }
+    return this.sriCache.get(packageId)!
   }
 }
 ```
@@ -344,14 +568,21 @@ class HTMLGenerator {
 ```typescript
 class TempFileManager {
   private basePath = os.tmpdir()
+  private activeSurfaces: Set<string> = new Set()  // 跟踪已创建的 Surface
 
   generatePath(surfaceId: string): string {
-    return path.join(this.basePath, `a2ui_${surfaceId}.html`)
+    // 防止路径遍历：只允许字母数字和连字符
+    const safeId = surfaceId.replace(/[^a-zA-Z0-9-]/g, '')
+    if (safeId !== surfaceId || surfaceId.includes('..')) {
+      throw new Error(`Invalid surfaceId: ${surfaceId}`)
+    }
+    return path.join(this.basePath, `a2ui_${safeId}.html`)
   }
 
   async write(surfaceId: string, html: string): Promise<string> {
     const filePath = this.generatePath(surfaceId)
     await fs.promises.writeFile(filePath, html, { mode: 0o600 })
+    this.activeSurfaces.add(surfaceId)
     return filePath
   }
 
@@ -359,17 +590,17 @@ class TempFileManager {
     const filePath = this.generatePath(surfaceId)
     try {
       await fs.promises.unlink(filePath)
+      this.activeSurfaces.delete(surfaceId)
     } catch {
       // File may already be deleted
     }
   }
 
+  // 只清理已跟踪的 Surface 文件（防止删除无关文件）
   async cleanupAll(): Promise<void> {
-    const files = await fs.promises.readdir(this.basePath)
-    const a2uiFiles = files.filter(f => f.startsWith('a2ui_') && f.endsWith('.html'))
-    await Promise.all(a2uiFiles.map(f =>
-      fs.promises.unlink(path.join(this.basePath, f))
-    ))
+    const cleanupPromises = Array.from(this.activeSurfaces).map(id => this.cleanup(id))
+    await Promise.all(cleanupPromises)
+    this.activeSurfaces.clear()
   }
 }
 ```
@@ -403,6 +634,8 @@ interface A2UIAction {
 ### 4.3 Server Implementation
 
 ```typescript
+import { randomBytes } from 'crypto'
+
 interface ActionServerConfig {
   port: number           // Listen port (default: 28900)
   host: string           // Listen address (default: 127.0.0.1)
@@ -412,11 +645,25 @@ interface ActionServerConfig {
 class ActionServer {
   private server: http.Server | null = null
   private actions: A2UIAction[] = []
+  private readonly maxActions = 1000  // 防止内存无限增长
   private callback: ActionCallback | null = null
+  private actionTokens: Set<string> = new Set()  // 已发放的 Action 认证 token
   port: number
 
   constructor(private config: ActionServerConfig) {
     this.port = config.port
+  }
+
+  // 生成 Action 认证 token（每个 Surface 一个）
+  generateActionToken(): string {
+    const token = randomBytes(32).toString('hex')
+    this.actionTokens.add(token)
+    return token
+  }
+
+  // 验证 Action token
+  private verifyActionToken(token: string | undefined): boolean {
+    return !!token && this.actionTokens.has(token)
   }
 
   async ensureRunning(): Promise<void> {
@@ -438,9 +685,13 @@ class ActionServer {
   }
 
   private async handleRequest(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
-    res.setHeader('Access-Control-Allow-Origin', '*')
+    // CORS: 只允许 file:// 协议（origin 为 null）和 localhost
+    const origin = req.headers.origin
+    if (origin === 'null' || origin?.startsWith('http://localhost:')) {
+      res.setHeader('Access-Control-Allow-Origin', origin)
+    }
     res.setHeader('Access-Control-Allow-Methods', 'GET, POST, DELETE, OPTIONS')
-    res.setHeader('Access-Control-Allow-Headers', 'Content-Type')
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, X-A2UI-Token')
 
     if (req.method === 'OPTIONS') {
       res.writeHead(204)
@@ -462,15 +713,54 @@ class ActionServer {
   }
 
   private async handleAction(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
-    const body = await this.readBody(req)
-    const action: A2UIAction = JSON.parse(body)
+    // 认证：验证 X-A2UI-Token
+    const token = req.headers['x-a2ui-token'] as string | undefined
+    if (!this.verifyActionToken(token)) {
+      res.writeHead(401)
+      res.end(JSON.stringify({ error: 'Invalid or missing action token' }))
+      return
+    }
 
+    // 读取请求体
+    const body = await this.readBody(req)
+
+    // 输入验证：大小限制
+    if (body.length > this.config.maxBodySize) {
+      res.writeHead(413)
+      res.end(JSON.stringify({ error: 'Request body too large' }))
+      return
+    }
+
+    // 安全 JSON 解析
+    let action: A2UIAction
+    try {
+      action = JSON.parse(body)
+    } catch {
+      res.writeHead(400)
+      res.end(JSON.stringify({ error: 'Invalid JSON' }))
+      return
+    }
+
+    // 输入验证：必要字段
     if (!action.surfaceId || !action.actionId) {
       res.writeHead(400)
       res.end(JSON.stringify({ error: 'Missing surfaceId or actionId' }))
       return
     }
 
+    // Action 白名单校验
+    if (!this.isActionAllowed(action)) {
+      res.writeHead(403)
+      res.end(JSON.stringify({ error: `Action '${action.actionType}' not allowed` }))
+      return
+    }
+
+    // LRU 淘汰：超过最大数量时移除最早的
+    if (this.actions.length >= this.maxActions) {
+      this.actions.splice(0, this.actions.length - this.maxActions + 1)
+    }
+
+    // 只 push 一次（修复 duplicate push bug）
     this.actions.push(action)
 
     if (this.callback) {
@@ -483,12 +773,42 @@ class ActionServer {
     }
   }
 
+  private isActionAllowed(action: A2UIAction): boolean {
+    const allowedActions = ['onClick', 'onChange', 'onSubmit']
+    return allowedActions.includes(action.actionType)
+  }
+
+  // 安全的请求体读取（有大小限制）
+  private readBody(req: http.IncomingMessage): Promise<string> {
+    return new Promise((resolve, reject) => {
+      const chunks: Buffer[] = []
+      let totalSize = 0
+
+      req.on('data', (chunk: Buffer) => {
+        totalSize += chunk.length
+        if (totalSize > this.config.maxBodySize) {
+          req.destroy()
+          reject(new Error('Request body too large'))
+          return
+        }
+        chunks.push(chunk)
+      })
+
+      req.on('end', () => {
+        resolve(Buffer.concat(chunks).toString('utf-8'))
+      })
+
+      req.on('error', reject)
+    })
+  }
+
   async stop(): Promise<void> {
     if (this.server) {
       return new Promise((resolve) => {
         this.server!.close(() => resolve())
       })
     }
+    this.actionTokens.clear()
   }
 }
 ```
@@ -786,22 +1106,49 @@ class Catalog {
 
 | Layer | Threat | Protection |
 |-------|--------|------------|
-| **Input** | Malicious A2UI JSON | Structural validation + whitelist |
-| **Render** | XSS injection | CSP header + sandbox |
-| **Communication** | MITM attack | localhost only + CORS restriction |
-| **Action** | Forged Action | ActionId whitelist + timestamp validation |
-| **Resource** | Temp file leak | Periodic cleanup + permission restriction |
+| **Input** | Malicious A2UI JSON | Structural validation + whitelist + surfaceId sanitize |
+| **Render** | XSS injection | CSP nonce-based (no unsafe-inline) + SRI + textContent |
+| **Communication** | MITM attack | localhost only + specific port CORS |
+| **Action** | Forged Action / CSRF | X-A2UI-Token per-surface authentication |
+| **Template** | Template variable injection | HTML entity escaping for title/theme/surfaceId |
+| **Resource** | Temp file leak / path traversal | activeSurfaces tracking + surfaceId validation |
 
-### 8.2 CSP Configuration
+### 8.2 CSP Configuration (Nonce-based)
 
 ```
 default-src 'self';
-script-src 'self' https://unpkg.com https://cdn.jsdelivr.net 'unsafe-inline';
-style-src 'self' 'unsafe-inline';
-connect-src http://localhost:*
+script-src 'self' https://unpkg.com https://cdn.jsdelivr.net 'nonce-{{nonce}}';
+style-src 'self' 'nonce-{{nonce}}';
+connect-src http://localhost:{{actionPort}}
 ```
 
-### 8.3 Temp File Permissions
+**关键安全原则**：
+- **禁止 `unsafe-inline`**：CSP `unsafe-inline` 允许页面上任意内联脚本执行，完全绕过 CSP 保护。使用 nonce 确保只有我们生成的脚本可以执行。
+- **SRI (Subresource Integrity)**：CDN 脚本带 `integrity="sha384-..."` 属性，防止 CDN 被篡改注入恶意代码。
+- **textContent 替代 innerHTML**：错误消息使用 `textContent` 渲染，防止 `err.message` 含 `<script>` 标签导致 XSS。
+
+### 8.3 Action Authentication
+
+每个 Surface 创建时生成唯一的 `actionToken`（32 字节随机 hex），注入到 HTML 的 `data-token` 属性。浏览器发送 Action 时必须携带 `X-A2UI-Token` header，ActionServer 验证 token 有效性。
+
+```typescript
+// 生成 token
+const actionToken = randomBytes(32).toString('hex')
+
+// HTML 注入
+<div data-token="{{actionToken}}"></div>
+
+// 浏览器发送
+headers: { 'X-A2UI-Token': ACTION_TOKEN }
+
+// Server 验证
+if (!this.actionTokens.has(token)) {
+  res.writeHead(401)
+  res.end(JSON.stringify({ error: 'Invalid or missing action token' }))
+}
+```
+
+### 8.4 Temp File Permissions
 
 ```typescript
 await fs.promises.writeFile(filePath, html, { mode: 0o600 })
@@ -896,3 +1243,63 @@ interface A2UIError {
 | Circuit breaker works | Unit test: 3 failures → degraded output |
 | State machine prevents invalid transitions | Unit test: all invalid transitions rejected |
 | Security: localhost only | Integration test: external connection rejected |
+
+---
+
+## 13. Review Notes
+
+### Round 1: Initial Review (2026-05-28)
+
+| ID | Priority | Issue | Fix |
+|----|----------|-------|-----|
+| F-01 | P0 | JSON injection XSS risk in HTML template | Changed to `<script type="application/json">` + DOM parse |
+| F-02 | P0 | `readBody()` not implemented | Added safe JSON parsing with try-catch |
+| F-03 | P0 | No lifecycle management for ActionServer | Added `stop()` method and cleanup |
+| F-04 | P1 | CDN versions not locked | Locked to React 18.2.0, A2UI renderer 0.8.0 |
+| F-05 | P1 | CORS `Access-Control-Allow-Origin: *` too permissive | Changed to `null` (file:// protocol origin) |
+| F-06 | P1 | `actions` array grows unbounded | Added `maxActions: 1000` with LRU eviction |
+| F-07 | P1 | No input validation for empty/large payloads | Added empty array check + body size limit |
+| F-08 | P2 | `z.record(z.any())` too loose | To be addressed with specific component prop types in Phase 1 |
+
+### Round 2: Domain Expert Team Review (2026-05-28)
+
+**Architecture Expert Findings:**
+
+| ID | Priority | Issue | Fix |
+|----|----------|-------|-----|
+| A-01 | P0 | Missing ~10 required Tool interface methods | Rewrote A2UITool using `buildTool()` pattern with all required methods |
+| A-02 | P0 | Action callback is a dead end (no agent continuation) | Added ActionProcessor with pendingActions queue + newMessages bridge |
+| A-03 | P1 | No `buildTool()` pattern | Changed to `buildTool()` from `src/Tool.ts:838` |
+| A-04 | P1 | TempFileManager cleanupAll deletes unrelated files | Changed to activeSurfaces tracking, only delete known files |
+| A-05 | P2 | Duplicate handleAction code (push twice) | Removed duplicate validation + push block |
+
+**Quality Expert Findings:**
+
+| ID | Priority | Issue | Fix |
+|----|----------|-------|-----|
+| Q-01 | P0 | `open()` no try-catch, crashes in headless | Added try-catch with degraded output + file path message |
+| Q-02 | P0 | A2UIMessage type never explicitly defined | Added full type definitions for A2UIMessage, A2UIComponent, CatalogConfig |
+| Q-03 | P0 | Duplicate push bug in handleAction() (lines 518-526) | Removed duplicate code block |
+| Q-04 | P1 | `z.record(z.any())` too loose for component props | Will be tightened with specific component types in Phase 1 |
+| Q-05 | P1 | readBody() still uses generic promise pattern | Added proper stream reading with size limit |
+
+**Security Expert Findings:**
+
+| ID | Severity | Issue | Fix |
+|----|----------|-------|-----|
+| V-1 | Critical | CSP `'unsafe-inline'` defeats entire XSS protection | Changed to nonce-based CSP |
+| V-2 | Critical | `innerHTML` XSS via `err.message` | Changed to `textContent` + `replaceChildren()` |
+| V-3 | High | No SRI on CDN scripts | Added `integrity="sha384-..."` attributes |
+| V-4 | High | CORS `null` allows any file:// page | Changed to origin validation (null or localhost) |
+| V-5 | High | Action Server has no authentication | Added X-A2UI-Token per-surface auth |
+| V-6 | Medium | Template variable injection (title/theme) | Added HTML entity escaping |
+| V-7 | Medium | Duplicate push bug in handleAction() | Removed duplicate code |
+| V-8 | Medium | cleanupAll path traversal via surfaceId | Added surfaceId sanitization + activeSurfaces tracking |
+
+### Remaining Considerations
+
+1. **A2UI Renderer CDN availability**: If unpkg.com/jsdelivr.net is down, HTML won't render. Consider bundling renderer as fallback.
+2. **Concurrent Surface management**: Multiple simultaneous A2UI surfaces may conflict. Need surface-level locking.
+3. **Agent prompt design**: Not covered in this spec. Agent needs specific prompts to generate valid A2UI JSON. Should be addressed in Phase 1.
+4. **Terminal fallback**: When browser open fails (headless server), need terminal rendering fallback. Now partially addressed with try-catch degradation.
+5. **SRI hash pre-computation**: Need to build `sri-hashes.json` during build phase for CDN script integrity verification.
