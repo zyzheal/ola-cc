@@ -423,6 +423,14 @@ export async function* runAgent({
     ? userContextNoClaudeMd
     : baseUserContext
 
+  // Classification lookup — declared early so shouldOmitGitStatus can reference it.
+  // The actual tool filtering happens later (after resolvedTools is computed).
+  const classification = getClassification(agentDefinition.agentType)
+  let classificationRef: AgentClassification | undefined
+  if (classification) {
+    classificationRef = classification
+  }
+
   // Explore/Plan are read-only search agents — the parent-session-start
   // gitStatus (up to 40KB, explicitly labeled stale) is dead weight. If they
   // need git info they run `git status` themselves and get fresh data.
@@ -531,10 +539,7 @@ export async function* runAgent({
     : resolveAgentTools(agentDefinition, availableTools, isAsync).resolvedTools
 
   // Apply classification-based tool filtering (context pruning)
-  const classification = getClassification(agentDefinition.agentType)
-  let classificationRef: AgentClassification | undefined
   if (classification && !useExactTools) {
-    classificationRef = classification
     const allowSet = new Set(classification.allowedTools)
     const denySet = new Set(classification.deniedTools ?? [])
     const filteredTools = resolvedTools.filter(t => {
