@@ -2,7 +2,7 @@
 
 import { createHash } from 'crypto'
 import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, unlinkSync, writeFileSync } from 'fs'
-import { execSync } from 'child_process'
+import { execFileSync } from 'child_process'
 import { createServer } from 'http'
 import { homedir } from 'os'
 import { extname, resolve } from 'path'
@@ -79,7 +79,6 @@ export const ERROR_SUGGESTIONS: Record<string, string> = {
 
 const GROK_VENDOR_DIR = '~/.ola-cc/vendor/grok'
 const GROK_GRAPH_FILE = '.understand-anything/knowledge-graph.json'
-const GROK_CHECKPOINT_DIR = '.understand-anything/checkpoints'
 
 // Agent 超时配置（毫秒）
 const AGENT_TIMEOUTS = {
@@ -248,10 +247,10 @@ export class GrokManager {
     return this.retryWithBackoff(async () => {
       logForDebugging(`[grok] Cloning Understand-Anything to ${sourceDir}`)
       try {
-        execSync(
-          `git clone --depth 1 https://github.com/Lum1104/Understand-Anything.git ${sourceDir}`,
-          { stdio: 'pipe', timeout: 120_000 }
-        )
+        execFileSync('git', ['clone', '--depth', '1', 'https://github.com/Lum1104/Understand-Anything.git', sourceDir], {
+          stdio: 'pipe',
+          timeout: 120_000,
+        })
         logForDebugging(`[grok] Clone complete`)
         return sourceDir
       } catch (error) {
@@ -279,7 +278,7 @@ export class GrokManager {
 
     logForDebugging(`[grok] Updating source at ${sourceDir}`)
     try {
-      execSync('git pull', { cwd: sourceDir, stdio: 'pipe', timeout: 60_000 })
+      execFileSync('git', ['pull'], { cwd: sourceDir, stdio: 'pipe', timeout: 60_000 })
       logForDebugging(`[grok] Update complete`)
     } catch (error) {
       throw new GrokError(
@@ -363,19 +362,26 @@ export class GrokManager {
    * 带超时的 Agent 调用
    */
   private async callAgentWithTimeout(prompt: string, systemPrompt: string): Promise<string> {
-    let timer: NodeJS.Timeout
-    return Promise.race([
-      this.callAgent(prompt, systemPrompt).finally(() => clearTimeout(timer)),
-      new Promise<never>((_, reject) => {
-        timer = setTimeout(() => reject(new GrokError(
-          'LLM_TIMEOUT',
-          'agent',
-          'LLM call timed out after 30s',
-          true,
-          'Try with smaller scope or check API status'
-        )), this.LLM_TIMEOUT)
-      })
-    ])
+    // 先创建超时 Promise 并捕获 timer 引用，确保 finally 中可清理
+    let timer: NodeJS.Timeout | undefined
+    const timeoutPromise = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => reject(new GrokError(
+        'LLM_TIMEOUT',
+        'agent',
+        'LLM call timed out after 30s',
+        true,
+        'Try with smaller scope or check API status'
+      )), this.LLM_TIMEOUT)
+    })
+
+    try {
+      return await Promise.race([
+        this.callAgent(prompt, systemPrompt),
+        timeoutPromise,
+      ])
+    } finally {
+      if (timer) clearTimeout(timer)
+    }
   }
 
   /**
@@ -452,7 +458,9 @@ Output JSON array of analysis results.`
       const parsed = JSON.parse(cleaned)
       return Array.isArray(parsed) ? parsed : [parsed]
     } catch {
-      logForDebugging(`[grok] Failed to parse analysis result: ${result.slice(0, 200)}`)
+      const preview = result.slice(0, 200)
+      logForDebugging(`[grok] Failed to parse analysis result: ${preview}`)
+      console.warn(`[grok] Warning: LLM returned non-JSON response, skipping batch. Preview: ${preview}`)
       return []
     }
   }
@@ -742,14 +750,16 @@ Output JSON array of analysis results.`
    * 运行 Agent 流水线生成知识图谱
    */
   async runAgentPipeline(options: GrokGenerateOptions): Promise<GrokGenerateResult> {
-    // 并发锁：等待上一次 pipeline 完成
-    if (this.pipelineLock) {
-      logForDebugging('[grok] Pipeline already running, waiting...')
-      await this.pipelineLock
-    }
-
+    // 原子化互斥锁：先捕获当前锁，再创建新锁，确保 check-and-set 原子性
+    const prevLock = this.pipelineLock
     let releaseLock: () => void
     this.pipelineLock = new Promise<void>(resolve => { releaseLock = resolve })
+
+    // 等待上一次 pipeline 完成（如果有的话）
+    if (prevLock) {
+      logForDebugging('[grok] Pipeline already running, waiting...')
+      await prevLock
+    }
 
     try {
       return await this._runPipelineInner(options)

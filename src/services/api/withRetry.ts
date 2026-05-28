@@ -801,7 +801,8 @@ function shouldRetry(error: APIError): boolean {
 
 export function getDefaultMaxRetries(): number {
   if (process.env.OLA_CC_MAX_RETRIES) {
-    return parseInt(process.env.OLA_CC_MAX_RETRIES, 10)
+    const parsed = parseInt(process.env.OLA_CC_MAX_RETRIES, 10)
+    if (!isNaN(parsed) && parsed >= 0) return parsed
   }
   return DEFAULT_MAX_RETRIES
 }
