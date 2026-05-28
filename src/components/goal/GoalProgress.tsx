@@ -4,7 +4,7 @@ import { useAppState } from '../../state/AppState.js'
 import { ThreadGoalStatus } from '../../commands/goal/types.js'
 import type { GoalTask } from '../../commands/goal/types.js'
 
-// 错误边界组件 - 更全面的错误处理
+// 错误边界组件
 class GoalProgressErrorBoundary extends React.Component<
   { children: React.ReactNode },
   { hasError: boolean; error?: string }
@@ -12,50 +12,108 @@ class GoalProgressErrorBoundary extends React.Component<
   state = { hasError: false, error: undefined }
 
   componentDidCatch(error: Error, errorInfo: React.ErrorInfo) {
-    // 只记录错误，不崩溃 REPL
     console.error('[GoalProgress Error]', error.message)
     this.setState({ hasError: true, error: error.message.slice(0, 100) })
   }
 
   render() {
-    if (this.state.hasError) {
-      // 返回空而不是显示错误，避免干扰用户
-      return null
-    }
+    if (this.state.hasError) return null
     return this.props.children
   }
 }
 
-const STATUS_EMOJI: Record<ThreadGoalStatus, string> = {
-  [ThreadGoalStatus.Active]: '🎯',
-  [ThreadGoalStatus.Paused]: '⏸️',
-  [ThreadGoalStatus.BudgetLimited]: '⚠️',
-  [ThreadGoalStatus.Complete]: '✅',
+// ── Constants ──
+
+const STATUS_EMOJI: Record<string, string> = {
+  active: '🎯',
+  paused: '⏸️',
+  budget_limited: '⚠️',
+  complete: '✅',
 }
 
-const STATUS_COLORS: Record<ThreadGoalStatus, string> = {
-  [ThreadGoalStatus.Active]: 'cyan',
-  [ThreadGoalStatus.Paused]: 'yellow',
-  [ThreadGoalStatus.BudgetLimited]: 'red',
-  [ThreadGoalStatus.Complete]: 'green',
+const STATUS_COLORS: Record<string, string> = {
+  active: 'cyan',
+  paused: 'yellow',
+  budget_limited: 'red',
+  complete: 'green',
 }
+
+const PHASE_COLORS: Record<string, string> = {
+  ANALYZE: 'blue',
+  SKILL: 'magenta',
+  REVIEW: 'yellow',
+  FIX: 'cyan',
+  VERIFY: 'green',
+}
+
+const SCENARIO_LABELS: Record<string, string> = {
+  code_change: 'code',
+  doc_writing: 'docs',
+  troubleshooting: 'debug',
+  design_improve: 'design',
+  refactoring: 'refactor',
+}
+
+// ── Helpers ──
 
 function formatDuration(seconds: number): string {
   if (seconds < 60) return `${seconds}s`
   const mins = Math.floor(seconds / 60)
   const secs = seconds % 60
-  return `${mins}m ${secs}s`
+  if (mins < 60) return `${mins}m ${secs}s`
+  const hours = Math.floor(mins / 60)
+  const remainMins = mins % 60
+  return `${hours}h ${remainMins}m ${secs}s`
 }
 
-function renderProgressBar(progress: number, width: number = 20): string {
-  const clampedProgress = Math.max(0, Math.min(100, progress))
-  const filled = Math.round((clampedProgress / 100) * width)
-  const empty = width - filled
-  return '█'.repeat(filled) + '░'.repeat(empty)
+function formatTokens(tokens: number): string {
+  if (tokens < 1000) return tokens.toString()
+  if (tokens < 1000000) return `${(tokens / 1000).toFixed(tokens < 10000 ? 1 : 0)}k`
+  return `${(tokens / 1000000).toFixed(1)}M`
 }
+
+function progressBar(progress: number, width: number = 20): string {
+  const clamped = Math.max(0, Math.min(100, progress))
+  const filled = Math.round((clamped / 100) * width)
+  return '█'.repeat(filled) + '░'.repeat(width - filled)
+}
+
+/** Render trend arrows for a numeric array */
+function trend(values: number[], maxItems: number = 3): string {
+  const recent = values.slice(-maxItems)
+  if (recent.length === 0) return '—'
+  return recent
+    .map((v, i) => {
+      const formatted = v < 1 ? v.toFixed(2) : Math.round(v).toString()
+      if (i === recent.length - 1) {
+        if (recent.length > 1) {
+          const prev = recent[i - 1]
+          if (v > prev * 1.1) return `${formatted}↑`
+          if (v < prev * 0.9) return `${formatted}↓`
+        }
+        return `${formatted}`
+      }
+      return formatted
+    })
+    .join('→')
+}
+
+/** Truncate string to maxLen, adding ellipsis */
+function truncate(s: string, maxLen: number): string {
+  if (s.length <= maxLen) return s
+  return s.slice(0, maxLen - 1) + '…'
+}
+
+/** Separator line for section headers */
+function sectionLabel(label: string): string {
+  const lineLen = 72 - label.length - 3
+  return `── ${label} ${'─'.repeat(Math.max(0, lineLen))}`
+}
+
+// ── Main Component ──
 
 export function GoalProgress() {
-  const goalId = useAppState(s => s.goal?.id ?? '')
+  // ── Goal core state ──
   const goalStatus = useAppState(s => s.goal?.status ?? '')
   const goalObjective = useAppState(s => s.goal?.objective ?? '')
   const goalTokenBudget = useAppState(s => s.goal?.tokenBudget ?? null)
@@ -64,39 +122,48 @@ export function GoalProgress() {
   const goalTotalApiTokens = useAppState(s => s.goal?.totalApiTokens ?? 0)
   const goalMode = useAppState(s => s.goal?.mode ?? 'standard')
   const goalAutoEdit = useAppState(s => s.goal?.autoEdit ?? false)
-  const goalTaskListId = useAppState(s => s.goal?.goalTaskListId ?? undefined)
-  const goalConsecutiveErrors = useAppState(s => s.goalRuntime?.consecutiveErrors ?? 0)
+
+  // ── Runtime state ──
+  const consecutiveErrors = useAppState(s => s.goalRuntime?.consecutiveErrors ?? 0)
+  const turnsWithNoChanges = useAppState(s => s.goalRuntime?.turnsWithNoChanges ?? 0)
   const lastAnalysisResult = useAppState(s => s.goalRuntime?.lastAnalysisResult)
   const consecutiveCritical = useAppState(s => s.goalRuntime?.consecutiveCritical ?? 0)
+  const toolCallsThisTurn = useAppState(s => s.goalRuntime?._toolCallsThisTurn ?? [])
 
+  // ── Orchestrator state (v3 — graceful degradation) ──
+  const currentScenario = useAppState(s => (s.goalRuntime as any)?.currentScenario as string | undefined)
+  const convergenceState = useAppState(s => (s.goalRuntime as any)?.convergenceState as {
+    informationGains: number[]; qualityScores: number[]; changeMagnitudes: number[]; round: number
+  } | undefined)
+  const lastObservation = useAppState(s => (s.goalRuntime as any)?.lastObservation as {
+    mainPhase: string | null; phases: string[]; qualitySignals: { hasErrors: boolean; hasSuccess: boolean; hasProgress: boolean }
+  } | undefined)
+  const errorTracker = useAppState(s => (s.goalRuntime as any)?.errorTracker as {
+    categories: Record<string, { count: number; threshold: number }>
+    recoveryLayer: string; fullRestartUsed: boolean
+  } | undefined)
+
+  // ── Task state ──
   const goalTasks = useAppState(s => {
     const taskListId = s.goal?.goalTaskListId
     if (!taskListId) return null
     return s.goalTasks?.[taskListId] ?? null
   })
-
-  // Fallback to todoListId for backward compatibility
   const todoListId = useAppState(s => s.goal?.todoListId ?? undefined)
   const todos = useAppState(s => {
     if (!todoListId) return null
     return s.todos?.[todoListId] ?? null
   })
 
-  // Hide goal banner when complete — the work is done, no need to keep showing it
-  if (goalStatus === ThreadGoalStatus.Complete) {
-    return null
-  }
+  // Hide when complete
+  if (goalStatus === ThreadGoalStatus.Complete) return null
 
-  const statusKey = goalStatus as ThreadGoalStatus
-  const emoji = Object.prototype.hasOwnProperty.call(STATUS_EMOJI, statusKey)
-    ? STATUS_EMOJI[statusKey]
-    : '📌'
-  const color = Object.prototype.hasOwnProperty.call(STATUS_COLORS, statusKey)
-    ? STATUS_COLORS[statusKey]
-    : 'gray'
+  // ── Derived values ──
+  const statusKey = goalStatus as string
+  const emoji = STATUS_EMOJI[statusKey] ?? '📌'
+  const color = STATUS_COLORS[statusKey] ?? 'gray'
 
-  // Use goalTasks if available, fall back to todos
-  type TaskItem = { status?: string; content?: string }
+  type TaskItem = { status?: string; content?: string; id?: string }
   const taskItems: TaskItem[] = (goalTasks ?? (todos ?? [])) as TaskItem[]
   const currentTask = taskItems.find(t => t.status === 'in_progress')
   const nextTask = taskItems.find(t => t.status === 'pending')
@@ -104,89 +171,173 @@ export function GoalProgress() {
   const totalTasks = taskItems.length
   const taskProgress = totalTasks > 0 ? Math.round((completedTasks / totalTasks) * 100) : 0
 
-  const budgetProgress = goalTokenBudget != null && goalTokenBudget > 0
-    ? Math.max(0, Math.min(100, (Math.max(0, goalTokensUsed) / goalTokenBudget) * 100))
-    : 0
-
   const displayTokens = Math.max(0, goalTotalApiTokens > 0 ? goalTotalApiTokens : goalTokensUsed)
+  const budgetProgress = goalTokenBudget != null && goalTokenBudget > 0
+    ? Math.max(0, Math.min(100, (displayTokens / goalTokenBudget) * 100))
+    : 0
+  const remaining = goalTokenBudget != null ? goalTokenBudget - displayTokens : null
+
+  // Orchestrator-derived labels
+  const scenarioLabel = currentScenario ? (SCENARIO_LABELS[currentScenario] ?? currentScenario) : null
+  const mainPhase = lastObservation?.mainPhase ?? null
+  const round = convergenceState?.round
+  const maxRounds = 5 // default, would come from scenario config
+  const recoveryLayer = errorTracker?.recoveryLayer ?? null
+
+  // Quality signals for display
+  const signals: string[] = []
+  if (lastObservation?.qualitySignals?.hasProgress) signals.push('progress')
+  if (lastObservation?.qualitySignals?.hasSuccess) signals.push('success')
+  if (lastObservation?.qualitySignals?.hasErrors) signals.push('errors')
+
+  // Convergence status text
+  const ig = convergenceState?.informationGains
+  const qs = convergenceState?.qualityScores
+  const cm = convergenceState?.changeMagnitudes
+  const qualityMet = qs && qs.length > 0 && qs[qs.length - 1] >= 80
+  const igLow = ig && ig.length >= 2 && ig.slice(-2).every(g => g < 0.15)
+  let convergenceStatus: string | null = null
+  if (ig && qs && cm && round) {
+    if (igLow && qualityMet) convergenceStatus = 'ready to converge'
+    else if (qualityMet) convergenceStatus = 'quality gate passed, waiting for IG drop'
+    else if (igLow) convergenceStatus = 'IG low, waiting for quality'
+    else convergenceStatus = 'converging'
+  }
 
   return (
     <Box flexDirection="column" borderStyle="round" borderColor={color} paddingX={1}>
+      {/* ═══ Header ═══ */}
       <Box>
         <Text color={color}>{emoji} </Text>
-        <Text bold color={color}>{goalObjective}</Text>
-        <Text dimColor> ({goalStatus})</Text>
+        <Text bold color={color}>{truncate(goalObjective, 50)}</Text>
+        {scenarioLabel && <Text color="magenta"> [{scenarioLabel}]</Text>}
+        {mainPhase && <Text color={PHASE_COLORS[mainPhase] ?? 'white'}> {mainPhase}▶</Text>}
+        {round != null && <Text dimColor> R{round}/{maxRounds}</Text>}
+        <Text dimColor> {formatDuration(goalTimeUsedSeconds)}</Text>
       </Box>
-
-      {/* Mode indicator */}
       <Box>
-        <Text dimColor>Mode: {goalMode}{goalAutoEdit ? ' (auto-edit)' : ''}</Text>
+        <Text dimColor>{goalMode}{goalAutoEdit ? ' | auto-edit' : ''}</Text>
+        {recoveryLayer && recoveryLayer !== 'FIX_RETRY' && (
+          <Text color="yellow"> | {recoveryLayer}</Text>
+        )}
+        {consecutiveErrors > 0 && (
+          <Text color="red"> | errors: {consecutiveErrors}/3</Text>
+        )}
+        {turnsWithNoChanges > 0 && (
+          <Text color="yellow"> | dead turns: {turnsWithNoChanges}</Text>
+        )}
       </Box>
 
-      {/* Current action */}
-      {currentTask && (
-        <Box>
-          <Text color="cyan">Current: </Text>
-          <Text>{typeof currentTask === 'object' && 'content' in currentTask ? currentTask.content : String(currentTask)}</Text>
-        </Box>
-      )}
-
-      {/* Next step */}
-      {nextTask && (
-        <Box>
-          <Text dimColor>Next: </Text>
-          <Text dimColor>{typeof nextTask === 'object' && 'content' in nextTask ? nextTask.content : String(nextTask)}</Text>
-        </Box>
-      )}
-
-      {/* Task progress */}
+      {/* ═══ Tasks ═══ */}
       {totalTasks > 0 && (
         <Box flexDirection="column">
+          <Box><Text dimColor>{sectionLabel('Tasks')}</Text></Box>
+          {/* Current + Next */}
           <Box>
-            <Text dimColor>Progress: {completedTasks}/{totalTasks} completed ({taskProgress}%)</Text>
+            {currentTask && (
+              <Box>
+                <Text color="cyan"> ▶ </Text>
+                <Text bold>{truncate(currentTask.content ?? '', 40)}</Text>
+              </Box>
+            )}
+            {nextTask && (
+              <Box marginLeft={currentTask ? 2 : 0}>
+                <Text dimColor>→ {truncate(nextTask.content ?? '', 30)}</Text>
+              </Box>
+            )}
           </Box>
+          {/* Task list row: completed items + progress */}
           <Box>
-            <Text dimColor>[{renderProgressBar(taskProgress)}]</Text>
+            <Text dimColor>
+              {taskItems.slice(0, 5).map((t, i) => {
+                if (t.status === 'completed') return '✓'
+                if (t.status === 'in_progress') return '▶'
+                return '○'
+              }).join(' ')}
+            </Text>
+            <Text dimColor> {completedTasks}/{totalTasks} </Text>
+            <Text dimColor>[{progressBar(taskProgress, 15)}]</Text>
+            <Text dimColor> {taskProgress}%</Text>
           </Box>
         </Box>
       )}
 
-      {/* Budget info */}
-      {goalTokenBudget != null ? (
+      {/* ═══ Active Phase (orchestrator data) ═══ */}
+      {mainPhase && lastObservation && (
         <Box flexDirection="column">
+          <Box><Text dimColor>{sectionLabel(`Active: ${mainPhase}`)}</Text></Box>
           <Box>
-            <Text dimColor>Budget: </Text>
-            <Text>{displayTokens.toLocaleString()} / {goalTokenBudget.toLocaleString()}</Text>
-            <Text dimColor> ({Math.round(budgetProgress)}% used)</Text>
+            <Text dimColor>Tools: </Text>
+            <Text>{toolCallsThisTurn.length > 0
+              ? [...new Set(toolCallsThisTurn)].map(t => {
+                  const count = toolCallsThisTurn.filter(x => x === t).length
+                  return count > 1 ? `${t}(${count})` : t
+                }).join(' ')
+              : '—'
+            }</Text>
+            {signals.length > 0 && (
+              <Text dimColor> | {signals.map(s =>
+                s === 'progress' ? '✓ progress' : s === 'success' ? '✓ success' : '✗ errors'
+              ).join(' ')}</Text>
+            )}
           </Box>
-          <Box>
-            <Text dimColor>Remaining: {(goalTokenBudget - displayTokens).toLocaleString()} tokens</Text>
-          </Box>
-        </Box>
-      ) : (
-        <Box>
-          <Text dimColor>Tokens: </Text>
-          <Text>{displayTokens.toLocaleString()} (unbounded)</Text>
         </Box>
       )}
 
-      <Box>
-        <Text dimColor>Time: </Text>
-        <Text>{formatDuration(goalTimeUsedSeconds)}</Text>
+      {/* ═══ Convergence (orchestrator data) ═══ */}
+      {convergenceState && (
+        <Box flexDirection="column">
+          <Box><Text dimColor>{sectionLabel('Convergence')}</Text></Box>
+          <Box>
+            <Text dimColor>IG: </Text>
+            <Text color={(ig && ig.length > 0 && ig[ig.length - 1] < 0.15) ? 'green' : 'yellow'}>
+              {ig ? trend(ig) : '—'}
+            </Text>
+            <Text dimColor>  QS: </Text>
+            <Text color={qualityMet ? 'green' : 'yellow'}>
+              {qs ? trend(qs) : '—'}
+            </Text>
+            <Text dimColor>  CM: </Text>
+            <Text>{cm ? trend(cm) : '—'}</Text>
+          </Box>
+          {convergenceStatus && (
+            <Box>
+              <Text dimColor>{convergenceStatus}</Text>
+            </Box>
+          )}
+        </Box>
+      )}
+
+      {/* ═══ Budget ═══ */}
+      <Box flexDirection="column">
+        <Box><Text dimColor>{sectionLabel('Budget')}</Text></Box>
+        <Box>
+          <Text>{formatTokens(displayTokens)}</Text>
+          {goalTokenBudget != null ? (
+            <Box>
+              <Text dimColor> / {formatTokens(goalTokenBudget)}</Text>
+              <Text dimColor> [{progressBar(budgetProgress, 15)}]</Text>
+              <Text dimColor> {Math.round(budgetProgress)}%</Text>
+            </Box>
+          ) : (
+            <Text dimColor> (unbounded)</Text>
+          )}
+        </Box>
+        {remaining != null && remaining < (goalTokenBudget ?? 0) * 0.2 && (
+          <Box>
+            <Text color="yellow">Remaining: {formatTokens(remaining)}</Text>
+          </Box>
+        )}
       </Box>
 
-      {/* Error indicator */}
-      {goalConsecutiveErrors > 0 && (
-        <Box>
-          <Text color="red">Errors: {goalConsecutiveErrors}/3 before auto-pause</Text>
-        </Box>
-      )}
+      {/* ═══ Skills (orchestrator data — placeholder for Phase 4) ═══ */}
+      {/* Will be populated when goalSkillRanker is implemented */}
 
-      {/* Analysis status indicator */}
-      {lastAnalysisResult && (
+      {/* ═══ Legacy: Analysis result (backward compat) ═══ */}
+      {lastAnalysisResult && !convergenceState && (
         <Box>
           <Text color="yellow">Analysis: </Text>
-          <Text dimColor>{lastAnalysisResult}</Text>
+          <Text dimColor>{truncate(lastAnalysisResult, 60)}</Text>
           {consecutiveCritical > 0 && (
             <Text color="red"> ({consecutiveCritical}/3 critical)</Text>
           )}
