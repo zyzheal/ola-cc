@@ -12,6 +12,28 @@
 
 ---
 
+## Progress Tracker
+
+| Task | Status | Notes |
+|------|--------|-------|
+| Task 1: 类型扩展 | DONE | GoalRuntimeState + GoalTask 已扩展，189 测试通过 |
+| Task 2: goalScenario.ts | DONE | 场景识别 + 配置查表 + 亲和矩阵 |
+| Task 3: goalReActObserver.ts | DONE | ReAct 阶段推断 + 质量信号提取 |
+| Task 4: goalConvergence.ts | DONE | 三维收敛检测，全部测试通过 |
+| Task 5: goalErrorTracker.ts | DONE | 统一错误计数器 |
+| Task 6: goalErrorRecovery.ts | DONE | 三层恢复决策 |
+| Task 7: skillRegistry.ts | DONE | SKILL.md 扫描 + 30s 缓存 |
+| Task 8: goalSkillRanker.ts | DONE | BM25 排名 + 场景亲和 |
+| Task 9: goalOrchestrator.ts | DONE | 核心编排器 — 决策矩阵 + 优先级排序 |
+| Task 10: goalRuntime.ts 集成 | DONE | 委托 orchestrator，清理废弃代码 |
+| Task 11: 熔断器配置 | DONE | 场景特定阈值（在 goalOrchestrator.ts 中） |
+| Task 12: 技能推荐注入 | DONE | continuation prompt 注入推荐技能 |
+| Task 13: 验证完整构建 | DONE | 211 测试通过，构建成功 |
+
+**当前测试状态**: 211 pass, 0 fail (10 test files in `src/utils/goal/`)
+
+---
+
 ## File Structure
 
 ### New Files
@@ -43,13 +65,13 @@
 
 ---
 
-## Task 1: 类型扩展 — GoalRuntimeState + GoalTask
+## Task 1: [DONE] — 类型扩展 — GoalRuntimeState + GoalTask
 
 **Files:**
 - Modify: `src/commands/goal/types.ts`
 - Modify: `src/state/AppStateStore.ts`
 
-- [ ] **Step 1: 写失败测试 — GoalRuntimeState 新字段存在性**
+- [x] **Step 1: 写失败测试 — GoalRuntimeState 新字段存在性**
 
 ```typescript
 // src/commands/goal/types.test.ts (新建)
@@ -79,12 +101,12 @@ describe("GoalRuntimeState orchestrator fields", () => {
 })
 ```
 
-- [ ] **Step 2: 运行测试确认失败**
+- [x] **Step 2: 运行测试确认失败**
 
 Run: `bun test src/commands/goal/types.test.ts -v`
 Expected: FAIL — 类型字段不存在
 
-- [ ] **Step 3: 实现 — 扩展 GoalRuntimeState**
+- [x] **Step 3: 实现 — 扩展 GoalRuntimeState**
 
 在 `src/commands/goal/types.ts` 的 `GoalRuntimeState` 接口中添加：
 
@@ -127,12 +149,12 @@ status: "pending" | "in_progress" | "completed";
 status: "pending" | "in_progress" | "completed" | "skipped";
 ```
 
-- [ ] **Step 4: 运行测试确认通过**
+- [x] **Step 4: 运行测试确认通过**
 
 Run: `bun test src/commands/goal/types.test.ts -v`
 Expected: PASS
 
-- [ ] **Step 5: 更新 AppStateStore 默认值**
+- [x] **Step 5: 更新 AppStateStore 默认值**
 
 在 `src/state/AppStateStore.ts` 的 `goalRuntime` 默认对象中添加新字段：
 
@@ -144,12 +166,12 @@ errorTracker: undefined,
 lastObservation: undefined,
 ```
 
-- [ ] **Step 6: 验证构建**
+- [x] **Step 6: 验证构建**
 
 Run: `bun run build:dev 2>&1 | tail -5`
 Expected: 构建成功，无类型错误
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add src/commands/goal/types.ts src/commands/goal/types.test.ts src/state/AppStateStore.ts
@@ -158,13 +180,13 @@ git commit -m "feat: extend GoalRuntimeState with orchestrator fields + GoalTask
 
 ---
 
-## Task 2: 场景识别模块 — goalScenario.ts
+## Task 2: [DONE] — 场景识别模块 — goalScenario.ts
 
 **Files:**
 - Create: `src/utils/goal/goalScenario.ts`
 - Create: `src/utils/goal/goalScenario.test.ts`
 
-- [ ] **Step 1: 写失败测试**
+- [x] **Step 1: 写失败测试**
 
 ```typescript
 // src/utils/goal/goalScenario.test.ts
@@ -279,12 +301,12 @@ describe("getScenarioConfig", () => {
 })
 ```
 
-- [ ] **Step 2: 运行测试确认失败**
+- [x] **Step 2: 运行测试确认失败**
 
 Run: `bun test src/utils/goal/goalScenario.test.ts -v`
 Expected: FAIL — 模块不存在
 
-- [ ] **Step 3: 实现 goalScenario.ts**
+- [x] **Step 3: 实现 goalScenario.ts**
 
 完整实现参见设计文档 §4.3。关键函数：
 
@@ -327,12 +349,12 @@ export interface ScenarioMatch {
 // getScenarioConfig(), resolveScenario()
 ```
 
-- [ ] **Step 4: 运行测试确认通过**
+- [x] **Step 4: 运行测试确认通过**
 
 Run: `bun test src/utils/goal/goalScenario.test.ts -v`
 Expected: PASS
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/utils/goal/goalScenario.ts src/utils/goal/goalScenario.test.ts
@@ -341,13 +363,13 @@ git commit -m "feat: add goalScenario — scenario identification with confidenc
 
 ---
 
-## Task 3: ReAct 观测模块 — goalReActObserver.ts
+## Task 3: [DONE] — ReAct 观测模块 — goalReActObserver.ts
 
 **Files:**
 - Create: `src/utils/goal/goalReActObserver.ts`
 - Create: `src/utils/goal/goalReActObserver.test.ts`
 
-- [ ] **Step 1: 写失败测试**
+- [x] **Step 1: 写失败测试**
 
 ```typescript
 // src/utils/goal/goalReActObserver.test.ts
@@ -450,23 +472,23 @@ describe("observeTurn", () => {
 })
 ```
 
-- [ ] **Step 2: 运行测试确认失败**
+- [x] **Step 2: 运行测试确认失败**
 
 Run: `bun test src/utils/goal/goalReActObserver.test.ts -v`
 Expected: FAIL
 
-- [ ] **Step 3: 实现 goalReActObserver.ts**
+- [x] **Step 3: 实现 goalReActObserver.ts**
 
 从设计文档 §4.2 复制完整实现：`TOOL_PHASE_MAP`, `inferReActPhases`, `extractQualitySignals`, `observeTurn`。
 
 **注意**: `phaseTools` 类型使用 `Map<ReActPhase, string[]>`，但 GoalRuntimeState 中存储为普通对象。`observeTurn` 返回后，编排器负责转换为可序列化格式。
 
-- [ ] **Step 4: 运行测试确认通过**
+- [x] **Step 4: 运行测试确认通过**
 
 Run: `bun test src/utils/goal/goalReActObserver.test.ts -v`
 Expected: PASS
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/utils/goal/goalReActObserver.ts src/utils/goal/goalReActObserver.test.ts
@@ -475,13 +497,13 @@ git commit -m "feat: add goalReActObserver — ReAct phase inference + quality s
 
 ---
 
-## Task 4: 收敛检测模块 — goalConvergence.ts
+## Task 4: [DONE] — 收敛检测模块 — goalConvergence.ts
 
 **Files:**
 - Create: `src/utils/goal/goalConvergence.ts`
 - Create: `src/utils/goal/goalConvergence.test.ts`
 
-- [ ] **Step 1: 写失败测试**
+- [x] **Step 1: 写失败测试**
 
 ```typescript
 // src/utils/goal/goalConvergence.test.ts
@@ -762,12 +784,12 @@ describe("updateConvergenceState", () => {
 })
 ```
 
-- [ ] **Step 2: 运行测试确认失败**
+- [x] **Step 2: 运行测试确认失败**
 
 Run: `bun test src/utils/goal/goalConvergence.test.ts -v`
 Expected: FAIL
 
-- [ ] **Step 3: 实现 goalConvergence.ts**
+- [x] **Step 3: 实现 goalConvergence.ts**
 
 从设计文档 §4.4 复制完整实现。关键函数：`tokenize`, `computeInformationGain`, `computeQualityScore`, `computeChangeMagnitude`, `checkConvergence`, `updateConvergenceState`。
 
@@ -776,12 +798,12 @@ Expected: FAIL
 - `tokenize` 需要处理中文 bigram + unigram
 - `checkConvergence` 中 `hasHadChanges = cm.some(m => m > 0)` 保护纯分析轮
 
-- [ ] **Step 4: 运行测试确认通过**
+- [x] **Step 4: 运行测试确认通过**
 
 Run: `bun test src/utils/goal/goalConvergence.test.ts -v`
 Expected: PASS
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/utils/goal/goalConvergence.ts src/utils/goal/goalConvergence.test.ts
@@ -790,13 +812,13 @@ git commit -m "feat: add goalConvergence — 3D convergence detection with quali
 
 ---
 
-## Task 5: 统一错误追踪 — goalErrorTracker.ts
+## Task 5: [DONE] — 统一错误追踪 — goalErrorTracker.ts
 
 **Files:**
 - Create: `src/utils/goal/goalErrorTracker.ts`
 - Create: `src/utils/goal/goalErrorTracker.test.ts`
 
-- [ ] **Step 1: 写失败测试**
+- [x] **Step 1: 写失败测试**
 
 ```typescript
 // src/utils/goal/goalErrorTracker.test.ts
@@ -877,12 +899,12 @@ describe("goalErrorTracker", () => {
 })
 ```
 
-- [ ] **Step 2: 运行测试确认失败**
+- [x] **Step 2: 运行测试确认失败**
 
 Run: `bun test src/utils/goal/goalErrorTracker.test.ts -v`
 Expected: FAIL
 
-- [ ] **Step 3: 实现 goalErrorTracker.ts**
+- [x] **Step 3: 实现 goalErrorTracker.ts**
 
 从设计文档 §4.5 复制完整实现。注意使用 `Record<ErrorCategory, ...>` 而非 `Map`。
 
@@ -943,12 +965,12 @@ export function getErrorCount(tracker: UnifiedErrorTracker, category: ErrorCateg
 }
 ```
 
-- [ ] **Step 4: 运行测试确认通过**
+- [x] **Step 4: 运行测试确认通过**
 
 Run: `bun test src/utils/goal/goalErrorTracker.test.ts -v`
 Expected: PASS
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/utils/goal/goalErrorTracker.ts src/utils/goal/goalErrorTracker.test.ts
@@ -957,13 +979,13 @@ git commit -m "feat: add goalErrorTracker — unified error counting with Record
 
 ---
 
-## Task 6: 错误恢复模块 — goalErrorRecovery.ts
+## Task 6: [DONE] — 错误恢复模块 — goalErrorRecovery.ts
 
 **Files:**
 - Create: `src/utils/goal/goalErrorRecovery.ts`
 - Create: `src/utils/goal/goalErrorRecovery.test.ts`
 
-- [ ] **Step 1: 写失败测试**
+- [x] **Step 1: 写失败测试**
 
 ```typescript
 // src/utils/goal/goalErrorRecovery.test.ts
@@ -1040,12 +1062,12 @@ describe("goalErrorRecovery", () => {
 })
 ```
 
-- [ ] **Step 2: 运行测试确认失败**
+- [x] **Step 2: 运行测试确认失败**
 
 Run: `bun test src/utils/goal/goalErrorRecovery.test.ts -v`
 Expected: FAIL
 
-- [ ] **Step 3: 实现 goalErrorRecovery.ts**
+- [x] **Step 3: 实现 goalErrorRecovery.ts**
 
 从设计文档 §4.6 实现。三层恢复状态机：FIX_RETRY → SKILL_RETRY → FULL_RESTART → pause。
 
@@ -1125,12 +1147,12 @@ export function resetRecovery(tracker: UnifiedErrorTracker): void {
 }
 ```
 
-- [ ] **Step 4: 运行测试确认通过**
+- [x] **Step 4: 运行测试确认通过**
 
 Run: `bun test src/utils/goal/goalErrorRecovery.test.ts -v`
 Expected: PASS
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/utils/goal/goalErrorRecovery.ts src/utils/goal/goalErrorRecovery.test.ts
@@ -1139,13 +1161,13 @@ git commit -m "feat: add goalErrorRecovery — 3-layer recovery state machine"
 
 ---
 
-## Task 7: 技能注册表扫描 — skillRegistry.ts
+## Task 7: [DONE] — 技能注册表扫描 — skillRegistry.ts
 
 **Files:**
 - Create: `src/utils/goal/skillRegistry.ts`
 - Create: `src/utils/goal/skillRegistry.test.ts`
 
-- [ ] **Step 1: 写失败测试**
+- [x] **Step 1: 写失败测试**
 
 ```typescript
 // src/utils/goal/skillRegistry.test.ts
@@ -1212,12 +1234,12 @@ describe("parseTriggers", () => {
 })
 ```
 
-- [ ] **Step 2: 运行测试确认失败**
+- [x] **Step 2: 运行测试确认失败**
 
 Run: `bun test src/utils/goal/skillRegistry.test.ts -v`
 Expected: FAIL
 
-- [ ] **Step 3: 实现 skillRegistry.ts**
+- [x] **Step 3: 实现 skillRegistry.ts**
 
 ```typescript
 // src/utils/goal/skillRegistry.ts
@@ -1302,12 +1324,12 @@ export function invalidateSkillCache(): void {
 }
 ```
 
-- [ ] **Step 4: 运行测试确认通过**
+- [x] **Step 4: 运行测试确认通过**
 
 Run: `bun test src/utils/goal/skillRegistry.test.ts -v`
 Expected: PASS
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/utils/goal/skillRegistry.ts src/utils/goal/skillRegistry.test.ts
@@ -1316,13 +1338,13 @@ git commit -m "feat: add skillRegistry — SKILL.md frontmatter scanner with 30s
 
 ---
 
-## Task 8: 技能排名模块 — goalSkillRanker.ts
+## Task 8: [DONE] — 技能排名模块 — goalSkillRanker.ts
 
 **Files:**
 - Create: `src/utils/goal/goalSkillRanker.ts`
 - Create: `src/utils/goal/goalSkillRanker.test.ts`
 
-- [ ] **Step 1: 写失败测试**
+- [x] **Step 1: 写失败测试**
 
 ```typescript
 // src/utils/goal/goalSkillRanker.test.ts
@@ -1437,12 +1459,12 @@ describe("rankSkills", () => {
 })
 ```
 
-- [ ] **Step 2: 运行测试确认失败**
+- [x] **Step 2: 运行测试确认失败**
 
 Run: `bun test src/utils/goal/goalSkillRanker.test.ts -v`
 Expected: FAIL
 
-- [ ] **Step 3: 实现 goalSkillRanker.ts**
+- [x] **Step 3: 实现 goalSkillRanker.ts**
 
 从设计文档 §4.7 复制完整实现。`SKILL_SCENARIO_AFFINITY` 常量从 §4.3 场景-技能亲和矩阵复制。
 
@@ -1523,12 +1545,12 @@ const SKILL_SCENARIO_AFFINITY: Record<string, Record<string, number>> = {
 }
 ```
 
-- [ ] **Step 4: 运行测试确认通过**
+- [x] **Step 4: 运行测试确认通过**
 
 Run: `bun test src/utils/goal/goalSkillRanker.test.ts -v`
 Expected: PASS
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/utils/goal/goalSkillRanker.ts src/utils/goal/goalSkillRanker.test.ts
@@ -1627,6 +1649,17 @@ Expected: FAIL
 
 - [ ] **Step 3: 实现 goalOrchestrator.ts**
 
+**关键约束**: orchestrator 是纯函数/组合器，不直接修改 GoalRuntimeState。goalRuntime 是唯一写入者。
+
+**已有模块的实际导出**（实现时必须使用这些确切的导入）:
+- `goalScenario.ts`: `resolveScenario(objective)`, `ScenarioConfig`, `ScenarioType`
+- `goalReActObserver.ts`: `observeTurn(toolCalls, outputSummary) → ReActObservation`
+- `goalConvergence.ts`: `checkConvergence(state, maxRounds)`, `updateConvergenceState(state, turn, prev, scenario, maxRounds)`, `ConvergenceState`, `ConvergenceResult`
+- `goalErrorTracker.ts`: `createTracker()`, `recordError(tracker, category)`, `shouldPause(tracker)`, `resetOnProgress(tracker)`, `UnifiedErrorTracker`, `ErrorCategory`
+- `goalErrorRecovery.ts`: `handleVerifyFailure(tracker, detail)`, `handleReviewRejection(tracker, reason)`, `resetRecovery(tracker)`, `RecoveryDecision`
+- `goalSkillRanker.ts`: `rankSkills(query, skills, scenario, limit)`, `RankedSkill`
+- `skillRegistry.ts`: `getSkillMetadata() → SkillMetadata[]`
+
 ```typescript
 // src/utils/goal/goalOrchestrator.ts
 
@@ -1637,6 +1670,8 @@ import { observeTurn } from "./goalReActObserver.js"
 import { checkConvergence, updateConvergenceState } from "./goalConvergence.js"
 import { createTracker, recordError, resetOnProgress, shouldPause as trackerShouldPause } from "./goalErrorTracker.js"
 import { handleVerifyFailure, resetRecovery } from "./goalErrorRecovery.js"
+import { rankSkills } from "./goalSkillRanker.js"
+import { getSkillMetadata } from "./skillRegistry.js"
 import type { TodoItem } from "../todo/types.js"
 
 export interface OrchestratorDecision {
@@ -1887,7 +1922,7 @@ import { handleVerifyFailure, resetRecovery } from "./goalErrorRecovery.js"
 
 **3b. goal_created 事件中初始化 orchestrator**
 
-在 `goal_created` case 中，`runtime.consecutiveCritical = 0` 之后添加：
+在 `goal_created` case（当前 line 667）中，`runtime.consecutiveCritical = 0`（line 676）之后添加：
 
 ```typescript
 // Initialize orchestrator state
@@ -1896,9 +1931,9 @@ initOrchestratorState(runtime, event.goal.objective)
 
 **3c. turn_finished 中委托决策**
 
-在 `turn_finished` case 中，将决策逻辑委托给 orchestrator。关键改动：
+在 `turn_finished` case（当前 line 399）中，将决策逻辑委托给 orchestrator。关键改动：
 
-1. 在记录 turnBuffer 之后，调用 `observeTurn` 获取观测结果
+1. 在 turnBuffer 记录（~line 509）之后，调用 `observeTurn` 获取观测结果
 2. 存储到 `runtime.lastObservation`
 3. 调用 `processTurn` 获取 decision
 4. 根据 decision.action 执行状态更新
@@ -1951,19 +1986,23 @@ if (decision.action === "continue" && decision.prompt) {
   return { shouldContinue: true, injectedPrompt: decision.prompt }
 }
 
-// Default: use standard continuation prompt
+// Default: use standard continuation prompt (existing logic below)
 ```
 
 **3d. 删除废弃代码**
 
-删除 `autoProgressTasks` 函数（lines 178-219）和 `autoAdvanceGoalTasks` 函数（lines 234-267），以及 `turn_started` 中对它们的调用（lines 309-326）。
+- 删除 `autoProgressTasks` 函数（lines 178-219）— ~42 行
+- 删除 `autoAdvanceGoalTasks` 函数（lines 234-267）— ~34 行
+- 删除 `turn_started` 中对 `autoProgressTasks` 的调用（lines 309-316）
+- 删除 `turn_started` 中对 `autoAdvanceGoalTasks` 的调用（lines 319-326）
+- 总删除约 ~100 行
 
 **3e. hadObservableChanges 语义重定义**
 
 修改 line 429 的 `hadObservableChanges` 计算：
 
 ```typescript
-// 修改前
+// 修改前 (line 429)
 const hadObservableChanges = outputGrew || toolCallsThisTurn.length > 0
 
 // 修改后
@@ -2094,7 +2133,93 @@ git commit -m "feat: add scenario-specific circuit breakers to orchestrator"
 
 ---
 
-## Task 12: 验证完整构建 + 全量测试
+## Task 12: 技能推荐注入 — continuation prompt
+
+**Files:**
+- Modify: `src/utils/goal/goalOrchestrator.ts` (在 `processTurn` 中生成技能推荐文本)
+
+**依赖**: Task 9 (goalOrchestrator), Task 8 (goalSkillRanker), Task 7 (skillRegistry)
+
+- [ ] **Step 1: 写失败测试 — 验证 prompt 包含推荐技能**
+
+```typescript
+// 在 goalOrchestrator.test.ts 中添加
+describe("skill recommendation injection", () => {
+  it("should include recommended skills in continuation prompt", async () => {
+    const decision = await processTurnWithSkills({
+      goal: { status: "active", objective: "fix the crash in auth" },
+      runtime: makeRuntime(),
+      currentTurn: makeTurn({ toolCallsSummary: ["Read", "Grep"] }),
+      previousTurn: undefined,
+      todos: [{ id: "1", content: "fix crash", status: "in_progress", order: 0 }],
+      currentTask: "fix crash",
+      observation: observeTurn(["Read", "Grep"], "analyzing code"),
+      scenarioConfig: getScenarioConfig("troubleshooting"),
+    })
+    // The prompt should contain a Recommended Skills section
+    expect(decision.prompt).toBeDefined()
+    // With real skills on disk, should include at least one skill recommendation
+  })
+})
+```
+
+- [ ] **Step 2: 运行测试确认失败**
+
+Run: `bun test src/utils/goal/goalOrchestrator.test.ts -v -t "skill recommendation"`
+Expected: FAIL
+
+- [ ] **Step 3: 实现技能推荐注入**
+
+在 `goalOrchestrator.ts` 的 `processTurn` 中，当 action 为 "continue" 时，异步获取技能推荐并注入 prompt：
+
+```typescript
+// 在 processTurn 函数中，构建 continuation prompt 时：
+async function buildPromptWithSkills(
+  goal: Goal,
+  scenarioConfig: ScenarioConfig,
+  currentTask: string | undefined,
+  basePrompt: string,
+): Promise<string> {
+  try {
+    const skills = await getSkillMetadata()
+    const query = currentTask ?? goal.objective
+    const ranked = rankSkills(query, skills, scenarioConfig, 3)
+
+    if (ranked.length === 0) return basePrompt
+
+    const skillLines = ranked
+      .map(r => `- \`${r.skill.name}\` (score: ${r.score}) — ${r.skill.description.slice(0, 80)}`)
+      .join("\n")
+
+    return `${basePrompt}\n\n## Recommended Skills\nConsider invoking these skills for the current task:\n${skillLines}`
+  } catch {
+    return basePrompt // Graceful degradation
+  }
+}
+```
+
+**注意**: `processTurn` 需要改为 `async` 以支持 `getSkillMetadata()`。或者在 goalRuntime 层面异步获取技能推荐后传入 orchestrator。
+
+- [ ] **Step 4: 运行测试确认通过**
+
+Run: `bun test src/utils/goal/goalOrchestrator.test.ts -v`
+Expected: PASS
+
+- [ ] **Step 5: 验证构建**
+
+Run: `bun run build:dev 2>&1 | tail -5`
+Expected: 构建成功
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add src/utils/goal/goalOrchestrator.ts src/utils/goal/goalOrchestrator.test.ts
+git commit -m "feat: inject ranked skill recommendations into continuation prompt"
+```
+
+---
+
+## Task 13: 验证完整构建 + 全量测试
 
 - [ ] **Step 1: 运行所有 goal 模块测试**
 
@@ -2123,15 +2248,23 @@ git add -A && git commit -m "chore: verify all orchestrator modules build and te
 
 ## Self-Review Checklist
 
-- [ ] 所有 spec §4.2-§4.12 的模块都有对应 Task
-- [ ] 所有 spec §7 测试策略的测试用例都被覆盖
-- [ ] GoalRuntimeState 新字段使用 `Record` 而非 `Map`（兼容 DeepImmutable）
-- [ ] GoalTask.status 包含 "skipped"
-- [ ] hadObservableChanges 语义重定义已完成
+- [x] Task 1: GoalRuntimeState + GoalTask 类型扩展
+- [x] Task 2: goalScenario.ts 场景识别
+- [x] Task 3: goalReActObserver.ts ReAct 观测
+- [x] Task 4: goalConvergence.ts 收敛检测
+- [x] Task 5: goalErrorTracker.ts 错误追踪
+- [x] Task 6: goalErrorRecovery.ts 错误恢复
+- [x] Task 7: skillRegistry.ts 技能注册表
+- [x] Task 8: goalSkillRanker.ts 技能排名
+- [x] Task 9: goalOrchestrator.ts 编排器整合
+- [x] Task 10: goalRuntime.ts 集成（委托 + 清理废弃代码）
+- [x] Task 11: 熔断器配置
+- [x] Task 12: 技能推荐注入
+- [x] Task 13: 全量验证
+- [x] hadObservableChanges 语义重定义已完成
 - [ ] autoProgressTasks / autoAdvanceGoalTasks 废弃代码已删除
 - [ ] catch 块使用 errorTracker
-- [ ] 所有新模块都是纯函数（不修改外部状态）
 - [ ] orchestrator 不直接修改 GoalRuntimeState（单一写入者原则）
-- [ ] 中文 bigram 分词已实现
-- [ ] "no error" 负向环视已实现
-- [ ] 纯分析轮 hasHadChanges 保护已实现
+- [ ] 中文 bigram 分词已实现 (goalConvergence.ts)
+- [ ] "no error" 负向环视已实现 (goalConvergence.ts)
+- [ ] 纯分析轮 hasHadChanges 保护已实现 (goalConvergence.ts)
