@@ -113,6 +113,7 @@ const SKILL_REQUIRED_OPS = new Set([
   'evolve_run_once', 'evolve_run_to_completion',
   'storage_split', 'storage_prune',
   'whitelist_check', 'whitelist_list',
+  'harness_create_spec', 'harness_review', 'harness_package_evidence', 'harness_validate_completion',
 ])
 
 // readOnly 操作集合（不修改文件系统数据）
@@ -133,6 +134,7 @@ const READ_ONLY_OPS = new Set([
   'storage_split', 'storage_stats',
   'whitelist_check', 'whitelist_list',
   'evals_check', 'evals_validate',
+  'harness_validate_completion',
 ])
 
 // ============================================
@@ -971,12 +973,16 @@ export const singularityToolDef: ToolDef = {
       knowledge_transfer: `迁移模式到目标技能`,
       predict_trend: `预测评分趋势${skillLabel}`,
       proactive_optimize: `主动优化建议${skillLabel}`,
+      harness_create_spec: `创建spec.md契约${skillLabel}`,
+      harness_review: '执行独立评审（评审者≠实现者）',
+      harness_package_evidence: '打包结构化验证证据',
+      harness_validate_completion: '验证契约完成度',
     }
     return descriptions[op] ?? `Singularity ${op}`
   },
 
   async prompt() {
-    return 'Singularity 自进化引擎 API — 评分/遥测/注册表/5维门控/成熟度/对比分析/代码审计/进化状态机/持久化/白名单/DiverseStrategies/GT契约/自适应触发/反思/知识迁移/预测进化 (44 operations)'
+    return 'Singularity 自进化引擎 API — 评分/遥测/注册表/5维门控/成熟度/对比分析/代码审计/进化状态机/持久化/白名单/DiverseStrategies/GT契约/自适应触发/反思/知识迁移/预测进化/Harness契约 (48 operations)'
   },
 
   isConcurrencySafe: () => true,
