@@ -17,7 +17,7 @@
 
 import { spawn, exec } from 'child_process';
 import { existsSync, createWriteStream, mkdirSync, statSync } from 'fs';
-import { chmod, unlink, stat } from 'fs/promises';
+import { chmod, unlink } from 'fs/promises';
 import https from 'https';
 import { homedir } from 'os';
 import { join } from 'path';
