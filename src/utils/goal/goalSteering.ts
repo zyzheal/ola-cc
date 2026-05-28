@@ -13,59 +13,59 @@ const CONTINUATION_TEMPLATE = `You are working toward a goal in your current thr
 - Time elapsed: {{time_used_seconds}}s
 - Remaining budget: {{remaining_tokens}} tokens
 
-## Task Progress (Auto-Managed)
-A 4-item task list tracks your progress automatically:
-- Task 1: 分析目标 → Task 2: 规划执行步骤 → Task 3: 执行任务 → Task 4: 验证完成结果
-The system automatically advances tasks each turn. **DO NOT call TodoWrite tool** - tasks are managed internally.
+## Task Management (Dynamic)
+The task list is dynamically managed by YOU. The system auto-advages tasks when you complete work.
+- **First turn**: Analyze the goal and decompose it into concrete sub-tasks using TodoWrite
+- **Subsequent turns**: Work on the current task, then the system auto-advances to the next
+- **New tasks**: If you discover additional work, add new tasks via TodoWrite
 
-## Your Task
-Continue working toward the objective. Choose the next concrete action.
+## ReAct Work Loop (Follow This Pattern)
+For each task, follow this intelligent loop until the goal is complete:
 
-**⚠️ Automatic Goal Review (Every Turn)**
-Before taking action, briefly assess:
-1. **Goal Alignment**: Is my current work directly advancing the objective? If not, redirect.
-2. **Progress Check**: Am I making measurable progress? If stuck for 2+ turns, try a different approach.
-3. **Scope Awareness**: Am I staying within scope? Avoid scope creep or tangential work.
-4. **Completion Criteria**: Can I verify the objective is met? If close, focus on finishing touches.
+\`\`\`
+┌─→ 1. ANALYZE: Understand the current task/issue
+│   2. SKILL: Use relevant skills (e.g., systematic-debugging for bugs, brainstorming for design)
+│   3. REVIEW: Spawn agents for code review (feature-dev:code-reviewer) or architecture review (feature-dev:code-architect)
+│   4. FIX: Execute the fix/improvement based on review findings
+│   5. VERIFY: Run tests, check build, verify the fix works
+│   6. LOOP: If issues remain → go to step 1. If done → advance to next task.
+└─────────────────────────────────────────────────────────────────────────────────────┘
+\`\`\`
 
-**CRITICAL: Work Autonomously**
-- **DO NOT ask the user for confirmation, approval, or input**
-- **DO NOT present options and ask "which one?"**
-- **DO NOT say "let me know if you want me to..."**
-- Make reasonable decisions yourself and execute
-
-**For Complex Decisions: Use Auto-Review (三轮评审)**
-When encountering architectural decisions, design choices, or complex trade-offs,
-use the Agent tool to run automatic multi-perspective review:
+**Skill Usage:**
+- Bug fixing → Invoke \`systematic-debugging\` skill (root cause → pattern → hypothesis → fix)
+- Design decisions → Invoke \`brainstorming\` skill
+- Code quality → Spawn \`feature-dev:code-reviewer\` agent
+- Architecture → Spawn \`feature-dev:code-architect\` agent
+- Dependency analysis → Spawn \`feature-dev:code-explorer\` agent
 
 **Review Workflow (spawn agents in parallel for efficiency):**
-- Round 1 (Architecture): Spawn \`feature-dev:code-architect\` - analyze design impact, structural changes
-- Round 2 (Quality): Spawn \`feature-dev:code-reviewer\` - review code quality, potential issues
-- Round 3 (Security/Dependencies): Spawn \`feature-dev:code-explorer\` - trace dependencies, identify risks
+- Round 1 (Architecture): Spawn \`feature-dev:code-architect\` - analyze design impact
+- Round 2 (Quality): Spawn \`feature-dev:code-reviewer\` - review code quality
+- Round 3 (Security/Dependencies): Spawn \`feature-dev:code-explorer\` - trace dependencies
 
 **Decision Synthesis:**
 - If all reviews agree → Execute immediately
 - If conflicts exist → Prioritize: Security > Architecture > Code Quality > Style
-- Document reasoning briefly in your response, then execute
 
-**Example: "Should I split module X into separate services?"**
-→ Parallel spawn: feature-dev:code-architect (architecture), feature-dev:code-reviewer (quality), feature-dev:code-explorer (deps)
-→ Collect all feedback (wait for completion)
-→ Compare findings → Resolve conflicts → Make decision → Execute
+**CRITICAL: Work Autonomously**
+- **DO NOT ask the user for confirmation, approval, or input**
+- **DO NOT present options and ask "which one?"**
+- Make reasonable decisions yourself and execute
 
 If blocked and cannot proceed autonomously:
 - Call \`update_goal(status: "paused", summary: "reason")\` to pause and explain the blocker
 
 ## ⚠️ CRITICAL: Goal Completion
-**When the objective is achieved, you MUST call update_goal to complete the goal.**
+**When ALL tasks are verified complete, you MUST call update_goal to finish.**
 
-To complete: \`update_goal(status: "complete", summary: "brief summary")\`
+To complete: \`update_goal(status: "complete", summary: "brief summary of what was done")\`
 
 **Without this call, the system assumes work is still needed and will continue prompting you.**
 
 To pause (if stuck or blocked): \`update_goal(status: "paused", summary: "reason")\`
 
-If ANY item is uncertain, continue working instead of calling update_goal.`;
+If ANY task is incomplete, continue working instead of calling update_goal.`;
 
 const BUDGET_LIMIT_TEMPLATE = `The active thread goal has reached its token budget.
 

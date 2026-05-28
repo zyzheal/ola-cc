@@ -43,6 +43,7 @@ import {
   createActivityDescriptionResolver,
   createProgressTracker,
   getProgressUpdate,
+  reReadMessageUsage,
   updateProgressFromMessage,
 } from '../../tasks/LocalAgentTask/LocalAgentTask.js'
 import type { CustomAgentDefinition } from '../../tools/AgentTool/loadAgentsDir.js'
@@ -1186,6 +1187,7 @@ export async function runInProcessTeammate(
           // In-process teammates are async but run in the same process as the leader,
           // so they CAN show permission prompts (unlike true background agents).
           // Use currentWorkAbortController so Escape stops this turn only, not the teammate.
+          let prevSwarmAssistantMsg: Message | undefined;
           for await (const message of runAgent({
             agentDefinition: iterationAgentDefinition,
             promptMessages,
@@ -1235,12 +1237,20 @@ export async function runInProcessTeammate(
             iterationMessages.push(message)
             allMessages.push(message)
 
+            // Re-read previous message's usage (message_delta mutation)
+            if (prevSwarmAssistantMsg) {
+              reReadMessageUsage(tracker, prevSwarmAssistantMsg);
+              prevSwarmAssistantMsg = undefined;
+            }
             updateProgressFromMessage(
               tracker,
               message,
               resolveActivity,
               toolUseContext.options.tools,
             )
+            if (message.type === 'assistant') {
+              prevSwarmAssistantMsg = message;
+            }
             const progress = getProgressUpdate(tracker)
 
             updateTaskState(
@@ -1287,6 +1297,10 @@ export async function runInProcessTeammate(
               },
               setAppState,
             )
+          }
+          // Final re-read for last message
+          if (prevSwarmAssistantMsg) {
+            reReadMessageUsage(tracker, prevSwarmAssistantMsg);
           }
 
           return { success: true, messages: iterationMessages }

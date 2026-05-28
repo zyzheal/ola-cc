@@ -32,6 +32,7 @@ import {
   isLocalAgentTask,
   killAsyncAgent,
   type ProgressTracker,
+  reReadMessageUsage,
   updateAgentProgress as updateAsyncAgentProgress,
   updateProgressFromMessage,
 } from '../../tasks/LocalAgentTask/LocalAgentTask.js'
@@ -600,7 +601,13 @@ export async function runAsyncAgentLifecycle({
           stopSummarization = stop
         }
       : undefined
+    let prevAsyncAssistantMsg: MessageType | undefined;
     for await (const message of makeStream(onCacheSafeParams)) {
+      // Re-read previous message's usage (message_delta mutation)
+      if (prevAsyncAssistantMsg) {
+        reReadMessageUsage(tracker, prevAsyncAssistantMsg);
+        prevAsyncAssistantMsg = undefined;
+      }
       agentMessages.push(message)
       // Append immediately when UI holds the task (retain). Bootstrap reads
       // disk in parallel and UUID-merges the prefix — disk-write-before-yield
@@ -623,6 +630,9 @@ export async function runAsyncAgentLifecycle({
         resolveActivity,
         toolUseContext.options.tools,
       )
+      if (message.type === 'assistant') {
+        prevAsyncAssistantMsg = message;
+      }
       updateAsyncAgentProgress(
         taskId,
         getProgressUpdate(tracker),
@@ -639,6 +649,11 @@ export async function runAsyncAgentLifecycle({
           lastToolName,
         )
       }
+    }
+    // Final re-read for last message
+    if (prevAsyncAssistantMsg) {
+      reReadMessageUsage(tracker, prevAsyncAssistantMsg);
+      updateAsyncAgentProgress(taskId, getProgressUpdate(tracker), rootSetAppState);
     }
 
     stopSummarization?.()

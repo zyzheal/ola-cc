@@ -7,22 +7,16 @@ import { notifyPermissionModeChanged } from '../../utils/sessionState.js'
 
 const randomUUID = () => crypto.randomUUID()
 
-// 默认任务模板：创建 Goal 时自动生成初始任务列表
+// 默认任务模板：仅创建 1 项初始任务，后续由 model 动态分解
 function createDefaultTodoItems(objective: string): TodoItem[] {
   return [
-    { content: `分析目标: ${objective}`, status: 'pending', activeForm: '正在分析目标' },
-    { content: '规划执行步骤', status: 'pending', activeForm: '正在规划执行步骤' },
-    { content: '执行任务', status: 'pending', activeForm: '正在执行任务' },
-    { content: '验证完成结果', status: 'pending', activeForm: '正在验证完成结果' },
+    { content: `分析并规划目标: ${objective}`, status: 'pending', activeForm: '正在分析目标并规划执行步骤' },
   ]
 }
 
 function createDefaultGoalTasks(objective: string): GoalTask[] {
   return [
-    { id: randomUUID(), content: `分析目标: ${objective}`, status: 'pending', order: 0 },
-    { id: randomUUID(), content: '规划执行步骤', status: 'pending', order: 1 },
-    { id: randomUUID(), content: '执行任务', status: 'pending', order: 2 },
-    { id: randomUUID(), content: '验证完成结果', status: 'pending', order: 3 },
+    { id: randomUUID(), content: `分析并规划目标: ${objective}`, status: 'pending', order: 0 },
   ]
 }
 
