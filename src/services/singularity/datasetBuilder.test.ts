@@ -99,3 +99,94 @@ describe('EvalDatasetManager', () => {
     expect(results[0]).toHaveProperty('regression')
   })
 })
+
+describe('SyntheticDatasetBuilder', () => {
+  it('should generate eval dataset from skill text with mocked LLM', async () => {
+    const { SyntheticDatasetBuilder } = await import('./datasetBuilder')
+    const mockLLM = async () =>
+      JSON.stringify({
+        examples: Array.from({ length: 20 }, (_, i) => ({
+          taskInput: `test task ${i}`,
+          expectedBehavior: `expected behavior ${i} with sufficient detail for validation`,
+          difficulty: 'medium',
+          category: 'general',
+        })),
+      })
+    const builder = new SyntheticDatasetBuilder(mockLLM)
+    const dataset = await builder.generate(
+      '---\nname: test-skill\ndescription: test\n---\n# Test Skill\nSome content here.',
+    )
+    expect(dataset.skipValidation).toBeUndefined()
+    expect(
+      dataset.train.length + dataset.val.length + dataset.holdout.length,
+    ).toBeGreaterThanOrEqual(15)
+  })
+
+  it('should handle empty skill text gracefully', async () => {
+    const { SyntheticDatasetBuilder } = await import('./datasetBuilder')
+    const mockLLM = async () => JSON.stringify({ examples: [] })
+    const builder = new SyntheticDatasetBuilder(mockLLM)
+    const dataset = await builder.generate('')
+    expect(dataset.skipValidation).toBe(true)
+  })
+
+  it('should degrade to skipValidation on LLM failure', async () => {
+    const { SyntheticDatasetBuilder } = await import('./datasetBuilder')
+    const mockLLM = async () => {
+      throw new Error('LLM timeout')
+    }
+    const builder = new SyntheticDatasetBuilder(mockLLM)
+    const dataset = await builder.generate('skill text', { maxRetries: 1 })
+    expect(dataset.skipValidation).toBe(true)
+  })
+
+  it('should retry on LLM failure and succeed on second attempt', async () => {
+    const { SyntheticDatasetBuilder } = await import('./datasetBuilder')
+    let callCount = 0
+    const mockLLM = async () => {
+      callCount++
+      if (callCount === 1) throw new Error('transient error')
+      return JSON.stringify({
+        examples: Array.from({ length: 20 }, (_, i) => ({
+          taskInput: `retry task ${i}`,
+          expectedBehavior: `retry behavior ${i} with sufficient detail`,
+          difficulty: 'easy',
+          category: 'test',
+        })),
+      })
+    }
+    const builder = new SyntheticDatasetBuilder(mockLLM)
+    const dataset = await builder.generate('valid skill text', {
+      maxRetries: 3,
+    })
+    expect(dataset.skipValidation).toBeUndefined()
+    expect(callCount).toBe(2)
+  })
+
+  it('should filter out invalid examples during validation', async () => {
+    const { SyntheticDatasetBuilder } = await import('./datasetBuilder')
+    const mockLLM = async () =>
+      JSON.stringify({
+        examples: [
+          {
+            taskInput: 'valid task',
+            expectedBehavior: 'valid behavior with sufficient detail',
+            difficulty: 'medium',
+            category: 'general',
+          },
+          { taskInput: '', expectedBehavior: 'missing input' }, // invalid: empty taskInput
+          { taskInput: 'no behavior' }, // invalid: missing expectedBehavior
+          'not an object', // invalid: not an object
+        ],
+      })
+    const builder = new SyntheticDatasetBuilder(mockLLM)
+    const dataset = await builder.generate('skill text for filtering', {
+      minValidCases: 1,
+    })
+    // Should have at least 1 valid example split across train/val/holdout
+    const total =
+      dataset.train.length + dataset.val.length + dataset.holdout.length
+    expect(total).toBeGreaterThanOrEqual(1)
+    expect(dataset.skipValidation).toBeUndefined()
+  })
+})
