@@ -190,6 +190,23 @@ export class EvolutionEngine {
     return { ...this.state, history: [...this.state.history] }
   }
 
+  /**
+   * Phase 2 增强：从门控结果中提取 feedback 注入 P2 上下文
+   *
+   * 在 P2_CONCEIVE 阶段开始前调用，将 LLM feedback 转化为 failureAnalysis
+   */
+  injectFeedbackForP2(): void {
+    const gateResult = this.state.context.gateResult as {
+      feedback?: { dimension: string; feedback: string }[]
+    } | undefined
+
+    if (gateResult?.feedback && gateResult.feedback.length > 0) {
+      this.state.context.failureAnalysis = gateResult.feedback
+        .map(f => `维度 ${f.dimension}: ${f.feedback}`)
+        .join('\n')
+    }
+  }
+
   /** 注册阶段执行器 */
   registerExecutor(phase: EvolutionPhase, executor: PhaseExecutor): void {
     this.executors.set(phase, executor)
