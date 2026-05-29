@@ -28,7 +28,7 @@ describe('MemoryIndex', () => {
   it('should search after indexing', async () => {
     const idx = new MemoryIndex(tmpDir)
     await idx.indexAll()
-    const { results, degraded } = idx.search('Windows crash')
+    const { results, degraded } = await idx.search('Windows crash')
     expect(degraded).toBe(false)
     expect(results.length).toBeGreaterThan(0)
     expect(results[0].docId).toBe('test.md')
@@ -40,7 +40,7 @@ describe('MemoryIndex', () => {
     // Add new file
     fs.writeFileSync(path.join(tmpDir, 'new.md'), '# New\nDocker container setup')
     idx.indexFile(path.join(tmpDir, 'new.md'))
-    const { results } = idx.search('Docker container')
+    const { results } = await idx.search('Docker container')
     expect(results.length).toBeGreaterThan(0)
     expect(results[0].docId).toBe('new.md')
   })
@@ -53,9 +53,9 @@ describe('MemoryIndex', () => {
     expect(stats.totalDocuments).toBe(2)
   })
 
-  it('should degrade gracefully when not indexed', () => {
+  it('should degrade gracefully when not indexed', async () => {
     const idx = new MemoryIndex(tmpDir)
-    const { results, degraded } = idx.search('anything')
+    const { results, degraded } = await idx.search('anything')
     expect(degraded).toBe(true)
     expect(results.length).toBe(0)
   })
@@ -70,5 +70,24 @@ describe('MemoryIndex', () => {
     // pending file should be replayed
     const stats = idx.getStats()
     expect(stats.totalDocuments).toBeGreaterThanOrEqual(3)
+  })
+
+  it('should return hybrid search results with source field', async () => {
+    const idx = new MemoryIndex(tmpDir)
+    await idx.indexAll()
+    const { results } = await idx.search('Windows crash')
+    expect(results.length).toBeGreaterThan(0)
+    // source should be 'bm25' or 'hybrid' depending on vector availability
+    expect(['bm25', 'hybrid']).toContain(results[0].source)
+  })
+
+  it('should report vector stats', async () => {
+    const idx = new MemoryIndex(tmpDir)
+    await idx.indexAll()
+    const stats = idx.getStats()
+    expect(stats).toHaveProperty('vectorDocuments')
+    expect(stats).toHaveProperty('vectorReady')
+    // vectorReady depends on @xenova/transformers availability
+    expect(typeof stats.vectorReady).toBe('boolean')
   })
 })
