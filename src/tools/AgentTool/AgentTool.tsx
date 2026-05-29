@@ -436,6 +436,14 @@ export const AgentTool = buildTool({
     depends_on
   }: AgentToolInput, toolUseContext, canUseTool, assistantMessage, onProgress?) {
     const startTime = Date.now();
+    const _agentInitT0 = performance.now();
+    const _agentInitLog = (label: string) => {
+      const elapsed = performance.now() - _agentInitT0;
+      if (process.env.OLA_CC_CPU_DEBUG === '1') {
+        console.error(`[agent-init] ${label}: ${elapsed.toFixed(1)}ms`);
+      }
+    };
+    _agentInitLog('call_start');
 
     // Fire-and-forget V2 task status sync when task_id is provided
     const syncV2Task = (status: 'in_progress' | 'completed' | 'failed') => {
@@ -550,6 +558,7 @@ export const AgentTool = buildTool({
       }
       selectedAgent = found;
     }
+    _agentInitLog(`agent_resolved: ${selectedAgent.agentType}`);
 
     // Same lifecycle constraint as the run_in_background guard above, but for
     // agent definitions that force background via `background: true`. Checked
@@ -846,6 +855,7 @@ export const AgentTool = buildTool({
         content: buildWorktreeNotice(getCwd(), worktreeInfo.worktreePath)
       }));
     }
+    _agentInitLog('before_runAgentParams');
     const runAgentParams: Parameters<typeof runAgent>[0] = {
       agentDefinition: selectedAgent,
       promptMessages,
@@ -1106,6 +1116,7 @@ export const AgentTool = buildTool({
         const summaryTaskId = foregroundTaskId;
 
         // Get async iterator for the agent
+        _agentInitLog('before_runAgent_sync');
         const agentIterator = runAgent({
           ...runAgentParams,
           override: {
@@ -1132,6 +1143,11 @@ export const AgentTool = buildTool({
         // the same object. We re-read the previous message's usage on the
         // next iteration to capture the updated values.
         let prevSyncAssistantMsg: Message | undefined;
+        // Throttle onProgress calls to avoid render storms in UI components.
+        // Without this, every tool_use/tool_result triggers setAppState → re-render,
+        // and during rapid agent execution this pegs the CPU at 100%.
+        let lastOnProgressTime = 0;
+        const ONPROGRESS_THROTTLE_MS = 100; // max 10 updates/sec
         try {
           while (true) {
             // Re-read previous message's usage now that message_delta has
@@ -1141,7 +1157,11 @@ export const AgentTool = buildTool({
             if (prevSyncAssistantMsg) {
               reReadMessageUsage(syncTracker, prevSyncAssistantMsg);
               prevSyncAssistantMsg = undefined;
-              if (foregroundTaskId) {
+              // Throttled: updateAsyncAgentProgress creates new tasks reference
+              // which triggers REPL.tsx re-render → cascades to all children.
+              const now0 = Date.now();
+              if (foregroundTaskId && (now0 - lastOnProgressTime >= ONPROGRESS_THROTTLE_MS)) {
+                lastOnProgressTime = now0;
                 updateAsyncAgentProgress(foregroundTaskId, getProgressUpdate(syncTracker), rootSetAppState);
               }
             }
@@ -1203,6 +1223,9 @@ export const AgentTool = buildTool({
                       updateProgressFromMessage(tracker, existingMsg, resolveActivity2, toolUseContext.options.tools);
                     }
                     let prevBgAssistantMsg: Message | undefined;
+                    // Throttle progress updates for backgrounded agents (same pattern as foreground)
+                    let lastBgProgressTime = 0;
+                    const BG_PROGRESS_THROTTLE_MS = 100;
                     for await (const msg of runAgent({
                       ...runAgentParams,
                       isAsync: true,
@@ -1231,7 +1254,12 @@ export const AgentTool = buildTool({
                       if (msg.type === 'assistant') {
                         prevBgAssistantMsg = msg;
                       }
-                      updateAsyncAgentProgress(backgroundedTaskId, getProgressUpdate(tracker), rootSetAppState);
+                      // Throttled to prevent render storms when backgrounded agent messages are rapid
+                      const nowBg = Date.now();
+                      if (nowBg - lastBgProgressTime >= BG_PROGRESS_THROTTLE_MS) {
+                        lastBgProgressTime = nowBg;
+                        updateAsyncAgentProgress(backgroundedTaskId, getProgressUpdate(tracker), rootSetAppState);
+                      }
                       const lastToolName = getLastToolUseName(msg);
                       if (lastToolName) {
                         emitTaskProgress(tracker, backgroundedTaskId, toolUseContext.toolUseId, description, startTime, lastToolName);
@@ -1386,8 +1414,10 @@ export const AgentTool = buildTool({
                 emitTaskProgress(syncTracker, foregroundTaskId, toolUseContext.toolUseId, description, agentStartTime, lastToolName);
                 // Keep AppState task.progress in sync when SDK summaries are
                 // enabled, so updateAgentSummary reads correct token/tool counts
-                // instead of zeros.
-                if (getSdkAgentProgressSummariesEnabled()) {
+                // instead of zeros. Throttled to prevent render storms.
+                const now3 = Date.now();
+                if (getSdkAgentProgressSummariesEnabled() && (now3 - lastOnProgressTime >= ONPROGRESS_THROTTLE_MS)) {
+                  lastOnProgressTime = now3;
                   updateAsyncAgentProgress(foregroundTaskId, getProgressUpdate(syncTracker), rootSetAppState);
                 }
               }
@@ -1395,7 +1425,10 @@ export const AgentTool = buildTool({
 
             // Forward bash_progress events from sub-agent to parent so the SDK
             // receives tool_progress events just as it does for the main agent.
-            if (message.type === 'progress' && (message.data.type === 'bash_progress' || message.data.type === 'powershell_progress') && onProgress) {
+            // Throttled to prevent render storms (see lastOnProgressTime).
+            const now1 = Date.now();
+            if (message.type === 'progress' && (message.data.type === 'bash_progress' || message.data.type === 'powershell_progress') && onProgress && (now1 - lastOnProgressTime >= ONPROGRESS_THROTTLE_MS)) {
+              lastOnProgressTime = now1;
               onProgress({
                 toolUseID: message.toolUseID,
                 data: message.data
@@ -1408,10 +1441,15 @@ export const AgentTool = buildTool({
             // Increment token count in spinner for assistant messages
             // Subagent streaming events are filtered out in runAgent.ts, so we
             // need to count tokens from completed messages here
+            // Throttled: setResponseLength triggers re-render on every call
             if (message.type === 'assistant') {
               const contentLength = getAssistantMessageContentLength(message);
               if (contentLength > 0) {
-                toolUseContext.setResponseLength(len => len + contentLength);
+                const nowToken = Date.now();
+                if (nowToken - lastOnProgressTime >= ONPROGRESS_THROTTLE_MS) {
+                  lastOnProgressTime = nowToken;
+                  toolUseContext.setResponseLength(len => len + contentLength);
+                }
               }
             }
             const normalizedNew = normalizeMessages([message]);
@@ -1426,8 +1464,10 @@ export const AgentTool = buildTool({
                   continue;
                 }
 
-                // Forward progress updates
-                if (onProgress) {
+                // Forward progress updates (throttled to prevent render storms)
+                const now2 = Date.now();
+                if (onProgress && (now2 - lastOnProgressTime >= ONPROGRESS_THROTTLE_MS)) {
+                  lastOnProgressTime = now2;
                   onProgress({
                     toolUseID: `agent_${assistantMessage.message.id}`,
                     data: {
