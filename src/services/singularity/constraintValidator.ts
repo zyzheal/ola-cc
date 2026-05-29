@@ -1,3 +1,6 @@
+import { execSync } from 'node:child_process'
+import type { DiverseStrategy } from './EvolutionEngine'
+
 // EVOLUTION.* 结构化日志
 const logger = {
   info: (meta: Record<string, unknown>, msg: string) => {
@@ -11,6 +14,16 @@ const logger = {
   error: (meta: Record<string, unknown>, msg: string) => {
     console.error(`[EVOLUTION] ${msg}`, JSON.stringify(meta))
   },
+}
+
+/** 额外验证选项，保持 validateAll 向后兼容 */
+export interface ValidateOptions {
+  /** SurgicalPatch 策略，与 totalLines 一起使用 */
+  strategy?: DiverseStrategy
+  /** 当前文件总行数，与 strategy 一起使用 */
+  totalLines?: number
+  /** 项目根目录，提供时运行 bun test 门控 */
+  projectRoot?: string
 }
 
 export interface ConstraintResult {
@@ -67,6 +80,7 @@ export class ConstraintValidator {
     artifactType: 'skill' | 'tool' | 'prompt',
     baselineText?: string,
     configOverrides?: Partial<ConstraintConfig>,
+    options?: ValidateOptions,
   ): Promise<ConstraintResult[]> {
     if (process.env.OLA_CC_DISABLE_CONSTRAINT_VALIDATOR === 'true') {
       return [
@@ -111,6 +125,30 @@ export class ConstraintValidator {
         logger.info(
           { code: 'EVOLUTION.CONSTRAINT.INVALID_STRUCTURE', artifactType },
           `Constraint failed: ${structureResult.message}`,
+        )
+      }
+    }
+
+    // 5. SurgicalPatch 约束（仅在提供 strategy + totalLines 时执行）
+    if (options?.strategy && options?.totalLines != null) {
+      const surgicalResult = this.checkSurgicalPatch(options.strategy, options.totalLines, config)
+      results.push(surgicalResult)
+      if (!surgicalResult.passed) {
+        logger.info(
+          { code: 'EVOLUTION.CONSTRAINT.SURGICAL_PATCH_EXCEEDED', details: surgicalResult.details },
+          `Constraint failed: ${surgicalResult.message}`,
+        )
+      }
+    }
+
+    // 6. 测试套件门控（仅在提供 projectRoot 时执行）
+    if (options?.projectRoot) {
+      const testResult = await this.runTestSuite(options.projectRoot)
+      results.push(testResult)
+      if (!testResult.passed) {
+        logger.info(
+          { code: 'EVOLUTION.CONSTRAINT.TEST_SUITE_FAILED', details: testResult.details },
+          `Constraint failed: ${testResult.message}`,
         )
       }
     }
@@ -182,6 +220,60 @@ export class ConstraintValidator {
       message: hasFrontmatter
         ? 'Skill has valid frontmatter (name + description)'
         : 'Skill missing YAML frontmatter with name and description',
+    }
+  }
+
+  /**
+   * 5. SurgicalPatch 约束
+   * 检查策略的预估改动行数是否在允许范围内：
+   *   estimatedLines <= min(totalLines * maxChangeRatio, maxAbsoluteLines)
+   */
+  private checkSurgicalPatch(
+    strategy: DiverseStrategy,
+    totalLines: number,
+    config: ConstraintConfig,
+  ): ConstraintResult {
+    const maxByRatio = Math.floor(totalLines * config.maxChangeRatio)
+    const limit = Math.min(maxByRatio, config.maxAbsoluteLines)
+    const estimated = strategy.estimatedLines
+    const passed = estimated <= limit
+    return {
+      passed,
+      constraintName: 'surgical_patch',
+      message: passed
+        ? `Estimated ${estimated} lines within limit ${limit}`
+        : `Estimated ${estimated} lines exceeds limit ${limit}`,
+      details: `estimatedLines=${estimated}, limit=min(${totalLines}*${config.maxChangeRatio}=${maxByRatio}, ${config.maxAbsoluteLines})=${limit}`,
+    }
+  }
+
+  /**
+   * 6. 测试套件门控
+   * 运行 `bun test` 并检查 100% 通过，超时 300 秒
+   */
+  private async runTestSuite(projectRoot: string): Promise<ConstraintResult> {
+    try {
+      const output = execSync('bun test', {
+        cwd: projectRoot,
+        timeout: 300_000,
+        encoding: 'utf-8',
+        stdio: ['pipe', 'pipe', 'pipe'],
+      })
+      return {
+        passed: true,
+        constraintName: 'test_suite',
+        message: 'All tests passed',
+        details: output.slice(-500), // 保留最后 500 字符作为证据
+      }
+    } catch (error: unknown) {
+      const err = error as { stderr?: string; stdout?: string; message?: string }
+      const details = err.stderr || err.stdout || err.message || 'Unknown test failure'
+      return {
+        passed: false,
+        constraintName: 'test_suite',
+        message: 'Test suite failed',
+        details: details.slice(-500),
+      }
     }
   }
 }
