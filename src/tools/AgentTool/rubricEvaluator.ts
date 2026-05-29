@@ -5,6 +5,21 @@
  * 可被任何 skill / agent / telemetry 模块调用。
  */
 
+// EVOLUTION.* 结构化日志
+const logger = {
+  info: (meta: Record<string, unknown>, msg: string) => {
+    if (process.env.OLA_CC_DEBUG_EVOLUTION === 'true') {
+      console.log(`[EVOLUTION] ${msg}`, JSON.stringify(meta))
+    }
+  },
+  warn: (meta: Record<string, unknown>, msg: string) => {
+    console.warn(`[EVOLUTION] ${msg}`, JSON.stringify(meta))
+  },
+  error: (meta: Record<string, unknown>, msg: string) => {
+    console.error(`[EVOLUTION] ${msg}`, JSON.stringify(meta))
+  },
+}
+
 // ============================================
 // 类型定义
 // ============================================
@@ -301,11 +316,21 @@ export async function evaluateQualityWithFeedback(
       const prompt = FEEDBACK_PROMPT_TEMPLATE(dim, Number(dimResult.value), threshold, skillText)
       const raw = await llmCaller(prompt)
       const parsed = JSON.parse(raw)
+
+      // 验证反馈格式
+      if (!parsed || typeof parsed.feedback !== 'string' || parsed.feedback.trim().length === 0) {
+        logger.warn(
+          { code: 'EVOLUTION.JUDGE.INVALID_FORMAT', dimension: dim, raw: raw.slice(0, 200) },
+          'LLM feedback response missing valid "feedback" field',
+        )
+        continue
+      }
+
       const fb: FitnessFeedback = {
         dimension: dim,
         score: Number(dimResult.value),
         threshold,
-        feedback: parsed.feedback ?? '无具体反馈',
+        feedback: parsed.feedback,
         suggestedApproach: parsed.suggestedApproach,
       }
       feedbacks.push(fb)
@@ -319,8 +344,12 @@ export async function evaluateQualityWithFeedback(
           }
         }
       }
-    } catch {
+    } catch (err: unknown) {
       // LLM feedback 失败不影响评分结果
+      logger.warn(
+        { code: 'EVOLUTION.JUDGE.FEEDBACK_FAILED', dimension: dim, error: String(err) },
+        'LLM feedback generation failed',
+      )
     }
   }
 

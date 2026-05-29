@@ -2,6 +2,21 @@ import { BM25, type BM25Result } from '../../utils/memory/bm25'
 import * as fs from 'fs'
 import * as path from 'path'
 
+// EVOLUTION.* 结构化日志
+const logger = {
+  info: (meta: Record<string, unknown>, msg: string) => {
+    if (process.env.OLA_CC_DEBUG_EVOLUTION === 'true') {
+      console.log(`[EVOLUTION] ${msg}`, JSON.stringify(meta))
+    }
+  },
+  warn: (meta: Record<string, unknown>, msg: string) => {
+    console.warn(`[EVOLUTION] ${msg}`, JSON.stringify(meta))
+  },
+  error: (meta: Record<string, unknown>, msg: string) => {
+    console.error(`[EVOLUTION] ${msg}`, JSON.stringify(meta))
+  },
+}
+
 export class MemoryIndex {
   private bm25: BM25
   private memoryDir: string
@@ -19,6 +34,17 @@ export class MemoryIndex {
     if (this.indexing) return
     this.indexing = true
     try {
+      // 检查目录是否存在
+      try {
+        await fs.promises.access(this.memoryDir, fs.constants.F_OK)
+      } catch {
+        logger.warn(
+          { code: 'EVOLUTION.MEMORY.DIR_NOT_FOUND', memoryDir: this.memoryDir },
+          `Memory directory not found: ${this.memoryDir}`,
+        )
+        return
+      }
+
       const files = (await fs.promises.readdir(this.memoryDir))
         .filter(f => f.endsWith('.md') && f !== 'MEMORY.md')
       for (const file of files) {
@@ -32,6 +58,11 @@ export class MemoryIndex {
         this.indexFile(pending)
       }
       this.pendingFiles.clear()
+    } catch (err: unknown) {
+      logger.warn(
+        { code: 'EVOLUTION.MEMORY.INDEX_FAILED', memoryDir: this.memoryDir, error: String(err) },
+        'Memory index initialization failed',
+      )
     } finally {
       this.indexing = false
     }

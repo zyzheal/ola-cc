@@ -7,6 +7,21 @@ import type { ExecutionRecord } from '../../tools/AgentTool/LearningSystem'
 
 type LLMCaller = (prompt: string) => Promise<string>
 
+// EVOLUTION.* 结构化日志
+const logger = {
+  info: (meta: Record<string, unknown>, msg: string) => {
+    if (process.env.OLA_CC_DEBUG_EVOLUTION === 'true') {
+      console.log(`[EVOLUTION] ${msg}`, JSON.stringify(meta))
+    }
+  },
+  warn: (meta: Record<string, unknown>, msg: string) => {
+    console.warn(`[EVOLUTION] ${msg}`, JSON.stringify(meta))
+  },
+  error: (meta: Record<string, unknown>, msg: string) => {
+    console.error(`[EVOLUTION] ${msg}`, JSON.stringify(meta))
+  },
+}
+
 /** Minimum skill text length to attempt LLM-based generation. */
 const MIN_SKILL_TEXT_LENGTH = 10
 
@@ -51,18 +66,38 @@ export class SyntheticDatasetBuilder {
         const parsed = JSON.parse(raw)
 
         if (!parsed || !Array.isArray(parsed.examples)) {
+          logger.error(
+            { code: 'EVOLUTION.DATASET.GENERATION_FAILED', attempt, reason: 'missing_examples_array' },
+            'LLM response missing "examples" array',
+          )
           throw new Error('LLM response missing "examples" array')
         }
 
         const validCases = this.validateCases(parsed.examples)
 
         if (validCases.length >= minValidCases) {
+          logger.info(
+            { code: 'EVOLUTION.DATASET.GENERATED', count: validCases.length, attempts: attempt + 1 },
+            `Dataset generated successfully with ${validCases.length} valid cases`,
+          )
           return EvalDatasetManager.split(validCases)
         }
 
         // Not enough valid cases — retry with backoff
+        logger.warn(
+          { code: 'EVOLUTION.DATASET.INSUFFICIENT_CASES', validCount: validCases.length, minRequired: minValidCases, attempt },
+          `Only ${validCases.length} valid cases, need ${minValidCases}`,
+        )
         await new Promise(r => setTimeout(r, 500 * (attempt + 1)))
       } catch (err: unknown) {
+        // Handle timeout explicitly
+        if (err instanceof Error && err.message === 'LLM call timed out') {
+          logger.warn(
+            { code: 'EVOLUTION.DATASET.TIMEOUT', timeoutMs: options?.timeoutMs ?? DEFAULTS.timeoutMs, attempt },
+            'LLM call timed out during dataset generation',
+          )
+        }
+
         // Handle 429 rate limit with Retry-After
         if (isRateLimitError(err)) {
           const retryAfterMs = getRetryAfterMs(err)
@@ -70,6 +105,14 @@ export class SyntheticDatasetBuilder {
             await sleep(retryAfterMs)
             continue
           }
+        }
+
+        // Log generation failure on non-timeout errors
+        if (!(err instanceof Error && err.message === 'LLM call timed out')) {
+          logger.error(
+            { code: 'EVOLUTION.DATASET.GENERATION_FAILED', attempt, error: String(err) },
+            'LLM dataset generation failed',
+          )
         }
 
         // On last attempt, fall through to skipValidation fallback
@@ -83,6 +126,10 @@ export class SyntheticDatasetBuilder {
     }
 
     // All retries exhausted — return skipValidation fallback
+    logger.warn(
+      { code: 'EVOLUTION.DATASET.INSUFFICIENT_CASES', reason: 'all_retries_exhausted', maxRetries },
+      'All dataset generation retries exhausted, returning skipValidation fallback',
+    )
     return { train: [], val: [], holdout: [], skipValidation: true }
   }
 
