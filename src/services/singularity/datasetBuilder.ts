@@ -94,7 +94,7 @@ export class SyntheticDatasetBuilder {
       .slice(0, 20)
       .map(r => ({
         taskInput: r.taskDescription,
-        expectedBehavior: `Expected: task completes with score ≥ 70. Actual outcome: ${r.outcome} (score: ${r.score}). Focus on: ${r.signal?.defectType ?? 'general quality'}`,
+        expectedBehavior: `Expected: task completes with score ≥ 70. Actual outcome: ${r.outcome} (score: ${r.score}). Focus on: ${r.signal?.signal_type ?? 'general quality'}`,
         difficulty: (r.score >= 80 ? 'easy' : r.score >= 60 ? 'medium' : 'hard') as 'easy' | 'medium' | 'hard',
         category: skill,
         source: 'sessiondb' as const,

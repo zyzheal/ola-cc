@@ -221,4 +221,89 @@ describe('mineFromHistory', () => {
     const examples = await builder.mineFromHistory('test-skill', [])
     expect(examples.length).toBe(0)
   })
+
+  it('should include signal_type in expectedBehavior when signal is present', async () => {
+    const { SyntheticDatasetBuilder } = await import('./datasetBuilder')
+    const mockLLM = async () => '{}'
+    const builder = new SyntheticDatasetBuilder(mockLLM)
+    const history = Array.from({ length: 5 }, (_, i) => ({
+      id: `rec-${i}`,
+      skill: 'test-skill',
+      taskDescription: `task description ${i} with enough detail`,
+      outcome: 'success' as const,
+      score: 75,
+      signal: {
+        signal_type: 'SKILL_DEFECT',
+        evidence: 'some evidence',
+        reasoning_trace: 'trace',
+        target_skill_segment: 'segment',
+        proposed_revision: 'revision',
+      },
+      edgeCases: [],
+      timestamp: new Date(),
+      duration_ms: 1000,
+    }))
+    const examples = await builder.mineFromHistory('test-skill', history)
+    expect(examples.length).toBeGreaterThanOrEqual(3)
+    expect(examples[0].expectedBehavior).toContain('SKILL_DEFECT')
+  })
+
+  it('should return empty array for history length 1', async () => {
+    const { SyntheticDatasetBuilder } = await import('./datasetBuilder')
+    const mockLLM = async () => '{}'
+    const builder = new SyntheticDatasetBuilder(mockLLM)
+    const history = [{
+      id: 'rec-0', skill: 'test-skill', taskDescription: 'task description with enough detail',
+      outcome: 'success' as const, score: 80, signal: null, edgeCases: [],
+      timestamp: new Date(), duration_ms: 1000,
+    }]
+    const examples = await builder.mineFromHistory('test-skill', history)
+    expect(examples.length).toBe(0)
+  })
+
+  it('should return empty array for history length 2', async () => {
+    const { SyntheticDatasetBuilder } = await import('./datasetBuilder')
+    const mockLLM = async () => '{}'
+    const builder = new SyntheticDatasetBuilder(mockLLM)
+    const history = Array.from({ length: 2 }, (_, i) => ({
+      id: `rec-${i}`, skill: 'test-skill', taskDescription: `task description ${i} with enough detail`,
+      outcome: 'success' as const, score: 80, signal: null, edgeCases: [],
+      timestamp: new Date(), duration_ms: 1000,
+    }))
+    const examples = await builder.mineFromHistory('test-skill', history)
+    expect(examples.length).toBe(0)
+  })
+
+  it('should filter out records with short taskDescription', async () => {
+    const { SyntheticDatasetBuilder } = await import('./datasetBuilder')
+    const mockLLM = async () => '{}'
+    const builder = new SyntheticDatasetBuilder(mockLLM)
+    const history = [
+      { id: 'rec-0', skill: 'test-skill', taskDescription: 'short', outcome: 'success' as const, score: 80, signal: null, edgeCases: [], timestamp: new Date(), duration_ms: 1000 },
+      { id: 'rec-1', skill: 'test-skill', taskDescription: '', outcome: 'success' as const, score: 80, signal: null, edgeCases: [], timestamp: new Date(), duration_ms: 1000 },
+      { id: 'rec-2', skill: 'test-skill', taskDescription: 'valid task description with enough detail', outcome: 'success' as const, score: 80, signal: null, edgeCases: [], timestamp: new Date(), duration_ms: 1000 },
+      { id: 'rec-3', skill: 'test-skill', taskDescription: 'another valid task description with detail', outcome: 'success' as const, score: 70, signal: null, edgeCases: [], timestamp: new Date(), duration_ms: 1000 },
+      { id: 'rec-4', skill: 'test-skill', taskDescription: 'yet another valid description here', outcome: 'failure' as const, score: 50, signal: null, edgeCases: [], timestamp: new Date(), duration_ms: 1000 },
+    ]
+    const examples = await builder.mineFromHistory('test-skill', history)
+    expect(examples.length).toBe(3) // only the 3 valid ones
+    expect(examples.every(e => e.taskInput.length > 10)).toBe(true)
+  })
+
+  it('should map score to difficulty correctly', async () => {
+    const { SyntheticDatasetBuilder } = await import('./datasetBuilder')
+    const mockLLM = async () => '{}'
+    const builder = new SyntheticDatasetBuilder(mockLLM)
+    const history = Array.from({ length: 5 }, (_, i) => ({
+      id: `rec-${i}`, skill: 'test-skill', taskDescription: `task description ${i} with enough detail`,
+      outcome: 'success' as const, score: [85, 80, 70, 60, 50][i], signal: null, edgeCases: [],
+      timestamp: new Date(), duration_ms: 1000,
+    }))
+    const examples = await builder.mineFromHistory('test-skill', history)
+    expect(examples[0].difficulty).toBe('easy')   // 85 >= 80
+    expect(examples[1].difficulty).toBe('easy')   // 80 >= 80
+    expect(examples[2].difficulty).toBe('medium') // 70 >= 60
+    expect(examples[3].difficulty).toBe('medium') // 60 >= 60
+    expect(examples[4].difficulty).toBe('hard')   // 50 < 60
+  })
 })
