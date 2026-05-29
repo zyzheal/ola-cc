@@ -923,6 +923,12 @@ async function* queryLoop(
 					},
 				},
 			);
+			// Sync mutated goalRuntime to store (processGoalRuntimeEvent mutates
+			// runtime in-place, but setAppState callbacks don't include it)
+			toolUseContext.setAppState((prev) => ({
+				...prev,
+				goalRuntime: appState.goalRuntime,
+			}));
 		}
 
 		const permissionMode = appState.toolPermissionContext.mode;
@@ -2037,6 +2043,11 @@ async function* queryLoop(
 						outputSummary: currentOutputSummary,
 					},
 				);
+				// Sync mutated goalRuntime to store
+				toolUseContext.setAppState((prev) => ({
+					...prev,
+					goalRuntime: goalCheckState.goalRuntime,
+				}));
 
 				if (noToolGoalResult.injectedPrompt) {
 					pendingGoalPrompt = noToolGoalResult.injectedPrompt;
@@ -2173,6 +2184,12 @@ async function* queryLoop(
 						},
 					},
 				);
+				// Sync mutated goalRuntime to store (tool_completed mutates
+				// runtime._toolCallsThisTurn in-place)
+				toolUseContext.setAppState((prev) => ({
+					...prev,
+					goalRuntime: appState.goalRuntime,
+				}));
 			}
 		}
 
@@ -2609,6 +2626,11 @@ async function* queryLoop(
 					outputSummary: currentOutputSummary,
 				},
 			);
+			// Sync mutated goalRuntime to store
+			toolUseContext.setAppState((prev) => ({
+				...prev,
+				goalRuntime: freshAppState.goalRuntime,
+			}));
 
 			if (goalResult.injectedPrompt) {
 				pendingGoalPrompt = goalResult.injectedPrompt;
