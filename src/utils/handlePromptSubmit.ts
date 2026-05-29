@@ -283,11 +283,16 @@ export async function handlePromptSubmit(
           clearLocalJSX: true,
         })
         if (result && options?.display !== 'skip' && params.addNotification) {
-          params.addNotification({
-            key: `immediate-${immediateCommand.name}`,
-            text: result,
-            priority: 'immediate',
-          })
+          // Defer notification to avoid nested setAppState calls:
+          // slash commands call setAppState before onDone, and
+          // addNotification also calls setAppState synchronously.
+          setTimeout(() => {
+            params.addNotification?.({
+              key: `immediate-${immediateCommand.name}`,
+              text: result,
+              priority: 'immediate',
+            })
+          }, 0)
         }
         if (options?.nextInput) {
           if (options.submitNextInput) {
