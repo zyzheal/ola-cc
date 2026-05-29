@@ -3,6 +3,7 @@ import {
   type EvalDataset,
   type EvalExample,
 } from './evalDataset'
+import type { ExecutionRecord } from '../../tools/AgentTool/LearningSystem'
 
 type LLMCaller = (prompt: string) => Promise<string>
 
@@ -83,6 +84,21 @@ export class SyntheticDatasetBuilder {
 
     // All retries exhausted — return skipValidation fallback
     return { train: [], val: [], holdout: [], skipValidation: true }
+  }
+
+  async mineFromHistory(skill: string, history: ExecutionRecord[]): Promise<EvalExample[]> {
+    if (history.length < 3) return []
+
+    return history
+      .filter(r => r.taskDescription && r.taskDescription.length > 10)
+      .slice(0, 20)
+      .map(r => ({
+        taskInput: r.taskDescription,
+        expectedBehavior: `Expected: task completes with score ≥ 70. Actual outcome: ${r.outcome} (score: ${r.score}). Focus on: ${r.signal?.defectType ?? 'general quality'}`,
+        difficulty: (r.score >= 80 ? 'easy' : r.score >= 60 ? 'medium' : 'hard') as 'easy' | 'medium' | 'hard',
+        category: skill,
+        source: 'sessiondb' as const,
+      }))
   }
 
   private async callLLMWithTimeout(
