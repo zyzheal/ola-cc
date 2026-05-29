@@ -1,11 +1,13 @@
 // src/tools/GrokTool/GrokManager.ts
 
-import { createHash } from 'crypto'
+import { createHash, randomUUID } from 'crypto'
 import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, renameSync, unlinkSync, writeFileSync } from 'fs'
-import { execFileSync } from 'child_process'
+import { execFile } from 'child_process'
+import { promisify } from 'util'
+const execFileAsync = promisify(execFile)
 import { createServer } from 'http'
 import { homedir } from 'os'
-import { extname, resolve } from 'path'
+import { extname, join, resolve } from 'path'
 import Anthropic from '@anthropic-ai/sdk'
 import { z } from 'zod/v4'
 import { openBrowser } from '../../utils/browser.js'
@@ -114,7 +116,7 @@ export const ERROR_SUGGESTIONS: Record<string, string> = {
 // Constants
 // ============================================================
 
-const GROK_VENDOR_DIR = '~/.ola-cc/vendor/grok'
+const GROK_VENDOR_DIR = join(homedir(), '.ola-cc', 'vendor', 'grok')
 const GROK_GRAPH_FILE = '.understand-anything/knowledge-graph.json'
 
 // Agent 系统提示词（从 Understand-Anything 源码提取）
@@ -231,7 +233,7 @@ export class GrokManager {
 
   constructor(projectRoot?: string) {
     this._projectRoot = projectRoot || null
-    this.vendorDir = GROK_VENDOR_DIR.replace('~', homedir())
+    this.vendorDir = GROK_VENDOR_DIR
     this.config = loadGrokConfig()
 
     logForDebugging(`[grok] Config loaded: ${JSON.stringify(this.config)}`)
@@ -270,26 +272,36 @@ export class GrokManager {
       return sourceDir
     }
 
+    // 本地不存在时不阻塞下载，后台尝试 clone，失败也不影响核心功能
+    logForDebugging(`[grok] Source not found at ${sourceDir}, attempting background clone`)
+    console.error(`[grok] Source not found at ${sourceDir}`)
+    this.cloneGrokSourceInBackground(sourceDir)
+
+    // 返回 sourceDir 即使还不存在，调用方如果依赖文件会自行处理
+    return sourceDir
+  }
+
+  /**
+   * 后台克隆 Understand-Anything 仓库，不阻塞 TUI
+   */
+  private cloneGrokSourceInBackground(sourceDir: string): void {
     mkdirSync(this.vendorDir, { recursive: true })
 
-    return this.retryWithBackoff(async () => {
-      logForDebugging(`[grok] Cloning Understand-Anything to ${sourceDir}`)
+    // 后台异步运行，不 await
+    this.retryWithBackoff(async () => {
       try {
-        execFileSync('git', ['clone', '--depth', '1', 'https://github.com/Lum1104/Understand-Anything.git', sourceDir], {
-          stdio: 'pipe',
+        await execFileAsync('git', ['clone', '--depth', '1', 'https://github.com/Lum1104/Understand-Anything.git', sourceDir], {
           timeout: 120_000,
         })
-        logForDebugging(`[grok] Clone complete`)
-        return sourceDir
+        logForDebugging(`[grok] Background clone complete: ${sourceDir}`)
+        console.error(`[grok] Understand-Anything cloned to ${sourceDir}`)
       } catch (error) {
-        throw new GrokError(
-          'SOURCE_CLONE_FAILED',
-          'clone',
-          `Failed to clone source: ${error instanceof Error ? error.message : String(error)}`,
-          true,
-          'Check network connection and try again'
-        )
+        logForDebugging(`[grok] Background clone failed: ${error instanceof Error ? error.message : String(error)}`)
+        console.error(`[grok] Clone failed. To use full Grok features, run manually:
+  git clone --depth 1 https://github.com/Lum1104/Understand-Anything.git "${sourceDir}"`)
       }
+    }).catch(() => {
+      // 后台失败不抛出——核心功能继续
     })
   }
 
@@ -300,13 +312,16 @@ export class GrokManager {
     const sourceDir = resolve(this.vendorDir, 'understand-anything')
 
     if (!existsSync(sourceDir)) {
-      await this.ensureGrokSource()
+      logForDebugging(`[grok] Update skipped: source not found at ${sourceDir}`)
+      console.error(`[grok] Source not found, run manually:
+  git clone --depth 1 https://github.com/Lum1104/Understand-Anything.git "${sourceDir}"`)
       return
     }
 
     logForDebugging(`[grok] Updating source at ${sourceDir}`)
+    console.error(`[grok] Updating Understand-Anything at ${sourceDir}...`)
     try {
-      execFileSync('git', ['pull'], { cwd: sourceDir, stdio: 'pipe', timeout: 60_000 })
+      await execFileAsync('git', ['pull'], { cwd: sourceDir, timeout: 60_000 })
       logForDebugging(`[grok] Update complete`)
     } catch (error) {
       throw new GrokError(
@@ -350,9 +365,9 @@ export class GrokManager {
       } else {
         this.client = new Anthropic()
       }
-
-      this.model = process.env.ANTHROPIC_MODEL || process.env.OLA_CC_MODEL_SONNET || 'claude-sonnet-4-20250514'
     }
+    // 每次调用刷新 model，支持运行时切换
+    this.model = process.env.ANTHROPIC_MODEL || process.env.OLA_CC_MODEL_SONNET || 'claude-sonnet-4-20250514'
     return this.client
   }
 
@@ -426,7 +441,7 @@ export class GrokManager {
       batches.push(files.slice(i, i + batchSize))
     }
 
-    const results: any[] = []
+    const results: Record<string, unknown>[] = []
 
     for (let i = 0; i < batches.length; i += maxParallel) {
       const parallelBatches = batches.slice(i, i + maxParallel)
@@ -479,7 +494,7 @@ Output JSON array of analysis results.`
    * 解析分析结果（自动剥离 LLM markdown code fence）
    * 只剥离字符串首尾的 code fence，不处理中间嵌套的
    */
-  private parseAnalysisResult(result: string): any[] {
+  private parseAnalysisResult(result: string): Record<string, unknown>[] {
     try {
       // Strip leading code fence (only at string start)
       let cleaned = result.trim()
@@ -542,8 +557,9 @@ Output JSON array of analysis results.`
             files.push(fullPath)
           }
         }
-      } catch {
-        // 跳过无权限的目录
+      } catch (e) {
+        // 跳过无权限的目录，记录警告
+        logForDebugging(`[grok] Skipping directory (permission denied): ${dir} — ${e instanceof Error ? e.message : String(e)}`)
       }
     }
     walk(basePath)
@@ -572,7 +588,7 @@ Output JSON array of analysis results.`
    */
   private detectChanges(
     currentFiles: string[],
-    storedFingerprints: Record<string, any>
+    storedFingerprints: Record<string, { hash?: string; size?: number; mtime?: number }>
   ): { changed: string[]; added: string[]; removed: string[]; unchanged: string[] } {
     const currentSet = new Set(currentFiles)
     const storedSet = new Set(Object.keys(storedFingerprints))
@@ -617,97 +633,95 @@ Output JSON array of analysis results.`
   }
 
   /**
-   * 组装知识图谱
-   * @param changes 增量模式下的变更信息，用于延迟删除旧节点（分析完成后再清理）
+   * 增量模式：合并已有节点与新分析结果
    */
-  private assembleGraph(
-    files: string[],
-    scannerResult: any,
-    analysisResults: any[],
-    architectureResult: any,
-    tourResult: any,
-    reviewResult: any,
-    language: string,
-    errors: GrokError[],
-    existingGraph?: any,
-    changes?: { changed: string[]; added: string[]; removed: string[] }
-  ): GrokGenerateResult {
-    const domains = new Set<string>()
-    let nodes: any[]
-    let edges: any[]
-
-    if (existingGraph && changes) {
-      // 增量模式：找出哪些文件的分析结果实际存在
-      const analyzedFiles = new Set<string>()
-      for (const result of analysisResults) {
-        for (const sym of (result.symbols || [])) {
-          if (sym.file) analyzedFiles.add(sym.file)
+  private mergeIncrementalNodes(
+    existingGraph: GraphData,
+    changes: { changed: string[]; added: string[]; removed: string[] },
+    analysisResults: Record<string, unknown>[]
+  ): { nodes: GraphNode[]; edges: GraphEdge[] } {
+    const analyzedFiles = new Set<string>()
+    for (const result of analysisResults) {
+      const syms = result.symbols as Record<string, unknown>[] | undefined
+      if (syms) {
+        for (const sym of syms) {
+          if (sym.file) analyzedFiles.add(String(sym.file))
         }
       }
-
-      // 只删除有新分析结果的变更文件节点 + 已删除文件节点
-      // 如果 LLM 分析失败（analysisResults 为空），保留旧节点防止数据丢失
-      const filesToRemove = new Set<string>(changes.removed)
-      for (const file of changes.changed) {
-        if (analyzedFiles.has(file)) {
-          filesToRemove.add(file)
-        }
-        // 没有分析结果的变更文件 → 保留旧节点
-      }
-
-      nodes = (existingGraph.nodes || []).filter((n: any) => !filesToRemove.has(n.file))
-      const nodeIdsForFilter = new Set(nodes.map((n: any) => n.id))
-      edges = (existingGraph.edges || []).filter((e: any) =>
-        nodeIdsForFilter.has(e.from) && nodeIdsForFilter.has(e.to)
-      )
-    } else {
-      nodes = []
-      edges = []
     }
 
-    // 从分析结果提取新节点（带去重）
-    const existingNodeIds = new Set(nodes.map((n: any) => n.id))
+    const filesToRemove = new Set<string>(changes.removed)
+    for (const file of changes.changed) {
+      if (analyzedFiles.has(file)) filesToRemove.add(file)
+    }
+
+    const nodes = (existingGraph.nodes || []).filter((n: GraphNode) => !filesToRemove.has(n.file))
+    const nodeIdsForFilter = new Set(nodes.map((n: GraphNode) => n.id))
+    const edges = (existingGraph.edges || []).filter((e: GraphEdge) =>
+      nodeIdsForFilter.has(e.from) && nodeIdsForFilter.has(e.to)
+    )
+    return { nodes, edges }
+  }
+
+  /**
+   * 从 LLM 分析结果提取新节点和边
+   */
+  private extractNewNodes(
+    analysisResults: Record<string, unknown>[],
+    existingNodeIds: Set<string>
+  ): { newNodes: GraphNode[]; newEdges: GraphEdge[] } {
+    const newNodes: GraphNode[] = []
+    const newEdges: GraphEdge[] = []
+
     for (const result of analysisResults) {
-      const symbols = result.symbols || []
+      const symbols = (result.symbols as Record<string, unknown>[]) || []
       for (const sym of symbols) {
         const id = `${sym.file || 'unknown'}:${sym.name || 'unknown'}`
-        // 防止节点 ID 碰撞：加索引后缀
         let finalId = id
         let counter = 1
         while (existingNodeIds.has(finalId)) {
           finalId = `${id}#${counter++}`
         }
         existingNodeIds.add(finalId)
-
-        nodes.push({
+        newNodes.push({
           id: finalId,
-          name: sym.name || 'unknown',
-          kind: sym.kind || 'symbol',
-          file: sym.file || '',
-          line: sym.line || 0,
-          signature: sym.signature || '',
-          summary: sym.summary || '',
+          name: String(sym.name || 'unknown'),
+          kind: String(sym.kind || 'symbol'),
+          file: String(sym.file || ''),
+          line: Number(sym.line || 0),
+          signature: String(sym.signature || ''),
+          summary: String(sym.summary || ''),
           layer: '',
           domain: '',
         })
       }
 
-      // 提取边（关系）
-      const rels = result.relationships || []
+      const rels = (result.relationships as Record<string, unknown>[]) || []
       for (const rel of rels) {
-        edges.push({
-          from: rel.from || '',
-          to: rel.to || '',
-          type: rel.type || 'relates',
+        newEdges.push({
+          from: String(rel.from || ''),
+          to: String(rel.to || ''),
+          type: String(rel.type || 'relates'),
         })
       }
     }
+    return { newNodes, newEdges }
+  }
 
-    // 从架构结果分配层
-    const layers = architectureResult.layers || []
+  /**
+   * 从架构结果分配层并添加依赖边
+   */
+  private assignLayersAndDeps(
+    architectureResult: Record<string, unknown>,
+    nodes: GraphNode[],
+    edges: GraphEdge[]
+  ): { domains: Set<string>; layers: Record<string, unknown>[] } {
+    const domains = new Set<string>()
+    const layers = (architectureResult.layers as Record<string, unknown>[]) || []
+
     for (const layer of layers) {
-      const layerName = layer.name || 'unknown'
-      const layerModules = layer.modules || []
+      const layerName = String(layer.name || 'unknown')
+      const layerModules = (layer.modules as string[]) || []
       for (const node of nodes) {
         if (layerModules.some((m: string) => node.file?.includes(m))) {
           node.layer = layerName
@@ -716,16 +730,21 @@ Output JSON array of analysis results.`
       if (layerName !== 'unknown') domains.add(layerName)
     }
 
-    // 从架构结果添加依赖边
-    const deps = architectureResult.dependencies || []
+    const deps = (architectureResult.dependencies as Record<string, unknown>[]) || []
     for (const dep of deps) {
-      edges.push({ from: dep.from || '', to: dep.to || '', type: dep.type || 'depends' })
+      edges.push({ from: String(dep.from || ''), to: String(dep.to || ''), type: String(dep.type || 'depends') })
     }
 
-    // 去重边 + 验证两端节点存在
-    const nodeIdSet = new Set(nodes.map((n: any) => n.id))
+    return { domains, layers }
+  }
+
+  /**
+   * 去重边 + 验证两端节点存在
+   */
+  private deduplicateEdges(nodes: GraphNode[], edges: GraphEdge[]): GraphEdge[] {
+    const nodeIdSet = new Set(nodes.map((n: GraphNode) => n.id))
     const edgeKeys = new Set<string>()
-    const uniqueEdges = edges.filter(e => {
+    return edges.filter(e => {
       if (!e.from || !e.to) return false
       if (!nodeIdSet.has(e.from) || !nodeIdSet.has(e.to)) return false
       const key = `${e.from}->${e.to}:${e.type}`
@@ -733,41 +752,16 @@ Output JSON array of analysis results.`
       edgeKeys.add(key)
       return true
     })
+  }
 
-    // 未覆盖文件
-    const coveredFiles = new Set(nodes.map((n: any) => n.file).filter(Boolean))
-    const uncovered = files.filter(f => !coveredFiles.has(f))
-
-    // 计算文件指纹（用于增量更新）
-    const fingerprints: Record<string, { hash: string; size: number }> = {}
-    for (const file of files) {
-      const fp = this.computeFileFingerprint(file)
-      if (fp) fingerprints[file] = fp
-    }
-
-    // 原子写入：先写临时文件，再 rename（防止写入中断导致数据损坏）
+  /**
+   * 原子写入图谱文件（先写临时文件，再 rename）
+   */
+  private saveGraph(graphData: GraphData): string {
     const graphDir = resolve(this.projectRoot, '.understand-anything')
     mkdirSync(graphDir, { recursive: true })
     const filePath = resolve(graphDir, 'knowledge-graph.json')
     const tempPath = filePath + '.tmp'
-
-    const graphData = {
-      nodes,
-      edges: uniqueEdges,
-      metadata: {
-        lastUpdated: new Date().toISOString(),
-        fileCount: files.length,
-        languages: scannerResult.languages || [],
-        frameworks: scannerResult.frameworks || [],
-        layers: layers.map((l: any) => l.name || ''),
-        uncovered: uncovered.length,
-        tour: tourResult.tours || [],
-        review: reviewResult.valid !== undefined ? reviewResult : { valid: true, issues: [], suggestions: [] },
-        language,
-        errors: errors.map(e => ({ code: e.code, stage: e.stage, message: e.message })),
-        fingerprints,
-      },
-    }
 
     // 清理残留的 .tmp 文件（上次崩溃遗留）
     try { if (existsSync(tempPath)) unlinkSync(tempPath) } catch { /* ignore */ }
@@ -778,6 +772,79 @@ Output JSON array of analysis results.`
 
     writeFileSync(tempPath, JSON.stringify(graphData, null, 2), 'utf-8')
     renameSync(tempPath, filePath)
+    return filePath
+  }
+
+  /**
+   * 组装知识图谱
+   */
+  private assembleGraph(
+    files: string[],
+    scannerResult: Record<string, unknown>,
+    analysisResults: Record<string, unknown>[],
+    architectureResult: Record<string, unknown>,
+    tourResult: Record<string, unknown>,
+    reviewResult: Record<string, unknown>,
+    language: string,
+    errors: GrokError[],
+    existingGraph?: GraphData,
+    changes?: { changed: string[]; added: string[]; removed: string[] }
+  ): GrokGenerateResult {
+    // Step 1: 初始化节点和边（增量 or 全量）
+    let nodes: GraphNode[]
+    let edges: GraphEdge[]
+    if (existingGraph && changes) {
+      const merged = this.mergeIncrementalNodes(existingGraph, changes, analysisResults)
+      nodes = merged.nodes
+      edges = merged.edges
+    } else {
+      nodes = []
+      edges = []
+    }
+
+    // Step 2: 从分析结果提取新节点
+    const existingNodeIds = new Set(nodes.map((n: GraphNode) => n.id))
+    const { newNodes, newEdges } = this.extractNewNodes(analysisResults, existingNodeIds)
+    nodes.push(...newNodes)
+    edges.push(...newEdges)
+
+    // Step 3: 分配架构层 + 添加依赖边
+    const { domains, layers } = this.assignLayersAndDeps(architectureResult, nodes, edges)
+
+    // Step 4: 去重边
+    const uniqueEdges = this.deduplicateEdges(nodes, edges)
+
+    // Step 5: 计算文件指纹
+    const fingerprints: Record<string, { hash: string; size: number }> = {}
+    for (const file of files) {
+      const fp = this.computeFileFingerprint(file)
+      if (fp) fingerprints[file] = fp
+    }
+
+    // Step 6: 未覆盖文件
+    const coveredFiles = new Set(nodes.map((n: GraphNode) => n.file).filter(Boolean))
+    const uncovered = files.filter(f => !coveredFiles.has(f))
+
+    // Step 7: 组装并保存
+    const graphData: GraphData = {
+      nodes,
+      edges: uniqueEdges,
+      metadata: {
+        lastUpdated: new Date().toISOString(),
+        fileCount: files.length,
+        languages: (scannerResult.languages as string[]) || [],
+        frameworks: (scannerResult.frameworks as string[]) || [],
+        layers: layers.map((l: Record<string, unknown>) => String(l.name || '')),
+        uncovered: uncovered.length,
+        tour: (tourResult.tours as unknown[]) || [],
+        review: reviewResult.valid !== undefined ? reviewResult : { valid: true, issues: [], suggestions: [] },
+        language,
+        errors: errors.map(e => ({ code: e.code, stage: e.stage, message: e.message })),
+        fingerprints,
+      },
+    }
+
+    const filePath = this.saveGraph(graphData)
     logForDebugging(`[grok] Graph saved: ${nodes.length} nodes, ${uniqueEdges.length} edges → ${filePath}`)
 
     return {
@@ -787,6 +854,30 @@ Output JSON array of analysis results.`
       domainCount: domains.size,
       filePath,
       errors: errors.length > 0 ? errors : undefined,
+    }
+  }
+
+  /**
+   * 执行单个 Pipeline 步骤（带超时、解析、错误处理）
+   */
+  private async runPipelineStep(
+    stage: string,
+    prompt: string,
+    systemPrompt: string,
+    reportProgress: (stage: string, progress: number) => void,
+    errors: GrokError[]
+  ): Promise<Record<string, unknown>> {
+    reportProgress(stage, 0)
+    try {
+      const response = await this.callAgentWithTimeout(prompt, systemPrompt)
+      const result = this.parseAnalysisResult(response)[0] || {}
+      reportProgress(stage, 100)
+      return result
+    } catch (error) {
+      const code = `${stage.toUpperCase()}_FAILED`
+      errors.push(error instanceof GrokError ? error : new GrokError(code, stage, String(error), true))
+      reportProgress(stage, 100)
+      return {}
     }
   }
 
@@ -806,14 +897,14 @@ Output JSON array of analysis results.`
     }
 
     try {
-      return await this._runPipelineInner(options)
+      return await this.runPipelineInner(options)
     } finally {
       releaseLock!()
       this.pipelineLock = null
     }
   }
 
-  private async _runPipelineInner(options: GrokGenerateOptions): Promise<GrokGenerateResult> {
+  private async runPipelineInner(options: GrokGenerateOptions): Promise<GrokGenerateResult> {
     const errors: GrokError[] = []
     const reportProgress = options.onProgress || (() => {})
     const startTime = Date.now()
@@ -827,7 +918,7 @@ Output JSON array of analysis results.`
     }
 
     // 增量模式：检测变更（不提前删除节点，延迟到 assembleGraph 阶段）
-    let existingGraph: any = null
+    let existingGraph: GraphData | null = null
     let filesToAnalyze = files
     let isIncrementalRun = false
     let changes: { changed: string[]; added: string[]; removed: string[] } | undefined
@@ -851,7 +942,7 @@ Output JSON array of analysis results.`
               status: 'success',
               nodeCount: existingGraph.nodes?.length || 0,
               edgeCount: existingGraph.edges?.length || 0,
-              domainCount: new Set(existingGraph.nodes?.map((n: any) => n.layer).filter(Boolean)).size,
+              domainCount: new Set(existingGraph.nodes?.map((n: GraphNode) => n.layer).filter(Boolean)).size,
               filePath: graphPath,
             }
           }
@@ -895,31 +986,23 @@ Output JSON array of analysis results.`
     }
 
     // Step 2: Scanner Agent — 语言和框架检测（增量模式跳过，复用已有数据）
-    let scannerResult: any = {}
+    let scannerResult: Record<string, unknown> = {}
     if (isIncrementalRun && existingGraph?.metadata) {
-      // 增量模式：复用已有扫描结果
       scannerResult = {
         languages: existingGraph.metadata.languages || [],
         frameworks: existingGraph.metadata.frameworks || [],
       }
       reportProgress('scanner', 100)
     } else {
-      try {
-        const scannerResponse = await this.callAgentWithTimeout(
-          `Analyze this project and detect languages, frameworks, and entry points.\n\nFiles:\n${files.slice(0, 50).map(f => `- ${f}`).join('\n')}`,
-          AGENT_SYSTEM_PROMPTS.scanner
-        )
-        scannerResult = this.parseAnalysisResult(scannerResponse)[0] || {}
-        reportProgress('scanner', 100)
-      } catch (error) {
-        errors.push(error instanceof GrokError ? error : new GrokError('SCANNER_FAILED', 'scanner', String(error), true))
-        reportProgress('scanner', 100)
-      }
+      scannerResult = await this.runPipelineStep('scanner',
+        `Analyze this project and detect languages, frameworks, and entry points.\n\nFiles:\n${files.slice(0, 50).map(f => `- ${f}`).join('\n')}`,
+        AGENT_SYSTEM_PROMPTS.scanner, reportProgress, errors
+      )
     }
 
     // Step 3: File Analyzer Agent — 批量并行分析（增量模式只分析变更文件）
     reportProgress('analyzer', 0)
-    let analysisResults: any[] = []
+    let analysisResults: Record<string, unknown>[] = []
     try {
       analysisResults = await this.analyzeFilesBatch(filesToAnalyze)
       reportProgress('analyzer', 100)
@@ -929,69 +1012,47 @@ Output JSON array of analysis results.`
     }
 
     // Step 4: Architecture Agent — 架构层分析（增量模式：变更 <20% 文件时复用已有架构）
-    reportProgress('architecture', 0)
-    let architectureResult: any = {}
+    let architectureResult: Record<string, unknown> = {}
     if (isIncrementalRun && existingGraph?.metadata && filesToAnalyze.length < files.length * 0.2) {
-      // 增量模式：变更比例小，复用已有架构分析（避免 LLM 重复调用）
       architectureResult = { layers: existingGraph.metadata.layers?.map((l: string) => ({ name: l, modules: [] })) || [], dependencies: [] }
       logForDebugging('[grok] Incremental: reusing existing architecture analysis')
       reportProgress('architecture', 100)
     } else {
-      try {
-        const archResponse = await this.callAgentWithTimeout(
-          `Analyze the architecture of this project.\n\nFiles: ${files.length}\nLanguages: ${scannerResult.languages?.join(', ') || 'unknown'}\nFrameworks: ${scannerResult.frameworks?.join(', ') || 'unknown'}\n\nSample modules:\n${files.slice(0, 30).map(f => `- ${f}`).join('\n')}`,
-          AGENT_SYSTEM_PROMPTS.architecture
-        )
-        architectureResult = this.parseAnalysisResult(archResponse)[0] || {}
-        reportProgress('architecture', 100)
-      } catch (error) {
-        errors.push(error instanceof GrokError ? error : new GrokError('ARCH_FAILED', 'architecture', String(error), true))
-        reportProgress('architecture', 100)
-      }
+      const languages = Array.isArray(scannerResult.languages) ? scannerResult.languages.join(', ') : 'unknown'
+      const frameworks = Array.isArray(scannerResult.frameworks) ? scannerResult.frameworks.join(', ') : 'unknown'
+      architectureResult = await this.runPipelineStep('architecture',
+        `Analyze the architecture of this project.\n\nFiles: ${files.length}\nLanguages: ${languages}\nFrameworks: ${frameworks}\n\nSample modules:\n${files.slice(0, 30).map(f => `- ${f}`).join('\n')}`,
+        AGENT_SYSTEM_PROMPTS.architecture, reportProgress, errors
+      )
     }
 
     // Step 5: Tour Builder — 学习路径（增量模式复用已有 tour）
-    reportProgress('tour', 0)
-    let tourResult: any = {}
+    let tourResult: Record<string, unknown> = {}
     if (isIncrementalRun && existingGraph?.metadata?.tour) {
       tourResult = { tours: existingGraph.metadata.tour }
       logForDebugging('[grok] Incremental: reusing existing tour')
       reportProgress('tour', 100)
     } else {
-      try {
-        const tourResponse = await this.callAgentWithTimeout(
-          `Create learning tours for this project.\n\nFiles: ${files.length}\nLayers: ${JSON.stringify(architectureResult.layers || [])}`,
-          AGENT_SYSTEM_PROMPTS.tour
-        )
-        tourResult = this.parseAnalysisResult(tourResponse)[0] || {}
-        reportProgress('tour', 100)
-      } catch (error) {
-        errors.push(error instanceof GrokError ? error : new GrokError('TOUR_FAILED', 'tour', String(error), true))
-        reportProgress('tour', 100)
-      }
+      tourResult = await this.runPipelineStep('tour',
+        `Create learning tours for this project.\n\nFiles: ${files.length}\nLayers: ${JSON.stringify(architectureResult.layers || [])}`,
+        AGENT_SYSTEM_PROMPTS.tour, reportProgress, errors
+      )
     }
 
     // Step 6: Graph Reviewer — 质量审查（增量模式跳过，复用已有 review）
-    reportProgress('review', 0)
-    let reviewResult: any = {}
+    let reviewResult: Record<string, unknown> = {}
     if (isIncrementalRun && existingGraph?.metadata?.review) {
-      reviewResult = existingGraph.metadata.review
+      reviewResult = existingGraph.metadata.review as Record<string, unknown>
       logForDebugging('[grok] Incremental: reusing existing review')
       reportProgress('review', 100)
     } else {
-      try {
-        const nodeCount = analysisResults.length
-        const edgeCount = architectureResult.dependencies?.length || 0
-        const reviewResponse = await this.callAgentWithTimeout(
-          `Review this knowledge graph for completeness.\n\nNodes: ${nodeCount}\nEdges: ${edgeCount}\nLayers: ${JSON.stringify(architectureResult.layers || [])}`,
-          AGENT_SYSTEM_PROMPTS.review
-        )
-        reviewResult = this.parseAnalysisResult(reviewResponse)[0] || {}
-        reportProgress('review', 100)
-      } catch (error) {
-        errors.push(error instanceof GrokError ? error : new GrokError('REVIEW_FAILED', 'review', String(error), true))
-        reportProgress('review', 100)
-      }
+      const nodeCount = analysisResults.length
+      const deps = architectureResult.dependencies as unknown[] | undefined
+      const edgeCount = deps?.length || 0
+      reviewResult = await this.runPipelineStep('review',
+        `Review this knowledge graph for completeness.\n\nNodes: ${nodeCount}\nEdges: ${edgeCount}\nLayers: ${JSON.stringify(architectureResult.layers || [])}`,
+        AGENT_SYSTEM_PROMPTS.review, reportProgress, errors
+      )
     }
 
     // Step 7: 组装并保存图谱（增量模式合并已有数据，延迟删除旧节点）
@@ -1028,7 +1089,7 @@ Output JSON array of analysis results.`
     }
 
     const graphPath = resolve(this.projectRoot, GROK_GRAPH_FILE)
-    let graph: any
+    let graph: GraphData
     try {
       graph = JSON.parse(readFileSync(graphPath, 'utf-8'))
     } catch (e) {
@@ -1047,7 +1108,7 @@ Output JSON array of analysis results.`
 
     // 匹配节点并计算相关性分数
     const scoredNodes = (graph.nodes || [])
-      .map((node: any) => {
+      .map((node: GraphNode) => {
         const name = (node.name || '').toLowerCase()
         const summary = (node.summary || '').toLowerCase()
         const file = (node.file || '').toLowerCase()
@@ -1078,24 +1139,24 @@ Output JSON array of analysis results.`
 
         return { node, score }
       })
-      .filter((item: any) => item.score > 0)
-      .sort((a: any, b: any) => b.score - a.score)
+      .filter((item: { node: GraphNode; score: number }) => item.score > 0)
+      .sort((a: { node: GraphNode; score: number }, b: { node: GraphNode; score: number }) => b.score - a.score)
       .slice(0, 20)
 
-    const matchedNodes = scoredNodes.map((s: any) => s.node)
+    const matchedNodes = scoredNodes.map((s: { node: GraphNode; score: number }) => s.node)
 
     // 找关联边（O(n+m) 使用 Set）
-    const matchedIds = new Set(matchedNodes.map((n: any) => n.id))
-    const matchedEdges = (graph.edges || []).filter((edge: any) =>
+    const matchedIds = new Set(matchedNodes.map((n: GraphNode) => n.id))
+    const matchedEdges = (graph.edges || []).filter((edge: GraphEdge) =>
       matchedIds.has(edge.from) || matchedIds.has(edge.to)
     ).slice(0, 30)
 
     // 构造上下文（按相关性排序）
-    const context = scoredNodes.map(({ node: n, score }: any) =>
+    const context = scoredNodes.map(({ node: n, score }: { node: GraphNode; score: number }) =>
       `[${n.kind || 'node'}] ${n.name || n.id} (score:${score}) — ${n.file || 'N/A'}:${n.line || '?'}\n  ${n.summary || ''}`
     ).join('\n')
 
-    const edgeContext = matchedEdges.map((e: any) =>
+    const edgeContext = matchedEdges.map((e: GraphEdge) =>
       `${e.from} → ${e.to} (${e.type || 'relates'})`
     ).join('\n')
 
@@ -1115,8 +1176,8 @@ Provide a concise answer with file:line references.`
 
     // 提取引用来源（带实际相关性分数）
     const sources: { file: string; line: number; relevance: number }[] = scoredNodes
-      .filter(({ node: n }: any) => n.file)
-      .map(({ node: n, score }: any) => ({ file: n.file, line: n.line || 0, relevance: score }))
+      .filter(({ node: n }: { node: GraphNode; score: number }) => n.file)
+      .map(({ node: n, score }: { node: GraphNode; score: number }) => ({ file: n.file, line: n.line || 0, relevance: score }))
 
     return { answer, sources }
   }
@@ -1147,10 +1208,15 @@ Provide a concise answer with file:line references.`
     }
 
     const actualPort = port || await this.findAvailablePort()
-    const token = crypto.randomUUID()
+    const token = randomUUID()
 
     const server = createServer((req, res) => {
       const url = new URL(req.url || '/', `http://localhost:${actualPort}`)
+
+      // 安全头：禁止 CORS 和外部引用
+      res.setHeader('X-Content-Type-Options', 'nosniff')
+      res.setHeader('X-Frame-Options', 'DENY')
+      res.setHeader('Referrer-Policy', 'no-referrer')
 
       // 健康检查端点（不需要 token）
       if (url.pathname === '/health') {
@@ -1164,19 +1230,30 @@ Provide a concise answer with file:line references.`
         return
       }
 
-      // 验证 token
-      if (url.searchParams.get('token') !== token) {
+      // 验证 token（同时检查 query param 和 Authorization header）
+      const queryToken = url.searchParams.get('token')
+      const authHeader = req.headers.authorization?.replace('Bearer ', '')
+      if (queryToken !== token && authHeader !== token) {
         res.writeHead(403)
         res.end('Forbidden')
         return
       }
 
-      // 提供图谱数据
+      // 提供图谱数据（仅允许 localhost）
       if (url.pathname === '/api/graph') {
+        const origin = req.headers.origin || ''
+        if (origin && !origin.startsWith('http://localhost:') && !origin.startsWith('http://127.0.0.1:')) {
+          res.writeHead(403)
+          res.end('CORS not allowed')
+          return
+        }
         const graphPath = resolve(this.projectRoot, GROK_GRAPH_FILE)
         try {
           const data = readFileSync(graphPath, 'utf-8')
-          res.writeHead(200, { 'Content-Type': 'application/json' })
+          res.writeHead(200, {
+            'Content-Type': 'application/json',
+            'Access-Control-Allow-Origin': `http://localhost:${actualPort}`,
+          })
           res.end(data)
         } catch {
           res.writeHead(404)
