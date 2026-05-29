@@ -279,6 +279,14 @@ export class LearningSystem {
       .slice(-limit)
   }
 
+  /**
+   * 为 SyntheticDatasetBuilder 提供执行历史数据
+   * 复用现有 getExecutionHistory() 公共方法
+   */
+  getHistoryForMining(skill: string): ExecutionRecord[] {
+    return this.getExecutionHistory(skill, 20)
+  }
+
   // ============================================
   // 原有误报记录方法（向后兼容）
   // ============================================

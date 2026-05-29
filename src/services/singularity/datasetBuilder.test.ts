@@ -190,3 +190,35 @@ describe('SyntheticDatasetBuilder', () => {
     expect(dataset.skipValidation).toBeUndefined()
   })
 })
+
+describe('mineFromHistory', () => {
+  it('should extract valid examples from execution history', async () => {
+    const { SyntheticDatasetBuilder } = await import('./datasetBuilder')
+    const mockLLM = async () => '{}'
+    const builder = new SyntheticDatasetBuilder(mockLLM)
+    const history = Array.from({ length: 10 }, (_, i) => ({
+      id: `rec-${i}`,
+      skill: 'test-skill',
+      taskDescription: `task description ${i} with enough detail to extract`,
+      outcome: (i % 3 === 0 ? 'failure' : 'success') as 'success' | 'failure',
+      score: 60 + i * 3,
+      signal: null,
+      edgeCases: [],
+      timestamp: new Date(),
+      duration_ms: 1000,
+    }))
+    const examples = await builder.mineFromHistory('test-skill', history)
+    expect(examples.length).toBeGreaterThanOrEqual(3)
+    expect(examples[0].taskInput).toBeTruthy()
+    expect(examples[0].expectedBehavior.length).toBeGreaterThanOrEqual(20)
+    expect(examples[0].source).toBe('sessiondb')
+  })
+
+  it('should return empty array for insufficient history', async () => {
+    const { SyntheticDatasetBuilder } = await import('./datasetBuilder')
+    const mockLLM = async () => '{}'
+    const builder = new SyntheticDatasetBuilder(mockLLM)
+    const examples = await builder.mineFromHistory('test-skill', [])
+    expect(examples.length).toBe(0)
+  })
+})
