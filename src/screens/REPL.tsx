@@ -3371,11 +3371,19 @@ export function REPL({
             });
             const newMessages: MessageType[] = [];
             if (result && doneOptions?.display !== 'skip') {
-              addNotification({
-                key: `immediate-${matchingCommand.name}`,
-                text: result,
-                priority: 'immediate'
-              });
+              // Defer notification to avoid nested setAppState calls:
+              // slash commands (e.g. /goal) call setAppState before onDone,
+              // and addNotification also calls setAppState synchronously.
+              // Two synchronous setAppState calls in the same tick cause
+              // React's "nested updates" warning. setTimeout(0) defers
+              // the second call to after React commits the first batch.
+              setTimeout(() => {
+                addNotification({
+                  key: `immediate-${matchingCommand.name}`,
+                  text: result,
+                  priority: 'immediate'
+                });
+              }, 0);
               // In fullscreen the command just showed as a centered modal
               // pane — the notification above is enough feedback. Adding
               // "❯ /config" + "⎿ dismissed" to the transcript is clutter

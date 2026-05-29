@@ -118,6 +118,9 @@ function sectionLabel(label: string): string {
   return `── ${label} ${'─'.repeat(Math.max(0, lineLen))}`
 }
 
+// Stable empty array reference to avoid re-renders from ?? []
+const EMPTY_STRING_ARRAY: string[] = []
+
 // ── Main Component ──
 
 export function GoalProgress() {
@@ -136,7 +139,7 @@ export function GoalProgress() {
   const turnsWithNoChanges = useAppState(s => s.goalRuntime?.turnsWithNoChanges ?? 0)
   const lastAnalysisResult = useAppState(s => s.goalRuntime?.lastAnalysisResult)
   const consecutiveCritical = useAppState(s => s.goalRuntime?.consecutiveCritical ?? 0)
-  const toolCallsThisTurn = useAppState(s => s.goalRuntime?._toolCallsThisTurn ?? [])
+  const toolCallsThisTurn = useAppState(s => s.goalRuntime?._toolCallsThisTurn ?? EMPTY_STRING_ARRAY)
 
   // ── Orchestrator state (v3 — graceful degradation) ──
   const currentScenario = useAppState(s => s.goalRuntime?.currentScenario)
