@@ -1,3 +1,18 @@
+// EVOLUTION.* 结构化日志
+const logger = {
+  info: (meta: Record<string, unknown>, msg: string) => {
+    if (process.env.OLA_CC_DEBUG_EVOLUTION === 'true') {
+      console.log(`[EVOLUTION] ${msg}`, JSON.stringify(meta))
+    }
+  },
+  warn: (meta: Record<string, unknown>, msg: string) => {
+    console.warn(`[EVOLUTION] ${msg}`, JSON.stringify(meta))
+  },
+  error: (meta: Record<string, unknown>, msg: string) => {
+    console.error(`[EVOLUTION] ${msg}`, JSON.stringify(meta))
+  },
+}
+
 export interface ConstraintResult {
   passed: boolean
   constraintName: string
@@ -66,15 +81,38 @@ export class ConstraintValidator {
     const config = getConfig(configOverrides)
     const results: ConstraintResult[] = []
 
-    results.push(this.checkNonEmpty(artifactText))
-    results.push(this.checkSize(artifactText, artifactType, config))
+    const nonEmpty = this.checkNonEmpty(artifactText)
+    results.push(nonEmpty)
+
+    const sizeResult = this.checkSize(artifactText, artifactType, config)
+    results.push(sizeResult)
+    if (!sizeResult.passed) {
+      logger.info(
+        { code: 'EVOLUTION.CONSTRAINT.SIZE_EXCEEDED', artifactType, details: sizeResult.details },
+        `Constraint failed: ${sizeResult.message}`,
+      )
+    }
 
     if (baselineText) {
-      results.push(this.checkGrowth(artifactText, baselineText, config))
+      const growthResult = this.checkGrowth(artifactText, baselineText, config)
+      results.push(growthResult)
+      if (!growthResult.passed) {
+        logger.info(
+          { code: 'EVOLUTION.CONSTRAINT.GROWTH_EXCEEDED', details: growthResult.details },
+          `Constraint failed: ${growthResult.message}`,
+        )
+      }
     }
 
     if (artifactType === 'skill') {
-      results.push(this.checkSkillStructure(artifactText))
+      const structureResult = this.checkSkillStructure(artifactText)
+      results.push(structureResult)
+      if (!structureResult.passed) {
+        logger.info(
+          { code: 'EVOLUTION.CONSTRAINT.INVALID_STRUCTURE', artifactType },
+          `Constraint failed: ${structureResult.message}`,
+        )
+      }
     }
 
     return results
