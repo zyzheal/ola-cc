@@ -216,3 +216,110 @@ export function gateToComprehensiveScore(gate: GateResult): number {
 
   return calculateComprehensiveScore(passRate, costRatio, overfitRisk)
 }
+
+// ============================================
+// Phase 2: LLM-as-judge 文本反馈
+// ============================================
+
+export interface FitnessFeedback {
+  dimension: string
+  score: number
+  threshold: number
+  feedback: string
+  suggestedApproach?: string
+}
+
+export interface GateResultWithFeedback extends GateResult {
+  feedback: FitnessFeedback[]
+  overallFeedback?: string
+}
+
+type FeedbackLLMCaller = (prompt: string) => Promise<string>
+
+const FEEDBACK_PROMPT_TEMPLATE = (dimension: string, score: number, threshold: number, skillText: string) =>
+`你是一个技能质量评审专家。以下是一个技能的文本和它的评估结果。
+
+技能文本：
+${skillText}
+
+评估维度 ${dimension} 得分 ${score}，未达到阈值 ${threshold}。
+
+请分析该维度失败的具体原因，并给出可操作的改进建议。
+要求：
+1. 指出技能文本中导致该维度得分低的具体段落或缺失内容
+2. 给出具体的修改方向（不是泛泛的建议）
+3. 建议不超过 3 句话
+
+响应 JSON 格式：{ "feedback": "...", "suggestedApproach": "..." }`
+
+// 反馈缓存（skillText+dimension → feedback）
+const feedbackCache = new Map<string, { feedback: FitnessFeedback; cachedAt: number }>()
+const FEEDBACK_CACHE_TTL = 3600_000 // 1 hour
+
+export async function evaluateQualityWithFeedback(
+  quality: QualityInput,
+  skillText: string,
+  config?: RubricConfig,
+  options?: {
+    enableLLMFeedback?: boolean
+    model?: string
+  },
+  llmCaller?: FeedbackLLMCaller,
+): Promise<GateResultWithFeedback> {
+  // 先执行标准评分
+  const baseResult = evaluateQuality(quality, config)
+
+  if (!options?.enableLLMFeedback) {
+    return { ...baseResult, feedback: [], overallFeedback: undefined }
+  }
+
+  const feedbacks: FitnessFeedback[] = []
+  const cfg = getRubricConfig()
+
+  // 对每个失败维度生成反馈
+  const dimensionThresholds: Record<string, number> = {
+    holdout_floor: cfg.holdoutFloor,
+    min_delta: cfg.minDelta,
+    trigger_f1: cfg.triggerF1Floor,
+    cost_budget: cfg.maxCostRatio,
+  }
+
+  for (const [dim, threshold] of Object.entries(dimensionThresholds)) {
+    const dimResult = baseResult.dimensions[dim as keyof typeof baseResult.dimensions]
+    if (!dimResult || dimResult.passed) continue
+
+    const cacheKey = `${skillText.slice(0, 100)}:${dim}`
+    const cached = feedbackCache.get(cacheKey)
+    if (cached && Date.now() - cached.cachedAt < FEEDBACK_CACHE_TTL) {
+      feedbacks.push(cached.feedback)
+      continue
+    }
+
+    if (!llmCaller) continue
+
+    try {
+      const prompt = FEEDBACK_PROMPT_TEMPLATE(dim, Number(dimResult.value), threshold, skillText)
+      const raw = await llmCaller(prompt)
+      const parsed = JSON.parse(raw)
+      const fb: FitnessFeedback = {
+        dimension: dim,
+        score: Number(dimResult.value),
+        threshold,
+        feedback: parsed.feedback ?? '无具体反馈',
+        suggestedApproach: parsed.suggestedApproach,
+      }
+      feedbacks.push(fb)
+      feedbackCache.set(cacheKey, { feedback: fb, cachedAt: Date.now() })
+    } catch {
+      // LLM feedback 失败不影响评分结果
+    }
+  }
+
+  return {
+    ...baseResult,
+    feedback: feedbacks,
+    overallFeedback: feedbacks.length > 0
+      ? feedbacks.map(f => `维度 ${f.dimension}: ${f.feedback}`).join('\n')
+      : undefined,
+  }
+}
