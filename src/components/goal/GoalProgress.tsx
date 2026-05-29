@@ -2,7 +2,7 @@ import * as React from 'react'
 import { Box, Text } from '../../ink.js'
 import { useAppState } from '../../state/AppState.js'
 import { ThreadGoalStatus } from '../../commands/goal/types.js'
-import type { GoalTask } from '../../commands/goal/types.js'
+import type { GoalTask, TurnRecord } from '../../commands/goal/types.js'
 
 // 错误边界组件
 class GoalProgressErrorBoundary extends React.Component<
@@ -47,15 +47,15 @@ const PHASE_COLORS: Record<string, string> = {
 }
 
 const SCENARIO_LABELS: Record<string, string> = {
-  code_change: 'code',
-  doc_writing: 'docs',
-  troubleshooting: 'debug',
-  design_improve: 'design',
-  refactoring: 'refactor',
+  code_change: 'code_change',
+  doc_writing: 'doc_writing',
+  troubleshooting: 'troubleshooting',
+  design_improve: 'design_improve',
+  refactoring: 'refactoring',
 }
 
 const SCENARIO_PREFERRED_SKILLS: Record<string, string[]> = {
-  code_change: ['test-driven-development', 'verification-before-completion', 'feature-dev:feature-dev'],
+  code_change: ['test-driven-development', 'verification', 'feature-dev'],
   doc_writing: ['design-doc-reviewer', 'docs-navigator', 'writing-plans'],
   troubleshooting: ['systematic-debugging', 'orion-deep-audit', 'orion-repairing'],
   design_improve: ['brainstorming', 'design-constraint', 'code-design-analyzer'],
@@ -118,6 +118,14 @@ function sectionLabel(label: string): string {
   return `── ${label} ${'─'.repeat(Math.max(0, lineLen))}`
 }
 
+/** Compute avg turn time from turnBuffer */
+function avgTurnTime(turnBuffer: TurnRecord[]): number | null {
+  const completed = turnBuffer.filter(t => t.wallEndMs > t.wallStartMs)
+  if (completed.length === 0) return null
+  const totalMs = completed.reduce((sum, t) => sum + (t.wallEndMs - t.wallStartMs), 0)
+  return totalMs / completed.length / 1000 // seconds
+}
+
 // Stable empty array reference to avoid re-renders from ?? []
 const EMPTY_STRING_ARRAY: string[] = []
 
@@ -140,6 +148,7 @@ export function GoalProgress() {
   const lastAnalysisResult = useAppState(s => s.goalRuntime?.lastAnalysisResult)
   const consecutiveCritical = useAppState(s => s.goalRuntime?.consecutiveCritical ?? 0)
   const toolCallsThisTurn = useAppState(s => s.goalRuntime?._toolCallsThisTurn ?? EMPTY_STRING_ARRAY)
+  const turnBuffer = useAppState(s => s.goalRuntime?.turnBuffer ?? EMPTY_STRING_ARRAY as unknown as TurnRecord[])
 
   // ── Orchestrator state (v3 — graceful degradation) ──
   const currentScenario = useAppState(s => s.goalRuntime?.currentScenario)
@@ -208,22 +217,30 @@ export function GoalProgress() {
     else convergenceStatus = 'converging'
   }
 
+  // Per-turn stats
+  const avgTime = avgTurnTime(Array.isArray(turnBuffer) ? turnBuffer : [])
+
+  // Recovery status
+  const recoveryOk = !recoveryLayer || recoveryLayer === 'FIX_RETRY'
+
   return (
     <Box flexDirection="column" borderStyle="round" borderColor={color} paddingX={1}>
       {/* ═══ Header ═══ */}
       <Box>
         <Text color={color}>{emoji} </Text>
-        <Text bold color={color}>{truncate(goalObjective, 50)}</Text>
-        {scenarioLabel && <Text color="magenta"> [{scenarioLabel}]</Text>}
-        {mainPhase && <Text color={PHASE_COLORS[mainPhase] ?? 'white'}> {mainPhase}▶</Text>}
-        {round != null && <Text dimColor> R{round}/{maxRounds}</Text>}
-        <Text dimColor> {formatDuration(goalTimeUsedSeconds)}</Text>
+        <Text bold color={color}>{truncate(goalObjective, 40)}</Text>
+        {scenarioLabel && <Text color="magenta">  {scenarioLabel}</Text>}
+        {mainPhase && <Text color={PHASE_COLORS[mainPhase] ?? 'white'}>  {mainPhase} ▶</Text>}
+        {round != null && <Text dimColor>  R{round}/{maxRounds}</Text>}
+        <Text dimColor>  {formatDuration(goalTimeUsedSeconds)}</Text>
       </Box>
       <Box>
-        <Text dimColor>{goalMode}{goalAutoEdit ? ' | auto-edit' : ''}</Text>
-        {recoveryLayer && recoveryLayer !== 'FIX_RETRY' && (
-          <Text color="yellow"> | recovery: {recoveryLayer}</Text>
-        )}
+        <Text dimColor>{goalMode}</Text>
+        {goalAutoEdit && <Text dimColor> | auto-edit</Text>}
+        <Text dimColor> | </Text>
+        <Text color={recoveryOk ? 'green' : 'yellow'}>
+          {recoveryOk ? 'recovery OK' : `recovery: ${recoveryLayer}`}
+        </Text>
         {errorTracker && Object.values(errorTracker.categories).some(c => c.count > 0) && (
           <Text color="red">
             {' | errors: '}
@@ -233,7 +250,7 @@ export function GoalProgress() {
               .join(' ')}
           </Text>
         )}
-        {consecutiveErrors > 0 && (
+        {consecutiveErrors > 0 && !errorTracker && (
           <Text color="red"> | errors: {consecutiveErrors}/3</Text>
         )}
         {turnsWithNoChanges > 0 && (
@@ -245,32 +262,27 @@ export function GoalProgress() {
       {totalTasks > 0 && (
         <Box flexDirection="column">
           <Box><Text dimColor>{sectionLabel('Tasks')}</Text></Box>
-          {/* Current + Next */}
-          <Box>
-            {currentTask && (
-              <Box>
-                <Text color="cyan"> ▶ </Text>
-                <Text bold>{truncate(currentTask.content ?? '', 40)}</Text>
-              </Box>
-            )}
-            {nextTask && (
-              <Box marginLeft={currentTask ? 2 : 0}>
-                <Text dimColor>→ {truncate(nextTask.content ?? '', 30)}</Text>
-              </Box>
-            )}
+          {/* Task items with status icons */}
+          <Box flexDirection="column">
+            {taskItems.slice(0, 6).map((t, i) => {
+              const icon = t.status === 'completed' ? '✓'
+                : t.status === 'in_progress' ? '▶'
+                : t.status === 'skipped' ? '⊘'
+                : '○'
+              const textColor = t.status === 'completed' ? 'green'
+                : t.status === 'in_progress' ? 'cyan'
+                : t.status === 'skipped' ? 'yellow'
+                : undefined
+              return (
+                <Box key={t.id ?? i}>
+                  <Text color={textColor}> {icon} {truncate(t.content ?? '', 50)}</Text>
+                </Box>
+              )
+            })}
           </Box>
-          {/* Task list row: completed items + progress */}
+          {/* Progress bar */}
           <Box>
-            <Text dimColor>
-              {taskItems.slice(0, 5).map((t, i) => {
-                if (t.status === 'completed') return '✓'
-                if (t.status === 'in_progress') return '▶'
-                return '○'
-              }).join(' ')}
-            </Text>
-            <Text dimColor> {completedTasks}/{totalTasks} </Text>
-            <Text dimColor>[{progressBar(taskProgress, 15)}]</Text>
-            <Text dimColor> {taskProgress}%</Text>
+            <Text dimColor> {completedTasks}/{totalTasks} [{progressBar(taskProgress, 20)}] {taskProgress}%</Text>
           </Box>
         </Box>
       )}
@@ -329,16 +341,19 @@ export function GoalProgress() {
           {goalTokenBudget != null ? (
             <Box>
               <Text dimColor> / {formatTokens(goalTokenBudget)}</Text>
-              <Text dimColor> [{progressBar(budgetProgress, 15)}]</Text>
+              <Text dimColor> [{progressBar(budgetProgress, 20)}]</Text>
               <Text dimColor> {Math.round(budgetProgress)}%</Text>
+              {remaining != null && (
+                <Text dimColor>  Remain: {formatTokens(remaining)}</Text>
+              )}
             </Box>
           ) : (
             <Text dimColor> (unbounded)</Text>
           )}
         </Box>
-        {remaining != null && remaining < (goalTokenBudget ?? 0) * 0.2 && (
+        {avgTime != null && (
           <Box>
-            <Text color="yellow">Remaining: {formatTokens(remaining)}</Text>
+            <Text dimColor>avg {avgTime.toFixed(1)}s/turn</Text>
           </Box>
         )}
       </Box>
@@ -348,12 +363,11 @@ export function GoalProgress() {
         <Box flexDirection="column">
           <Box><Text dimColor>{sectionLabel('Skills')}</Text></Box>
           <Box>
-            <Text dimColor>Recommended: </Text>
             <Text>
               {(SCENARIO_PREFERRED_SKILLS[currentScenario] ?? []).slice(0, 3).map((s, i) => (
                 <React.Fragment key={s}>
-                  {i > 0 && <Text dimColor> </Text>}
-                  <Text color="blue">{truncate(s, 20)}</Text>
+                  {i > 0 && <Text dimColor>  </Text>}
+                  <Text color="blue">{s}</Text>
                 </React.Fragment>
               ))}
             </Text>
