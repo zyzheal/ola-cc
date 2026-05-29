@@ -207,6 +207,48 @@ export class EvolutionEngine {
     }
   }
 
+  /**
+   * Phase 3 增强：约束验证辅助方法
+   *
+   * 在 P3_MUTATE 阶段调用，检查进化后的技能是否满足约束
+   */
+  async validateConstraints(
+    evolvedText: string,
+    baselineText?: string,
+  ): Promise<{ passed: boolean; failures: string[] }> {
+    const { ConstraintValidator } = await import('./constraintValidator')
+    const validator = new ConstraintValidator()
+    const results = await validator.validateAll(evolvedText, 'skill', baselineText)
+    const failures = results.filter(r => !r.passed).map(r => `${r.constraintName}: ${r.message}`)
+    return { passed: failures.length === 0, failures }
+  }
+
+  /**
+   * Phase 1 增强：数据集加载/生成辅助方法
+   *
+   * 在 P0_PREPARE 阶段调用
+   */
+  async loadOrGenerateDataset(
+    skillText: string,
+    datasetPath: string,
+    llmCaller?: (prompt: string) => Promise<string>,
+  ): Promise<{ loaded: boolean; path: string }> {
+    const { EvalDatasetManager } = await import('./evalDataset')
+    if (fs.existsSync(datasetPath)) {
+      EvalDatasetManager.load(datasetPath)
+      return { loaded: true, path: datasetPath }
+    }
+    // Dataset doesn't exist — generate if LLM caller provided
+    if (llmCaller) {
+      const { SyntheticDatasetBuilder } = await import('./datasetBuilder')
+      const builder = new SyntheticDatasetBuilder(llmCaller)
+      const dataset = await builder.generate(skillText)
+      EvalDatasetManager.save(dataset, datasetPath)
+      return { loaded: false, path: datasetPath }
+    }
+    return { loaded: false, path: datasetPath }
+  }
+
   /** 注册阶段执行器 */
   registerExecutor(phase: EvolutionPhase, executor: PhaseExecutor): void {
     this.executors.set(phase, executor)
