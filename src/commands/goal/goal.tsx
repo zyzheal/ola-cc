@@ -3,6 +3,7 @@ import type { LocalJSXCommandCall } from '../../types/command.js'
 import { type Goal, ThreadGoalStatus, IDLE_GOAL, type GoalMode, type GoalTask, migrateGoal, getRetryConfig } from './types.js'
 import type { TodoItem } from '../../utils/todo/types.js'
 import { buildContinuationPrompt } from '../../utils/goal/goalSteering.js'
+import { initOrchestratorState } from '../../utils/goal/goalOrchestrator.js'
 import { notifyPermissionModeChanged } from '../../utils/sessionState.js'
 
 const randomUUID = () => crypto.randomUUID()
@@ -275,6 +276,9 @@ export const call: LocalJSXCommandCall = async (onDone, context, args) => {
       turnsWithNoChanges: 0,
       _currentTurnWallStartMs: 0,
     }
+
+    // Initialize orchestrator state (scenario, convergence, error tracker)
+    initOrchestratorState(currentRuntime, objective || '')
 
     // If autoEdit is true, use autoEdit mode (file edits auto-approved, bash still prompts)
     // If autoAccept is true, use bypassPermissions (full bypass)
