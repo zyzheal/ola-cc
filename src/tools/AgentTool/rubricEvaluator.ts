@@ -274,7 +274,7 @@ export async function evaluateQualityWithFeedback(
   }
 
   const feedbacks: FitnessFeedback[] = []
-  const cfg = getRubricConfig()
+  const cfg = config ?? getRubricConfig()
 
   // 对每个失败维度生成反馈
   const dimensionThresholds: Record<string, number> = {
@@ -288,7 +288,7 @@ export async function evaluateQualityWithFeedback(
     const dimResult = baseResult.dimensions[dim as keyof typeof baseResult.dimensions]
     if (!dimResult || dimResult.passed) continue
 
-    const cacheKey = `${skillText.slice(0, 100)}:${dim}`
+    const cacheKey = `${skillText.slice(0, 300)}:${dim}`
     const cached = feedbackCache.get(cacheKey)
     if (cached && Date.now() - cached.cachedAt < FEEDBACK_CACHE_TTL) {
       feedbacks.push(cached.feedback)
@@ -310,6 +310,15 @@ export async function evaluateQualityWithFeedback(
       }
       feedbacks.push(fb)
       feedbackCache.set(cacheKey, { feedback: fb, cachedAt: Date.now() })
+      // Evict expired entries when cache grows large
+      if (feedbackCache.size > 100) {
+        const now = Date.now()
+        for (const [key, entry] of feedbackCache) {
+          if (now - entry.cachedAt >= FEEDBACK_CACHE_TTL) {
+            feedbackCache.delete(key)
+          }
+        }
+      }
     } catch {
       // LLM feedback 失败不影响评分结果
     }
