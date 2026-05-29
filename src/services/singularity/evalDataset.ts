@@ -1,4 +1,5 @@
 import * as fs from 'fs'
+import * as path from 'path'
 
 export interface EvalExample {
   taskInput: string
@@ -16,7 +17,10 @@ export interface EvalDataset {
 }
 
 export class EvalDatasetManager {
+  /** Serialize dataset to JSONL format, creating parent directories as needed. */
   static save(dataset: EvalDataset, filePath: string): void {
+    const dir = path.dirname(filePath)
+    fs.mkdirSync(dir, { recursive: true })
     const lines = [
       JSON.stringify({
         __header: true,
@@ -34,7 +38,11 @@ export class EvalDatasetManager {
     fs.writeFileSync(filePath, lines.join('\n') + '\n', 'utf-8')
   }
 
+  /** Load dataset from JSONL file, returning empty splits if the file does not exist. */
   static load(filePath: string): EvalDataset {
+    if (!fs.existsSync(filePath)) {
+      return { train: [], val: [], holdout: [] }
+    }
     const content = fs.readFileSync(filePath, 'utf-8')
     const lines = content
       .trim()
@@ -55,9 +63,16 @@ export class EvalDatasetManager {
     return { train, val, holdout }
   }
 
+  /** Split examples into train/val/holdout using Fisher-Yates shuffle (50/25/25). */
   static split(examples: EvalExample[]): EvalDataset {
-    const shuffled = [...examples].sort(() => Math.random() - 0.5)
+    const shuffled = [...examples]
+    for (let i = shuffled.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1))
+      ;[shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]]
+    }
     const n = shuffled.length
+    if (n === 0) return { train: [], val: [], holdout: [] }
+    if (n === 1) return { train: shuffled, val: [], holdout: [] }
     const trainEnd = Math.floor(n * 0.5)
     const valEnd = trainEnd + Math.floor(n * 0.25)
     return {
@@ -67,6 +82,7 @@ export class EvalDatasetManager {
     }
   }
 
+  /** Convert holdout examples + predictions into pass/fail test results. */
   static toTestResults(
     dataset: EvalDataset,
     predictions: string[],
