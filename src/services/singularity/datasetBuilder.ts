@@ -59,7 +59,8 @@ export class SyntheticDatasetBuilder {
           return EvalDatasetManager.split(validCases)
         }
 
-        // Not enough valid cases — retry
+        // Not enough valid cases — retry with backoff
+        await new Promise(r => setTimeout(r, 500 * (attempt + 1)))
       } catch (err: unknown) {
         // Handle 429 rate limit with Retry-After
         if (isRateLimitError(err)) {
@@ -127,7 +128,7 @@ Generate ${numCases} examples now:`
         typeof obj.taskInput === 'string' &&
         obj.taskInput.trim().length > 0 &&
         typeof obj.expectedBehavior === 'string' &&
-        obj.expectedBehavior.trim().length >= 10 &&
+        obj.expectedBehavior.trim().length >= 20 &&
         isValidDifficulty(obj.difficulty) &&
         typeof obj.category === 'string' &&
         obj.category.trim().length > 0
