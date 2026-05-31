@@ -1000,14 +1000,15 @@ export const AgentTool = buildTool({
       void runWithAgentContext(asyncAgentContext, () => wrapWithCwd(() => runAsyncAgentLifecycle({
         taskId: agentBackgroundTask.agentId,
         abortController: agentBackgroundTask.abortController!,
-        makeStream: onCacheSafeParams => runAgent({
+        makeStream: (onCacheSafeParams, onInitProgress) => runAgent({
           ...runAgentParams,
           override: {
             ...runAgentParams.override,
             agentId: asAgentId(agentBackgroundTask.agentId),
             abortController: agentBackgroundTask.abortController!
           },
-          onCacheSafeParams
+          onCacheSafeParams,
+          onInitProgress,
         }),
         metadata,
         description,
