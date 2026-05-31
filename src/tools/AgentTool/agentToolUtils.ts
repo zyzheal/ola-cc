@@ -569,6 +569,7 @@ export async function runAsyncAgentLifecycle({
   abortController: AbortController
   makeStream: (
     onCacheSafeParams: ((p: CacheSafeParams) => void) | undefined,
+    onInitProgress?: (step: string) => void,
   ) => AsyncGenerator<MessageType, void>
   metadata: Parameters<typeof finalizeAgentTool>[2]
   description: string
@@ -602,7 +603,32 @@ export async function runAsyncAgentLifecycle({
         }
       : undefined
     let prevAsyncAssistantMsg: MessageType | undefined;
-    for await (const message of makeStream(onCacheSafeParams)) {
+    // Throttle updateAsyncAgentProgress to prevent render storms (same as AgentTool.tsx)
+    let lastAsyncProgressTime = 0;
+    const ASYNC_PROGRESS_THROTTLE_MS = 500;
+    // onInitProgress callback: updates async agent progress during the
+    // initialization phase (before the first query() message is yielded).
+    // This prevents "Initializing…" from being shown indefinitely.
+    const onInitProgress = (step: string) => {
+      const now = Date.now();
+      if (now - lastAsyncProgressTime >= 30) {
+        lastAsyncProgressTime = now;
+        updateAsyncAgentProgress(
+          taskId,
+          {
+            toolUseCount: 0,
+            tokenCount: 0,
+            lastActivity: {
+              toolName: 'init',
+              input: {},
+              activityDescription: step,
+            },
+          },
+          rootSetAppState,
+        );
+      }
+    };
+    for await (const message of makeStream(onCacheSafeParams, onInitProgress)) {
       // Re-read previous message's usage (message_delta mutation)
       if (prevAsyncAssistantMsg) {
         reReadMessageUsage(tracker, prevAsyncAssistantMsg);
@@ -612,18 +638,23 @@ export async function runAsyncAgentLifecycle({
       // Append immediately when UI holds the task (retain). Bootstrap reads
       // disk in parallel and UUID-merges the prefix — disk-write-before-yield
       // means live is always a suffix of disk, so merge is order-correct.
-      rootSetAppState(prev => {
-        const t = prev.tasks[taskId]
-        if (!isLocalAgentTask(t) || !t.retain) return prev
-        const base = t.messages ?? []
-        return {
-          ...prev,
-          tasks: {
-            ...prev.tasks,
-            [taskId]: { ...t, messages: [...base, message] },
-          },
-        }
-      })
+      // Throttled: when retain=true, each call creates new tasks reference → REPL re-render.
+      const nowRetain = Date.now();
+      if (nowRetain - lastAsyncProgressTime >= ASYNC_PROGRESS_THROTTLE_MS) {
+        lastAsyncProgressTime = nowRetain;
+        rootSetAppState(prev => {
+          const t = prev.tasks[taskId]
+          if (!isLocalAgentTask(t) || !t.retain) return prev
+          const base = t.messages ?? []
+          return {
+            ...prev,
+            tasks: {
+              ...prev.tasks,
+              [taskId]: { ...t, messages: [...base, message] },
+            },
+          }
+        })
+      }
       updateProgressFromMessage(
         tracker,
         message,
@@ -633,11 +664,17 @@ export async function runAsyncAgentLifecycle({
       if (message.type === 'assistant') {
         prevAsyncAssistantMsg = message;
       }
-      updateAsyncAgentProgress(
-        taskId,
-        getProgressUpdate(tracker),
-        rootSetAppState,
-      )
+      // Throttled: updateAsyncAgentProgress creates new tasks reference
+      // which triggers REPL.tsx re-render → cascades to all children.
+      const now = Date.now();
+      if (now - lastAsyncProgressTime >= ASYNC_PROGRESS_THROTTLE_MS) {
+        lastAsyncProgressTime = now;
+        updateAsyncAgentProgress(
+          taskId,
+          getProgressUpdate(tracker),
+          rootSetAppState,
+        )
+      }
       const lastToolName = getLastToolUseName(message)
       if (lastToolName) {
         emitTaskProgress(
