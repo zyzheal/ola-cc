@@ -7,7 +7,7 @@ import { Box, Text, useTheme } from '../../ink.js';
 import { useKeybindings } from '../../keybindings/useKeybinding.js';
 import { getEmptyToolPermissionContext } from '../../Tool.js';
 import type { InProcessTeammateTaskState } from '../../tasks/InProcessTeammateTask/types.js';
-import { getTools } from '../../tools.js';
+import { getRegisteredGetTools } from '../../tools.js';
 import { formatNumber, truncateToWidth } from '../../utils/format.js';
 import { toInkColor } from '../../utils/ink.js';
 import { Byline } from '../design-system/Byline.js';
@@ -34,7 +34,7 @@ export function InProcessTeammateDetailDialog(t0) {
   const [theme] = useTheme();
   let t1;
   if ($[0] === Symbol.for("react.memo_cache_sentinel")) {
-    t1 = getTools(getEmptyToolPermissionContext());
+    t1 = getRegisteredGetTools()(getEmptyToolPermissionContext());
     $[0] = t1;
   } else {
     t1 = $[0];

@@ -1,6 +1,7 @@
 import { feature } from 'bun:bundle';
 import * as React from 'react';
 import { buildTool, type ToolDef, toolMatchesName } from 'src/Tool.js';
+import { logCpuDiag } from '../../utils/eventLoopWatchdog.js';
 import type { Message as MessageType, NormalizedUserMessage } from 'src/types/message.js';
 import { getQuerySourceForAgent } from 'src/utils/promptCategory.js';
 import { ResourceQuotaManager, getSessionQuotaManager } from '../../utils/quota/ResourceQuotaManager.js';
@@ -437,12 +438,12 @@ export const AgentTool = buildTool({
   }: AgentToolInput, toolUseContext, canUseTool, assistantMessage, onProgress?) {
     const startTime = Date.now();
     const _agentInitT0 = performance.now();
-    const _agentInitLog = (label: string) => {
-      const elapsed = performance.now() - _agentInitT0;
-      if (process.env.OLA_CC_CPU_DEBUG === '1') {
-        console.error(`[agent-init] ${label}: ${elapsed.toFixed(1)}ms`);
-      }
-    };
+    const _agentInitLog = process.env.OLA_CC_CPU_DEBUG === '1'
+      ? (label: string) => {
+          const elapsed = performance.now() - _agentInitT0;
+          logCpuDiag(`[AGENT_TOOL] ${label}: ${elapsed.toFixed(1)}ms`);
+        }
+      : (_label: string) => {};
     _agentInitLog('call_start');
 
     // Fire-and-forget V2 task status sync when task_id is provided
@@ -595,6 +596,7 @@ export const AgentTool = buildTool({
           if (!stillPending) break;
         }
       }
+      _agentInitLog('MCP_check_done');
 
       // Get servers that actually have tools (meaning they're connected AND authenticated)
       const serversWithTools: string[] = [];
@@ -740,6 +742,7 @@ export const AgentTool = buildTool({
         const settings = getInitialSettings()
         logForDebugging(`[AgentTool] ${selectedAgent.agentType}: before enhanceSystemPromptWithEnvDetails`);
         enhancedSystemPrompt = await enhanceSystemPromptWithEnvDetails([agentPrompt, getLanguageSection(settings.language)], resolvedAgentModel, additionalWorkingDirectories);
+        _agentInitLog('enhanceSystemPrompt_done');
         logForDebugging(`[AgentTool] ${selectedAgent.agentType}: after enhanceSystemPromptWithEnvDetails`);
       } catch (error) {
         logForDebugging(`Failed to get system prompt for agent ${selectedAgent.agentType}: ${errorMessage(error)}`);
@@ -821,8 +824,10 @@ export const AgentTool = buildTool({
     };
     let workerTools: import('../../Tool.js').Tools;
     try {
+      _agentInitLog('before_assembleToolPool');
       logForDebugging(`[AgentTool] ${selectedAgent.agentType}: before assembleToolPool`);
       workerTools = getAssembleToolPool()(workerPermissionContext, appState.mcp.tools);
+      _agentInitLog('assembleToolPool_done');
       logForDebugging(`[AgentTool] ${selectedAgent.agentType}: after assembleToolPool (${workerTools.length} tools)`);
     } catch {
       // If assembleToolPool fails (e.g., Bun bytecode TDZ during module init),
@@ -843,8 +848,10 @@ export const AgentTool = buildTool({
       hookBased?: boolean;
     } | null = null;
     if (effectiveIsolation === 'worktree') {
+      _agentInitLog('before_createAgentWorktree');
       const slug = `agent-${earlyAgentId.slice(0, 8)}`;
       worktreeInfo = await createAgentWorktree(slug);
+      _agentInitLog('createAgentWorktree_done');
     }
 
     // Fork + worktree: inject a notice telling the child to translate paths
@@ -1056,16 +1063,28 @@ export const AgentTool = buildTool({
       // Wrap entire sync agent execution in context for analytics attribution
       // and optionally in a worktree cwd override for filesystem isolation
       return runWithAgentContext(syncAgentContext, () => wrapWithCwd(async () => {
+        // Throttle timers for progress updates. Declared at the TOP of the async IIFE
+        // because React Compiler hoists all `let` declarations to the function scope
+        // entry point. If declared after first usage (e.g. initial progress at line ~1077),
+        // the compiled output has `Kq=Date.now()` before `let Kq=0`, causing TDZ:
+        // "Cannot access 'Kq' before initialization".
+        let lastOnProgressTime = 0;
+        let lastAgentProgressTime = 0;
+        const ONPROGRESS_THROTTLE_MS = 100; // max 10 updates/sec
+
         const agentMessages: MessageType[] = [];
         const agentStartTime = Date.now();
         const syncTracker = createProgressTracker();
         const syncResolveActivity = createActivityDescriptionResolver(toolUseContext.options.tools);
 
         // Yield initial progress message to carry metadata (prompt)
+        // Uses the dedicated agent_progress throttle timer.
         if (promptMessages.length > 0) {
           const normalizedPromptMessages = normalizeMessages(promptMessages);
           const normalizedFirstMessage = normalizedPromptMessages.find((m): m is NormalizedUserMessage => m.type === 'user');
           if (normalizedFirstMessage && normalizedFirstMessage.type === 'user' && onProgress) {
+            lastAgentProgressTime = Date.now();
+            logCpuDiag(`[AGENT_TOOL] onProgress called: initial progress, toolUseID=agent_${assistantMessage.message.id}`);
             onProgress({
               toolUseID: `agent_${assistantMessage.message.id}`,
               data: {
@@ -1075,6 +1094,8 @@ export const AgentTool = buildTool({
                 agentId: syncAgentId
               }
             });
+          } else {
+            logCpuDiag(`[AGENT_TOOL] initial progress SKIPPED: hasPromptMsgs=${promptMessages.length > 0} hasFirstMsg=${!!normalizedFirstMessage} isUser=${normalizedFirstMessage?.type === 'user'} hasOnProgress=${!!onProgress}`);
           }
         }
 
@@ -1128,7 +1149,39 @@ export const AgentTool = buildTool({
               stop
             } = startAgentSummarization(summaryTaskId, syncAgentId, params, rootSetAppState);
             stopForegroundSummarization = stop;
-          } : undefined
+          } : undefined,
+          // Report initialization progress to prevent "Initializing…" from
+          // being shown indefinitely during the blocking init sequence.
+          // Uses the dedicated agent_progress throttle timer (lastAgentProgressTime).
+          onInitProgress: onProgress ? (step: string) => {
+            try {
+              const now = Date.now();
+              // Use shorter throttle for init progress — init steps are sequential
+              // awaits with real I/O gaps (50-500ms+), so 30ms is enough to dedup
+              // without swallowing steps. The 100ms ONPROGRESS_THROTTLE_MS would
+              // drop intermediate steps that complete in <100ms.
+              if (now - lastAgentProgressTime >= 30) {
+                lastAgentProgressTime = now;
+                onProgress({
+                  toolUseID: `agent_${assistantMessage.message.id}`,
+                  data: {
+                    type: 'agent_progress',
+                    message: {
+                      type: 'user' as const,
+                      message: { content: [{ type: 'text' as const, text: step }] },
+                      uuid: `init_${Date.now()}`,
+                      kind: 'init_progress',
+                    },
+                    agentId: syncAgentId,
+                  },
+                });
+              }
+            } catch (e) {
+              // TDZ debug: catch and log with full stack to identify which
+              // compiled variable (e.g. 'Kq') maps to which source variable.
+              console.error(`[onInitProgress TDZ] step=${step}`, e);
+            }
+          } : undefined,
         })[Symbol.asyncIterator]();
 
         // Track if an error occurred during iteration
@@ -1143,11 +1196,6 @@ export const AgentTool = buildTool({
         // the same object. We re-read the previous message's usage on the
         // next iteration to capture the updated values.
         let prevSyncAssistantMsg: Message | undefined;
-        // Throttle onProgress calls to avoid render storms in UI components.
-        // Without this, every tool_use/tool_result triggers setAppState → re-render,
-        // and during rapid agent execution this pegs the CPU at 100%.
-        let lastOnProgressTime = 0;
-        const ONPROGRESS_THROTTLE_MS = 100; // max 10 updates/sec
         try {
           while (true) {
             // Re-read previous message's usage now that message_delta has
@@ -1465,9 +1513,10 @@ export const AgentTool = buildTool({
                 }
 
                 // Forward progress updates (throttled to prevent render storms)
+                // Uses DEDICATED agent_progress throttle timer to avoid starvation.
                 const now2 = Date.now();
-                if (onProgress && (now2 - lastOnProgressTime >= ONPROGRESS_THROTTLE_MS)) {
-                  lastOnProgressTime = now2;
+                if (onProgress && (now2 - lastAgentProgressTime >= ONPROGRESS_THROTTLE_MS)) {
+                  lastAgentProgressTime = now2;
                   onProgress({
                     toolUseID: `agent_${assistantMessage.message.id}`,
                     data: {

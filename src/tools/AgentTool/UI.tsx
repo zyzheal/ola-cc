@@ -864,6 +864,25 @@ export function extractLastToolInfo(progressMessages: ProgressMessage<Progress>[
       }
     }
   }
+
+  // Fallback: find the last init_progress text message.
+  // Only matches messages with kind='init_progress' to avoid returning the
+  // user's original prompt (which is also a type='user' message with text).
+  for (let i = progressMessages.length - 1; i >= 0; i--) {
+    const pm = progressMessages[i]!;
+    if (!hasProgressMessage(pm.data)) {
+      continue;
+    }
+    const message = pm.data.message;
+    if (message.kind !== 'init_progress') {
+      continue;
+    }
+    const textBlock = message.message.content.find(c => c.type === 'text');
+    if (textBlock?.type === 'text' && textBlock.text) {
+      return textBlock.text;
+    }
+  }
+
   return null;
 }
 function isCustomSubagentType(subagentType: string | undefined): subagentType is string {
