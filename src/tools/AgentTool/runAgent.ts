@@ -3,6 +3,7 @@ import type { UUID } from 'crypto'
 import { randomUUID } from 'crypto'
 import uniqBy from 'lodash-es/uniqBy.js'
 import { logForDebugging } from 'src/utils/debug.js'
+import { checkCpuHotspot, logCpuDiag } from 'src/utils/eventLoopWatchdog.js'
 import {
   getProjectRoot,
   getSessionId,
@@ -278,6 +279,7 @@ export async function* runAgent({
   description,
   transcriptSubdir,
   onQueryProgress,
+  onInitProgress,
   maxBudgetUsd,
   maxTokens,
   timeoutSeconds,
@@ -341,6 +343,10 @@ export async function* runAgent({
    * during long single-block streams (e.g. thinking) where no assistant
    * message is yielded for >60s. */
   onQueryProgress?: () => void
+  /** Optional callback fired during initialization steps to report progress
+   * before the first query() message is yielded. Prevents "Initializing…"
+   * from being shown indefinitely by providing intermediate status updates. */
+  onInitProgress?: (step: string) => void
   /** Maximum USD cost this agent may incur (0 or omitted = unlimited) */
   maxBudgetUsd?: number
   /** Maximum output tokens this agent may produce (0 or omitted = unlimited) */
@@ -355,7 +361,15 @@ export async function* runAgent({
 }): AsyncGenerator<Message, void> {
   // Track subagent usage for feature discovery
   const _initStart = Date.now()
-  const _initLog = (step: string) => logForDebugging(`[AgentInit:${agentDefinition.agentType}] ${step} (+${Date.now() - _initStart}ms)`)
+  // _initLog: only active when OLA_CC_CPU_DEBUG=1 to avoid console.error
+  // log storm during agent execution (every stream_event would otherwise
+  // trigger a synchronous stderr write via console.error).
+  const _cpuDebug = process.env.OLA_CC_CPU_DEBUG === '1'
+  // Use logCpuDiag to write to file (OLA_CC_CPU_LOG_FILE) or stderr
+  // instead of console.error which can break TUI rendering
+  const _initLog = _cpuDebug
+    ? (step: string) => logCpuDiag(`[AGENT_INIT:${agentDefinition.agentType}] ${step} +${Date.now() - _initStart}ms`)
+    : (_step: string) => {}
   _initLog('begin')
 
   const appState = toolUseContext.getAppState()
@@ -408,6 +422,7 @@ export async function* runAgent({
       : createFileStateCacheWithSizeLimit(READ_FILE_STATE_CACHE_SIZE)
 
   _initLog('before getUserContext/getSystemContext')
+  onInitProgress?.('Preparing context…')
   const [baseUserContext, baseSystemContext] = await Promise.all([
     override?.userContext ?? getUserContext(),
     override?.systemContext ?? getSystemContext(),
@@ -594,6 +609,7 @@ export async function* runAgent({
 
   // Execute SubagentStart hooks and collect additional context
   _initLog('before executeSubagentStartHooks')
+  onInitProgress?.('Running hooks…')
   const additionalContexts: string[] = []
   for await (const hookResult of executeSubagentStartHooks(
     agentId,
@@ -643,6 +659,7 @@ export async function* runAgent({
 
   // Preload skills from agent frontmatter
   _initLog('before skill preloading')
+  onInitProgress?.('Loading skills…')
   const skillsToPreload = agentDefinition.skills ?? []
   if (skillsToPreload.length > 0) {
     const allSkills = await getSkillToolCommands(getProjectRoot())
@@ -715,6 +732,7 @@ export async function* runAgent({
 
   // Initialize agent-specific MCP servers (additive to parent's servers)
   _initLog('before initializeAgentMcpServers')
+  onInitProgress?.('Connecting to MCP servers…')
   const {
     clients: mergedMcpClients,
     tools: agentMcpTools,
@@ -847,9 +865,10 @@ export async function* runAgent({
       canUseTool,
       toolUseContext: agentToolUseContext,
       querySource,
-      maxTurns: maxTurns ?? agentDefinition.maxTurns,
+      maxTurns: maxTurns ?? agentDefinition.maxTurns ?? 50,
     })) {
-      _initLog(`first message from query(): type=${message.type}`)
+      checkCpuHotspot('runAgent_message_yield')
+      _initLog(`first query() message: type=${message.type}`)
       onQueryProgress?.()
 
       // Accumulate output tokens from stream events

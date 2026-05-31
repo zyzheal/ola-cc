@@ -1,5 +1,32 @@
 // biome-ignore-all assist/source/organizeImports: ANT-ONLY import markers must not be reordered
 import { type Tool, type Tools } from './Tool.js'
+// Register getTools for modules that have a circular dependency on tools.ts
+// (hooks.tsx, agents.tsx import getTools via commands.ts → runAgent.ts → AgentTool.tsx → tools.ts).
+// Same pattern as registerAssembleToolPool: const declaration doesn't hoist, so
+// Bun bytecode partial-init TDZ ("Cannot access 'Kq' before initialization") fires
+// when the circular require hits getTools before tools.ts finishes evaluating.
+let _getTools: typeof getTools | null = null
+export function registerGetTools(fn: typeof import('./tools.js').getTools) {
+  _getTools = fn
+}
+export function getRegisteredGetTools(): typeof import('./tools.js').getTools {
+  if (_getTools) return _getTools
+  try {
+    // Direct require fallback for non-bytecode builds
+    const tools = require('./tools.js') as typeof import('./tools.js')
+    if (tools.getTools) {
+      _getTools = tools.getTools
+      return _getTools
+    }
+  } catch {
+    // require failed — module still initializing in circular dep
+  }
+  // Fallback: return a function that returns an empty tool array.
+  // This prevents "is not a function" TypeError. The caller's
+  // try-catch (hooks.tsx/agents.tsx) will handle the empty result.
+  return ((_permissionContext) => []) as typeof import('./tools.js').getTools
+}
+
 import { AgentTool, registerAssembleToolPool } from './tools/AgentTool/AgentTool.js'
 import { agentDetectorTool } from './tools/AgentTool/AgentDetectorTool.js'
 import { singularityTool } from './tools/SingularityTool/SingularityTool.js'
@@ -7,6 +34,8 @@ let codegraphTool: any = null
 try { codegraphTool = require('./tools/CodegraphTool/CodegraphTool.js').codegraphTool } catch (e) { console.error('[tools] Failed to load CodegraphTool:', e) }
 let grokTool: any = null
 try { grokTool = require('./tools/GrokTool/GrokTool.js').grokTool } catch (e) { console.error('[tools] Failed to load GrokTool:', e) }
+let a2uiTool: any = null
+try { a2uiTool = require('./tools/A2UITool/A2UITool.js').a2uiTool } catch (e) { console.error('[tools] Failed to load A2UITool:', e) }
 import { SkillTool } from './tools/SkillTool/SkillTool.js'
 import { BashTool } from './tools/BashTool/BashTool.js'
 import { FileEditTool } from './tools/FileEditTool/FileEditTool.js'
@@ -162,6 +191,7 @@ export function getAllBaseTools(): Tools {
     singularityTool,
     codegraphTool,
     grokTool,
+    a2uiTool,
     TaskOutputTool,
     getShellTool(),
     GlobTool,
@@ -314,3 +344,7 @@ export function getMergedTools(
 // Synchronous registration is safe here because tools.ts is the leaf of the dependency chain:
 // tools.ts → AgentTool.tsx (via import) → ... (no reverse import back to tools.ts)
 registerAssembleToolPool(assembleToolPool)
+
+// Register getTools for circular-dependent modules (hooks.tsx, agents.tsx).
+// Same TDZ fix pattern: register after const declaration completes.
+registerGetTools(getTools)
