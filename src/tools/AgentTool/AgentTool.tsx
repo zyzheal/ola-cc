@@ -1063,14 +1063,17 @@ export const AgentTool = buildTool({
       // Wrap entire sync agent execution in context for analytics attribution
       // and optionally in a worktree cwd override for filesystem isolation
       return runWithAgentContext(syncAgentContext, () => wrapWithCwd(async () => {
-        // Throttle timers for progress updates. Declared at the TOP of the async IIFE
+        // Throttle timer for ALL progress updates. Declared at the TOP of the async IIFE
         // because React Compiler hoists all `let` declarations to the function scope
         // entry point. If declared after first usage (e.g. initial progress at line ~1077),
         // the compiled output has `Kq=Date.now()` before `let Kq=0`, causing TDZ:
         // "Cannot access 'Kq' before initialization".
-        let lastOnProgressTime = 0;
-        let lastAgentProgressTime = 0;
-        const ONPROGRESS_THROTTLE_MS = 100; // max 10 updates/sec
+        // Single timer: all onProgress calls (bash_progress, agent_progress,
+        // token count, updateAsyncAgentProgress) share one throttle to guarantee
+        // at most 1 setAppState per 100ms window, preventing multi-channel
+        // setState storms that caused CPU 100%.
+        let lastProgressTime = 0;
+        const PROGRESS_THROTTLE_MS = 100; // max 10 updates/sec
 
         const agentMessages: MessageType[] = [];
         const agentStartTime = Date.now();
@@ -1083,7 +1086,7 @@ export const AgentTool = buildTool({
           const normalizedPromptMessages = normalizeMessages(promptMessages);
           const normalizedFirstMessage = normalizedPromptMessages.find((m): m is NormalizedUserMessage => m.type === 'user');
           if (normalizedFirstMessage && normalizedFirstMessage.type === 'user' && onProgress) {
-            lastAgentProgressTime = Date.now();
+            lastProgressTime = Date.now();
             logCpuDiag(`[AGENT_TOOL] onProgress called: initial progress, toolUseID=agent_${assistantMessage.message.id}`);
             onProgress({
               toolUseID: `agent_${assistantMessage.message.id}`,
@@ -1152,16 +1155,16 @@ export const AgentTool = buildTool({
           } : undefined,
           // Report initialization progress to prevent "Initializing…" from
           // being shown indefinitely during the blocking init sequence.
-          // Uses the dedicated agent_progress throttle timer (lastAgentProgressTime).
+          // Uses the dedicated agent_progress throttle timer (lastProgressTime).
           onInitProgress: onProgress ? (step: string) => {
             try {
               const now = Date.now();
               // Use shorter throttle for init progress — init steps are sequential
               // awaits with real I/O gaps (50-500ms+), so 30ms is enough to dedup
-              // without swallowing steps. The 100ms ONPROGRESS_THROTTLE_MS would
+              // without swallowing steps. The 100ms PROGRESS_THROTTLE_MS would
               // drop intermediate steps that complete in <100ms.
-              if (now - lastAgentProgressTime >= 30) {
-                lastAgentProgressTime = now;
+              if (now - lastProgressTime >= 30) {
+                lastProgressTime = now;
                 onProgress({
                   toolUseID: `agent_${assistantMessage.message.id}`,
                   data: {
@@ -1208,8 +1211,8 @@ export const AgentTool = buildTool({
               // Throttled: updateAsyncAgentProgress creates new tasks reference
               // which triggers REPL.tsx re-render → cascades to all children.
               const now0 = Date.now();
-              if (foregroundTaskId && (now0 - lastOnProgressTime >= ONPROGRESS_THROTTLE_MS)) {
-                lastOnProgressTime = now0;
+              if (foregroundTaskId && (now0 - lastProgressTime >= PROGRESS_THROTTLE_MS)) {
+                lastProgressTime = now0;
                 updateAsyncAgentProgress(foregroundTaskId, getProgressUpdate(syncTracker), rootSetAppState);
               }
             }
@@ -1464,8 +1467,8 @@ export const AgentTool = buildTool({
                 // enabled, so updateAgentSummary reads correct token/tool counts
                 // instead of zeros. Throttled to prevent render storms.
                 const now3 = Date.now();
-                if (getSdkAgentProgressSummariesEnabled() && (now3 - lastOnProgressTime >= ONPROGRESS_THROTTLE_MS)) {
-                  lastOnProgressTime = now3;
+                if (getSdkAgentProgressSummariesEnabled() && (now3 - lastProgressTime >= PROGRESS_THROTTLE_MS)) {
+                  lastProgressTime = now3;
                   updateAsyncAgentProgress(foregroundTaskId, getProgressUpdate(syncTracker), rootSetAppState);
                 }
               }
@@ -1473,10 +1476,10 @@ export const AgentTool = buildTool({
 
             // Forward bash_progress events from sub-agent to parent so the SDK
             // receives tool_progress events just as it does for the main agent.
-            // Throttled to prevent render storms (see lastOnProgressTime).
+            // Throttled to prevent render storms (see lastProgressTime).
             const now1 = Date.now();
-            if (message.type === 'progress' && (message.data.type === 'bash_progress' || message.data.type === 'powershell_progress') && onProgress && (now1 - lastOnProgressTime >= ONPROGRESS_THROTTLE_MS)) {
-              lastOnProgressTime = now1;
+            if (message.type === 'progress' && (message.data.type === 'bash_progress' || message.data.type === 'powershell_progress') && onProgress && (now1 - lastProgressTime >= PROGRESS_THROTTLE_MS)) {
+              lastProgressTime = now1;
               onProgress({
                 toolUseID: message.toolUseID,
                 data: message.data
@@ -1494,8 +1497,8 @@ export const AgentTool = buildTool({
               const contentLength = getAssistantMessageContentLength(message);
               if (contentLength > 0) {
                 const nowToken = Date.now();
-                if (nowToken - lastOnProgressTime >= ONPROGRESS_THROTTLE_MS) {
-                  lastOnProgressTime = nowToken;
+                if (nowToken - lastProgressTime >= PROGRESS_THROTTLE_MS) {
+                  lastProgressTime = nowToken;
                   toolUseContext.setResponseLength(len => len + contentLength);
                 }
               }
@@ -1515,8 +1518,8 @@ export const AgentTool = buildTool({
                 // Forward progress updates (throttled to prevent render storms)
                 // Uses DEDICATED agent_progress throttle timer to avoid starvation.
                 const now2 = Date.now();
-                if (onProgress && (now2 - lastAgentProgressTime >= ONPROGRESS_THROTTLE_MS)) {
-                  lastAgentProgressTime = now2;
+                if (onProgress && (now2 - lastProgressTime >= PROGRESS_THROTTLE_MS)) {
+                  lastProgressTime = now2;
                   onProgress({
                     toolUseID: `agent_${assistantMessage.message.id}`,
                     data: {
