@@ -401,6 +401,19 @@ export const SkillTool: Tool<InputSchema, Output, Progress> = buildTool({
     // Check if command exists
     const foundCommand = findCommand(normalizedCommandName, commands)
     if (!foundCommand) {
+      // Check if the name matches a registered agent — common confusion when
+      // the model calls Skill(agent-name) instead of Agent(subagent_type=agent-name)
+      const agentDefinitions = context.options.agentDefinitions?.activeAgents ?? []
+      const matchedAgent = agentDefinitions.find(
+        a => a.agentType.toLowerCase().replace(/[\s_.]+/g, '-') === normalizedCommandName.toLowerCase().replace(/[\s_.]+/g, '-')
+      )
+      if (matchedAgent) {
+        return {
+          result: false,
+          message: `'${normalizedCommandName}' is an agent, not a skill. Use the Agent tool with subagent_type='${matchedAgent.agentType}' instead of the Skill tool.`,
+          errorCode: 2,
+        }
+      }
       return {
         result: false,
         message: `Unknown skill: ${normalizedCommandName}`,
