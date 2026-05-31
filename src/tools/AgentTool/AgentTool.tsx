@@ -1177,9 +1177,9 @@ export const AgentTool = buildTool({
                 });
               }
             } catch (e) {
-              // TDZ debug: catch and log with full stack to identify which
-              // compiled variable (e.g. 'Kq') maps to which source variable.
-              console.error(`[onInitProgress TDZ] step=${step}`, e);
+              // TDZ debug: use logCpuDiag (writes file, not stderr) to avoid
+              // Ink patchConsole → full-frame re-render storm.
+              logCpuDiag(`[onInitProgress TDZ] step=${step} error=${(e as Error).message}`);
             }
           } : undefined,
         })[Symbol.asyncIterator]();
