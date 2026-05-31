@@ -1,4 +1,5 @@
 // biome-ignore-all assist/source/organizeImports: ANT-ONLY import markers must not be reordered
+import { checkCpuHotspot } from "./utils/eventLoopWatchdog.js";
 import type {
 	ToolResultBlockParam,
 	ToolUseBlock,
@@ -436,6 +437,7 @@ async function* queryLoop(
 
 	// eslint-disable-next-line no-constant-condition
 	while (true) {
+		checkCpuHotspot('query_loop_iteration');
 		// DIAGNOSTIC: Track loop iteration entry
 		logForDebugging?.(
 			`[QUERY LOOP] iteration start: messages=${state.messages.length}, turnCount=${state.turnCount}, reason=${state.transition?.reason ?? "initial"}`,
