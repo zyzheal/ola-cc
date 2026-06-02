@@ -115,9 +115,9 @@ function SpinnerWithVerbInner({
     useMemo(() => (s: { settings?: { spinnerTipsEnabled?: boolean } }) => s.settings?.spinnerTipsEnabled !== false, []),
   );
 
-  // NOTE: useAnimationFrame(50) lives in SpinnerAnimationRow, not here.
+  // NOTE: useAnimationFrame lives in SpinnerAnimationRow, not here.
   // This component only re-renders when props or app state change —
-  // it is no longer on the 50ms clock. All `time`-derived values
+  // it is not on the animation clock. All `time`-derived values
   // (frame, glimmer, stalled intensity, token counter, thinking shimmer,
   // elapsed-time timer) are computed inside the child.
 
@@ -231,7 +231,7 @@ function SpinnerWithVerbInner({
     (a, b) => a.hasRunningTeammates === b.hasRunningTeammates && a.allIdle === b.allIdle && a.teammateTokens === b.teammateTokens,
   );
 
-  // Stale read of the refs for showBtwTip below — we're off the 50ms clock
+  // Stale read of the refs for showBtwTip below — we're off the animation clock
   // so this only updates when props/app state change, which is sufficient for
   // a coarse 30s threshold.
   const elapsedSnapshot = pauseStartTimeRef.current !== null ? pauseStartTimeRef.current - loadingStartTimeRef.current - totalPausedMsRef.current : Date.now() - loadingStartTimeRef.current - totalPausedMsRef.current;
@@ -245,7 +245,7 @@ function SpinnerWithVerbInner({
   const messageColor = overrideColor ?? defaultColor;
   const shimmerColor = overrideShimmerColor ?? defaultShimmerColor;
 
-  // Compute TTFT string here (off the 50ms animation clock) and pass to
+  // Compute TTFT string here (off the animation clock) and pass to
   // SpinnerAnimationRow so it folds into the `(thought for Ns · ...)` status
   // line instead of taking a separate row. apiMetricsRef is a ref so this
   // doesn't trigger re-renders; we pick up updates on the parent's ~25x/turn
@@ -282,7 +282,7 @@ function SpinnerWithVerbInner({
   }
 
   // Time-based tip overrides: coarse thresholds so a stale ref read (we're
-  // off the 50ms clock) is fine. Other triggers (mode change, setMessages)
+  // off the animation clock) is fine. Other triggers (mode change, setMessages)
   // cause re-renders that refresh this in practice.
   let contextTipsActive = false;
   const showClearTip = tipsEnabled && elapsedSnapshot > 1_800_000;
