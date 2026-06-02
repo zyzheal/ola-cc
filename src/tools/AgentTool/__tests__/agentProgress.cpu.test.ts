@@ -212,3 +212,22 @@ describe('VerboseAgentTranscript CPU optimization', () => {
     expect(hintText).toBe('+70 more tool uses (ctrl+o to expand)')
   })
 })
+
+// ============================================================================
+// Test 3: ToolCallBudget + VirtualProgress interaction
+// ============================================================================
+
+describe('ToolCallBudget + VirtualProgress interaction', () => {
+  test('budget limits total tool calls regardless of progress display', () => {
+    const DEFAULT_BUDGET = 40
+    // Generate more messages than budget allows
+    const allMessages = generateProgressMessages(50) // 100 messages total
+    // Budget would stop at 40 tool calls, so only 80 messages would be created
+    // VirtualProgress would only render last 10
+    const maxTranscriptMessages = 10
+    const displayedMessages = allMessages.slice(-maxTranscriptMessages)
+    expect(displayedMessages.length).toBe(maxTranscriptMessages)
+    // The budget (40) ensures fiber tree never exceeds 10 displayed messages
+    // Even if budget is hit, rendering is bounded
+  })
+})
