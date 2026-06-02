@@ -73,11 +73,12 @@ export type SpinnerAnimationRowProps = {
 };
 
 /**
- * The 50ms-animated portion of SpinnerWithVerb. Owns useAnimationFrame(50)
- * and all values derived from the animation clock (frame, glimmer, token
- * counter animation, elapsed-time, stalled intensity, thinking shimmer).
+ * The animated portion of SpinnerWithVerb. Owns useAnimationFrame with
+ * dynamic interval (200ms idle / 500ms when agent active) and all values
+ * derived from the animation clock (frame, glimmer, token counter animation,
+ * elapsed-time, stalled intensity, thinking shimmer).
  *
- * The parent SpinnerWithVerb is freed from the 50ms render loop and only
+ * The parent SpinnerWithVerb is freed from the animation render loop and only
  * re-renders when its props/app state change (~25x/turn instead of ~383x).
  * That keeps the outer Box shells, useAppState selectors, task filtering,
  * and tip/tree subtrees out of the hot animation path.
