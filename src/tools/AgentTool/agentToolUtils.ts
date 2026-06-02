@@ -40,6 +40,7 @@ import { asAgentId } from '../../types/ids.js'
 import type { Message as MessageType } from '../../types/message.js'
 import { isAgentSwarmsEnabled } from '../../utils/agentSwarmsEnabled.js'
 import { logForDebugging } from '../../utils/debug.js'
+import { logCpuDiag } from '../../utils/eventLoopWatchdog.js'
 import { isInProtectedNamespace } from '../../utils/envUtils.js'
 import { AbortError, errorMessage } from '../../utils/errors.js'
 import type { CacheSafeParams } from '../../utils/forkedAgent.js'
@@ -413,6 +414,16 @@ export function getLastToolUseName(message: MessageType): string | undefined {
   return block?.type === 'tool_use' ? block.name : undefined
 }
 
+/**
+ * Get the maximum tool calls allowed for an agent execution.
+ * Priority: OLA_CC_TOOL_CALL_BUDGET env var > agentBudget > default (40)
+ * Set env var to 0 or -1 to disable the budget.
+ *
+ * Implementation lives in toolCallBudget.ts to avoid circular dependency
+ * (agentToolUtils → AgentTool → agentToolResultSchema cycle).
+ */
+export { getMaxToolCalls } from './toolCallBudget.js'
+
 export function emitTaskProgress(
   tracker: ProgressTracker,
   taskId: string,
@@ -605,27 +616,38 @@ export async function runAsyncAgentLifecycle({
     let prevAsyncAssistantMsg: MessageType | undefined;
     // Throttle updateAsyncAgentProgress to prevent render storms (same as AgentTool.tsx)
     let lastAsyncProgressTime = 0;
+    let lastAsyncInitProgressTime = 0;
     const ASYNC_PROGRESS_THROTTLE_MS = 500;
+    const ASYNC_INIT_THROTTLE_MS = 200;
     // onInitProgress callback: updates async agent progress during the
     // initialization phase (before the first query() message is yielded).
     // This prevents "Initializing…" from being shown indefinitely.
+    // Uses independent 200ms throttle (separate from message loop's 500ms)
+    // to avoid init updates suppressing message progress and vice versa.
     const onInitProgress = (step: string) => {
-      const now = Date.now();
-      if (now - lastAsyncProgressTime >= 30) {
-        lastAsyncProgressTime = now;
-        updateAsyncAgentProgress(
-          taskId,
-          {
-            toolUseCount: 0,
-            tokenCount: 0,
-            lastActivity: {
-              toolName: 'init',
-              input: {},
-              activityDescription: step,
+      try {
+        const now = Date.now();
+        if (now - lastAsyncInitProgressTime >= ASYNC_INIT_THROTTLE_MS) {
+          lastAsyncInitProgressTime = now;
+          updateAsyncAgentProgress(
+            taskId,
+            {
+              toolUseCount: 0,
+              tokenCount: 0,
+              lastActivity: {
+                toolName: 'init',
+                input: {},
+                activityDescription: step,
+              },
             },
-          },
-          rootSetAppState,
-        );
+            rootSetAppState,
+          );
+        }
+      } catch (e) {
+        // Use logCpuDiag (writes to file, not stderr) to avoid
+        // Ink patchConsole → full-frame re-render storm, matching
+        // the sync path's error handling in AgentTool.tsx.
+        logCpuDiag(`[onInitProgress async] step=${step} error=${(e as Error).message}`);
       }
     };
     for await (const message of makeStream(onCacheSafeParams, onInitProgress)) {
@@ -642,6 +664,7 @@ export async function runAsyncAgentLifecycle({
       const nowRetain = Date.now();
       if (nowRetain - lastAsyncProgressTime >= ASYNC_PROGRESS_THROTTLE_MS) {
         lastAsyncProgressTime = nowRetain;
+        logCpuDiag(`[asyncProgress] RETAIN_UPDATE taskId=${taskId} msgType=${message.type}`);
         rootSetAppState(prev => {
           const t = prev.tasks[taskId]
           if (!isLocalAgentTask(t) || !t.retain) return prev
@@ -654,6 +677,9 @@ export async function runAsyncAgentLifecycle({
             },
           }
         })
+      } else if (process.env.OLA_CC_CPU_DEBUG === '1') {
+        // Log throttle skips to diagnose render storms
+        logCpuDiag(`[asyncProgress] RETAIN_THROTTLE_SKIP taskId=${taskId} elapsed=${nowRetain - lastAsyncProgressTime}ms < ${ASYNC_PROGRESS_THROTTLE_MS}ms`)
       }
       updateProgressFromMessage(
         tracker,
@@ -674,6 +700,8 @@ export async function runAsyncAgentLifecycle({
           getProgressUpdate(tracker),
           rootSetAppState,
         )
+      } else if (process.env.OLA_CC_CPU_DEBUG === '1') {
+        logCpuDiag(`[asyncProgress] PROGRESS_THROTTLE_SKIP taskId=${taskId} elapsed=${now - lastAsyncProgressTime}ms < ${ASYNC_PROGRESS_THROTTLE_MS}ms`)
       }
       const lastToolName = getLastToolUseName(message)
       if (lastToolName) {

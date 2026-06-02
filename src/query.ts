@@ -1,5 +1,5 @@
 // biome-ignore-all assist/source/organizeImports: ANT-ONLY import markers must not be reordered
-import { checkCpuHotspot } from "./utils/eventLoopWatchdog.js";
+import { checkCpuHotspot, logCpuDiag } from "./utils/eventLoopWatchdog.js";
 import type {
 	ToolResultBlockParam,
 	ToolUseBlock,
@@ -126,6 +126,7 @@ import {
 	processGoalRuntimeEvent,
 	finishTurnForGoal,
 } from "./utils/goal/goalRuntime.js";
+import { createGoalBatchingContext } from "./utils/goal/goalBatching.js";
 import { buildAnalysisPrompt } from "./utils/goal/goalSteering.js";
 import {
 	ThreadGoalStatus,
@@ -309,6 +310,7 @@ export type QueryParams = {
 	querySource: QuerySource;
 	maxOutputTokensOverride?: number;
 	maxTurns?: number;
+	maxToolCalls?: number;
 	skipCacheWrite?: boolean;
 	// API task_budget (output_config.task_budget, beta task-budgets-2026-03-13).
 	// Distinct from the tokenBudget +500k auto-continue feature. `total` is the
@@ -378,6 +380,7 @@ async function* queryLoop(
 		fallbackModel,
 		querySource,
 		maxTurns,
+		maxToolCalls,
 		skipCacheWrite,
 	} = params;
 	const deps = params.deps ?? productionDeps();
@@ -408,6 +411,11 @@ async function* queryLoop(
 	type ToolCallSignature = { toolName: string; inputHash: string };
 	let _prevTurnToolSignatures: ToolCallSignature[] | null = null;
 	let _consecutiveDuplicateTurns = 0;
+
+	// ToolCallBudget: cumulative tool call count across all turns.
+	// Standalone let (NOT on State) to survive compact/reset where state = {...}
+	// would lose the count.
+	let totalToolCalls = 0;
 
 	const budgetTracker = feature("TOKEN_BUDGET") ? createBudgetTracker() : null;
 
@@ -874,6 +882,7 @@ async function* queryLoop(
 				reasoningOutputTokens: 0,
 				totalTokens: 0,
 			};
+			const goalBatch = createGoalBatchingContext();
 			processGoalRuntimeEvent(
 				{
 					type: "turn_started",
@@ -885,12 +894,7 @@ async function* queryLoop(
 					runtime: appState.goalRuntime,
 					currentTokenUsage: currentTokenUsage ?? turnBaselineUsage,
 					injectPrompt: async () => {},
-					updateGoal: (goal: Goal) => {
-						toolUseContext.setAppState((prev) => ({
-							...prev,
-							goal,
-						}));
-					},
+					updateGoal: goalBatch.updateGoal,
 					getTodos: () => {
 						const todoListId = appState.goal?.todoListId;
 						if (!todoListId) return undefined;
@@ -899,13 +903,7 @@ async function* queryLoop(
 					updateTodos: (todos) => {
 						const todoListId = appState.goal?.todoListId;
 						if (!todoListId) return;
-						toolUseContext.setAppState((prev) => ({
-							...prev,
-							todos: {
-								...prev.todos,
-								[todoListId]: todos,
-							},
-						}));
+						goalBatch.updateTodos(todoListId, todos);
 					},
 					getGoalTasks: () => {
 						const goalTaskListId = appState.goal?.goalTaskListId;
@@ -915,22 +913,16 @@ async function* queryLoop(
 					updateGoalTasks: (tasks) => {
 						const goalTaskListId = appState.goal?.goalTaskListId;
 						if (!goalTaskListId) return;
-						toolUseContext.setAppState((prev) => ({
-							...prev,
-							goalTasks: {
-								...prev.goalTasks,
-								[goalTaskListId]: tasks,
-							},
-						}));
+						goalBatch.updateGoalTasks(goalTaskListId, tasks);
 					},
 				},
 			);
-			// Sync mutated goalRuntime to store (processGoalRuntimeEvent mutates
-			// runtime in-place, but setAppState callbacks don't include it)
-			toolUseContext.setAppState((prev) => ({
-				...prev,
-				goalRuntime: appState.goalRuntime,
-			}));
+			// Sync mutated goalRuntime and apply all collected changes in single setAppState
+			goalBatch.markRuntimeMutated(appState.goalRuntime);
+			if (goalBatch.hasChanges()) {
+				logCpuDiag(`[goal] batched setState (turn_started)`);
+				goalBatch.applyToStore(toolUseContext.setAppState);
+			}
 		}
 
 		const permissionMode = appState.toolPermissionContext.mode;
@@ -2014,6 +2006,7 @@ async function* queryLoop(
 				goalCheckState.goal?.id &&
 				goalCheckState.goal?.status === ThreadGoalStatus.Active
 			) {
+				const goalBatch = createGoalBatchingContext();
 				const noToolGoalResult = finishTurnForGoal(
 					goalCheckState.goal,
 					goalCheckState.goalRuntime,
@@ -2022,34 +2015,24 @@ async function* queryLoop(
 						onInjectPrompt: (prompt: string) => {
 							pendingGoalPrompt = prompt;
 						},
-						onUpdateGoal: (updatedGoal: Goal) => {
-							toolUseContext.setAppState((prev) => ({
-								...prev,
-								goal: updatedGoal,
-							}));
-						},
+						onUpdateGoal: goalBatch.updateGoal,
 						getTodos: (listId: string) => goalCheckState.todos?.[listId],
 						updateTodos: (listId: string, todos) => {
-							toolUseContext.setAppState((prev) => ({
-								...prev,
-								todos: { ...prev.todos, [listId]: todos },
-							}));
+							goalBatch.updateTodos(listId, todos);
 						},
 						getGoalTasks: (listId: string) => goalCheckState.goalTasks?.[listId],
 						updateGoalTasks: (listId: string, tasks) => {
-							toolUseContext.setAppState((prev) => ({
-								...prev,
-								goalTasks: { ...prev.goalTasks, [listId]: tasks },
-							}));
+							goalBatch.updateGoalTasks(listId, tasks);
 						},
 						outputSummary: currentOutputSummary,
 					},
 				);
-				// Sync mutated goalRuntime to store
-				toolUseContext.setAppState((prev) => ({
-					...prev,
-					goalRuntime: goalCheckState.goalRuntime,
-				}));
+				// Sync mutated goalRuntime and apply all collected changes in single setAppState
+				goalBatch.markRuntimeMutated(goalCheckState.goalRuntime);
+				if (goalBatch.hasChanges()) {
+					logCpuDiag(`[goal] batched setState (finishTurnForGoal preCheck)`);
+					goalBatch.applyToStore(toolUseContext.setAppState);
+				}
 
 				if (noToolGoalResult.injectedPrompt) {
 					pendingGoalPrompt = noToolGoalResult.injectedPrompt;
@@ -2135,9 +2118,21 @@ async function* queryLoop(
 		}
 		queryCheckpoint("query_tool_execution_end");
 
+		// ToolCallBudget check: after all tools in current turn complete, before next API call
+		totalToolCalls += toolUseBlocks.length
+		if (maxToolCalls && totalToolCalls >= maxToolCalls) {
+			yield createAttachmentMessage({
+				type: "max_tool_calls_reached" as const,
+				totalToolCalls,
+				maxToolCalls,
+			});
+			return { reason: "max_tool_calls", totalToolCalls };
+		}
+
 		// Dispatch tool_completed events for goal runtime tracking
 		if (toolUseBlocks.length > 0 && toolUseContext.getAppState().goal?.id) {
 			const appState = toolUseContext.getAppState();
+			const goalBatch = createGoalBatchingContext();
 			for (const toolUse of toolUseBlocks) {
 				processGoalRuntimeEvent(
 					{ type: "tool_completed", toolName: toolUse.name },
@@ -2152,12 +2147,7 @@ async function* queryLoop(
 							totalTokens: 0,
 						},
 						injectPrompt: async () => {},
-						updateGoal: (updatedGoal: Goal) => {
-							toolUseContext.setAppState((prev) => ({
-								...prev,
-								goal: updatedGoal,
-							}));
-						},
+						updateGoal: goalBatch.updateGoal,
 						getTodos: () => {
 							const todoListId = appState.goal?.todoListId;
 							if (!todoListId) return undefined;
@@ -2166,10 +2156,7 @@ async function* queryLoop(
 						updateTodos: (todos) => {
 							const todoListId = appState.goal?.todoListId;
 							if (!todoListId) return;
-							toolUseContext.setAppState((prev) => ({
-								...prev,
-								todos: { ...prev.todos, [todoListId]: todos },
-							}));
+							goalBatch.updateTodos(todoListId, todos);
 						},
 						getGoalTasks: () => {
 							const goalTaskListId = appState.goal?.goalTaskListId;
@@ -2179,19 +2166,16 @@ async function* queryLoop(
 						updateGoalTasks: (tasks) => {
 							const goalTaskListId = appState.goal?.goalTaskListId;
 							if (!goalTaskListId) return;
-							toolUseContext.setAppState((prev) => ({
-								...prev,
-								goalTasks: { ...prev.goalTasks, [goalTaskListId]: tasks },
-							}));
+							goalBatch.updateGoalTasks(goalTaskListId, tasks);
 						},
 					},
 				);
-				// Sync mutated goalRuntime to store (tool_completed mutates
-				// runtime._toolCallsThisTurn in-place)
-				toolUseContext.setAppState((prev) => ({
-					...prev,
-					goalRuntime: appState.goalRuntime,
-				}));
+			}
+			// Sync mutated goalRuntime and apply all collected changes in single setAppState
+			goalBatch.markRuntimeMutated(appState.goalRuntime);
+			if (goalBatch.hasChanges()) {
+				logCpuDiag(`[goal] batched setState (tool_completed)`);
+				goalBatch.applyToStore(toolUseContext.setAppState);
 			}
 		}
 
@@ -2596,7 +2580,7 @@ async function* queryLoop(
 			toolUseContext.getAppState().goal?.id &&
 			toolUseContext.getAppState().goal?.status === ThreadGoalStatus.Active
 		) {
-			const freshAppState = toolUseContext.getAppState();
+			const goalBatch = createGoalBatchingContext();
 			const goalResult = finishTurnForGoal(
 				freshAppState.goal,
 				freshAppState.goalRuntime,
@@ -2605,34 +2589,24 @@ async function* queryLoop(
 					onInjectPrompt: (prompt: string) => {
 						pendingGoalPrompt = prompt;
 					},
-					onUpdateGoal: (updatedGoal: Goal) => {
-						toolUseContext.setAppState((prev) => ({
-							...prev,
-							goal: updatedGoal,
-						}));
-					},
+					onUpdateGoal: goalBatch.updateGoal,
 					getTodos: (listId: string) => freshAppState.todos?.[listId],
 					updateTodos: (listId: string, todos) => {
-						toolUseContext.setAppState((prev) => ({
-							...prev,
-							todos: { ...prev.todos, [listId]: todos },
-						}));
+						goalBatch.updateTodos(listId, todos);
 					},
 					getGoalTasks: (listId: string) => freshAppState.goalTasks?.[listId],
 					updateGoalTasks: (listId: string, tasks) => {
-						toolUseContext.setAppState((prev) => ({
-							...prev,
-							goalTasks: { ...prev.goalTasks, [listId]: tasks },
-						}));
+						goalBatch.updateGoalTasks(listId, tasks);
 					},
 					outputSummary: currentOutputSummary,
 				},
 			);
-			// Sync mutated goalRuntime to store
-			toolUseContext.setAppState((prev) => ({
-				...prev,
-				goalRuntime: freshAppState.goalRuntime,
-			}));
+			// Sync mutated goalRuntime and apply all collected changes in single setAppState
+			goalBatch.markRuntimeMutated(freshAppState.goalRuntime);
+			if (goalBatch.hasChanges()) {
+				logCpuDiag(`[goal] batched setState (finishTurnForGoal postTool)`);
+				goalBatch.applyToStore(toolUseContext.setAppState);
+			}
 
 			if (goalResult.injectedPrompt) {
 				pendingGoalPrompt = goalResult.injectedPrompt;

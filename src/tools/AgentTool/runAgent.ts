@@ -88,7 +88,7 @@ import {
 } from '../../utils/telemetry/perfettoTracing.js'
 import type { ContentReplacementState } from '../../utils/toolResultStorage.js'
 import { createAgentId } from '../../utils/uuid.js'
-import { resolveAgentTools } from './agentToolUtils.js'
+import { getMaxToolCalls, resolveAgentTools } from './agentToolUtils.js'
 import { type AgentClassification, getClassification } from './agentClassifications.js'
 import { type AgentDefinition, isBuiltInAgent } from './loadAgentsDir.js'
 import { BUILT_IN_TEMPLATES, buildAgentPrompt } from './promptTemplate.js'
@@ -269,6 +269,7 @@ export async function* runAgent({
   override,
   model,
   maxTurns,
+  maxToolCalls,
   preserveToolUseResults,
   availableTools,
   allowedTools,
@@ -304,6 +305,9 @@ export async function* runAgent({
   }
   model?: ModelAlias
   maxTurns?: number
+  /** Maximum tool calls allowed for this agent execution.
+   * Processed through getMaxToolCalls() which applies env var override and default. */
+  maxToolCalls?: number
   /** Preserve toolUseResult on messages for subagents with viewable transcripts */
   preserveToolUseResults?: boolean
   /** Precomputed tool pool for the worker agent. Computed by the caller
@@ -866,6 +870,7 @@ export async function* runAgent({
       toolUseContext: agentToolUseContext,
       querySource,
       maxTurns: maxTurns ?? agentDefinition.maxTurns ?? 50,
+maxToolCalls: getMaxToolCalls(maxToolCalls),
     })) {
       checkCpuHotspot('runAgent_message_yield')
       _initLog(`first query() message: type=${message.type}`)
@@ -960,6 +965,13 @@ export async function* runAgent({
   message.attachment.maxTurns
 }
 )`,
+          )
+          break
+        }
+        // Handle max tool calls reached signal from query.ts
+        if (message.attachment.type === 'max_tool_calls_reached') {
+          logForDebugging(
+            `[Agent: ${agentDefinition.agentType}] Reached max tool calls limit (${message.attachment.maxToolCalls})`,
           )
           break
         }
