@@ -117,8 +117,16 @@ export function evaluateQuality(quality: QualityInput, config?: RubricConfig): G
   // 设计文档定义: passRate 的改进幅度 (新方法passRate - 基线passRate)
   // 如果外部提供了 passRateDelta，直接使用
   // 否则使用配置的基线通过率（默认 0.5 随机猜测基线）
+  // 特殊情况: baselineTokens=0 表示没有改进空间，delta应为0
+  // 当 tokensUsed > baselineTokens 时，表示成本效率低于基线，delta应为负值
   const baselinePassRate = cfg.baselinePassRate ?? 0.5
-  const delta = quality.passRateDelta ?? Math.max(0, passRate - baselinePassRate)
+  const rawDelta = quality.baselineTokens === 0
+    ? 0
+    : (quality.passRateDelta ?? Math.max(0, passRate - baselinePassRate))
+
+  // 当成本超过基线时，delta应该为负值（成本效率低于基线）
+  const costExceedsBaseline = quality.baselineTokens > 0 && quality.tokensUsed > quality.baselineTokens
+  const delta = costExceedsBaseline ? -rawDelta : rawDelta
 
   // 3. trigger_f1: 触发准确率
   const triggerF1 = quality.triggerAccuracy ?? 1.0
