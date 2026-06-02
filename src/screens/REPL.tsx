@@ -44,6 +44,7 @@ import { getTeamName, getAgentName } from '../utils/teammate.js';
 import { WorkerPendingPermission } from '../components/permissions/WorkerPendingPermission.js';
 import { injectUserMessageToTeammate, getAllInProcessTeammateTasks } from '../tasks/InProcessTeammateTask/InProcessTeammateTask.js';
 import { isLocalAgentTask, queuePendingMessage, appendMessageToLocalAgent, type LocalAgentTaskState } from '../tasks/LocalAgentTask/LocalAgentTask.js';
+import type { TaskStateBase } from '../Task.js';
 import { registerLeaderToolUseConfirmQueue, unregisterLeaderToolUseConfirmQueue, registerLeaderSetToolPermissionContext, unregisterLeaderSetToolPermissionContext } from '../utils/swarm/leaderPermissionBridge.js';
 import { endInteractionSpan } from '../utils/telemetry/sessionTracing.js';
 import { useLogMessages } from '../hooks/useLogMessages.js';
@@ -170,6 +171,7 @@ import { resolveAgentTools } from '../tools/AgentTool/agentToolUtils.js';
 import { resumeAgentBackground } from '../tools/AgentTool/resumeAgent.js';
 import { useMainLoopModel } from '../hooks/useMainLoopModel.js';
 import { useAppState, useSetAppState, useAppStateStore } from '../state/AppState.js';
+import { useDerivedStore } from '../hooks/useDerivedStore.js';
 import type { ContentBlockParam, ImageBlockParam } from '@anthropic-ai/sdk/resources/messages.mjs';
 import type { ProcessUserInputContext } from '../utils/processUserInput/processUserInput.js';
 import type { PastedContent } from '../utils/config.js';
@@ -342,7 +344,7 @@ import type { RemoteSessionConfig } from '../remote/RemoteSessionManager.js';
 import { REMOTE_SAFE_COMMANDS } from '../commands.js';
 import type { RemoteMessageContent } from '../utils/teleport/api.js';
 import { FullscreenLayout, useUnseenDivider, computeUnseenDivider } from '../components/FullscreenLayout.js';
-import { isFullscreenEnvEnabled, maybeGetTmuxMouseHint, isMouseTrackingEnabled } from '../utils/fullscreen.js';
+import { isFullscreenEnvEnabled, maybeGetTmuxMouseHint, isMouseTrackingEnabled, subscribeFullscreen } from '../utils/fullscreen.js';
 import { AlternateScreen } from '../ink/components/AlternateScreen.js';
 import { ScrollKeybindingHandler } from '../components/ScrollKeybindingHandler.js';
 import { useMessageActions, MessageActionsKeybindings, MessageActionsBar, type MessageActionsState, type MessageActionsNav, type MessageActionCaps } from '../components/messageActions.js';
@@ -723,12 +725,22 @@ export function REPL({
 
   // Agent definition is state so /resume can update it mid-session
   const [mainThreadAgentDefinition, setMainThreadAgentDefinition] = useState(initialMainThreadAgentDefinition);
-  const toolPermissionContext = useAppState(s => s.toolPermissionContext);
+  // Use useDerivedStore for broad objects to leverage selectorSkip and avoid
+  // cascading re-renders from unrelated state changes
+  const toolPermissionContext = useDerivedStore(useMemo(() => s => s.toolPermissionContext, []));
   const verbose = useAppState(s => s.verbose);
-  const mcp = useAppState(s => s.mcp);
-  const plugins = useAppState(s => s.plugins);
+  // Split mcp into narrow selectors to avoid re-renders from unrelated mcp changes
+  const mcpClientsRaw = useAppState(s => s.mcp.clients);
+  const mcpTools = useAppState(s => s.mcp.tools);
+  const mcpCommands = useAppState(s => s.mcp.commands);
+  const mcpResources = useAppState(s => s.mcp.resources);
+  // Reconstruct mcp object for consumers that need the full object
+  const mcp = useMemo(() => ({ clients: mcpClientsRaw, tools: mcpTools, commands: mcpCommands, resources: mcpResources }), [mcpClientsRaw, mcpTools, mcpCommands, mcpResources]);
+  // Only subscribe to plugins.commands, not the entire plugins object
+  const pluginsCommands = useAppState(s => s.plugins.commands);
+  const plugins = useMemo(() => ({ commands: pluginsCommands }), [pluginsCommands]);
   const agentDefinitions = useAppState(s => s.agentDefinitions);
-  const fileHistory = useAppState(s => s.fileHistory);
+  const fileHistory = useDerivedStore(useMemo(() => s => s.fileHistory, []));
   const initialMessage = useAppState(s => s.initialMessage);
   const queuedCommands = useCommandQueue();
   // feature() is a build-time constant — dead code elimination removes the hook
@@ -738,21 +750,37 @@ export function REPL({
   const showExpandedTodos = useAppState(s => s.expandedView) === 'tasks';
   const pendingWorkerRequest = useAppState(s => s.pendingWorkerRequest);
   const pendingSandboxRequest = useAppState(s => s.pendingSandboxRequest);
-  const teamContext = useAppState(s => s.teamContext);
-  const tasks = useAppState(s => s.tasks);
+  const teamContext = useDerivedStore(useMemo(() => s => s.teamContext, []));
+  // Targeted selectors: avoid subscribing to entire tasks object to prevent
+  // cascading re-renders from updateAsyncAgentProgress (creates new tasks ref each call)
+  const viewingAgentTaskId = useAppState(s => s.viewingAgentTaskId);
+  const viewedTaskSelector = useMemo(
+    () => (s: { tasks: Record<string, TaskStateBase>; viewingAgentTaskId?: string }) =>
+      s.viewingAgentTaskId ? (s.tasks[s.viewingAgentTaskId] ?? undefined) : undefined,
+    [],
+  )
+  const viewedTask = useAppState(viewedTaskSelector);
+  const hasRunningTeammatesSelector = useMemo(
+    () => (s: { tasks: Record<string, TaskStateBase> }) =>
+      getAllInProcessTeammateTasks(s.tasks).some(t => t.status === 'running'),
+    [],
+  )
+  const hasRunningTeammates = useAppState(hasRunningTeammatesSelector);
   const workerSandboxPermissions = useAppState(s => s.workerSandboxPermissions);
   const elicitation = useAppState(s => s.elicitation);
   const ultraplanPendingChoice = useAppState(s => s.ultraplanPendingChoice);
   const ultraplanLaunchPending = useAppState(s => s.ultraplanLaunchPending);
-  const viewingAgentTaskId = useAppState(s => s.viewingAgentTaskId);
-  const goal = useAppState(s => s.goal);
+  const goalHasIdAndStatus = useDerivedStore(
+    useMemo(() => (s: { goal?: { id?: string; status?: string } }) =>
+      !!(s.goal?.id && s.goal?.status), []),
+  );
   const setAppState = useSetAppState();
 
   // Bootstrap: retained local_agent that hasn't loaded disk yet → read
   // sidechain JSONL and UUID-merge with whatever stream has appended so far.
   // Stream appends immediately on retain (no defer); bootstrap fills the
   // prefix. Disk-write-before-yield means live is always a suffix of disk.
-  const viewedLocalAgent = viewingAgentTaskId ? tasks[viewingAgentTaskId] : undefined;
+  const viewedLocalAgent = viewedTask;
   const needsBootstrap = isLocalAgentTask(viewedLocalAgent) && viewedLocalAgent.retain && !viewedLocalAgent.diskLoaded;
   useEffect(() => {
     if (!viewingAgentTaskId || !needsBootstrap) return;
@@ -1119,6 +1147,16 @@ export function REPL({
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // Subscribe to /tui fullscreen toggle changes — forces re-render so
+  // the AlternateScreen wrapper mounts/unmounts without a page reload.
+  const [, setFullscreenBump] = useState(0)
+  useEffect(() => {
+    return subscribeFullscreen(() => {
+      setFullscreenBump(n => n + 1)
+    })
+  }, [])
+
   const [showUndercoverCallout, setShowUndercoverCallout] = useState(false);
   useEffect(() => {
     if ("external" === 'ant') {
@@ -1708,6 +1746,11 @@ export function REPL({
     apiMetricsRef.current = [];
     setStreamingText(null);
     setStreamingToolUses([]);
+    // Reset stream mode to prevent "thinking freeze" — if the user aborts
+    // or an error occurs while streamMode is 'thinking', the spinner would
+    // stay in thinking state indefinitely without this reset.
+    setStreamMode('responding');
+    setStreamingThinking(null);
     setSpinnerMessage(null);
     setSpinnerColor(null);
     setSpinnerShimmerColor(null);
@@ -1720,8 +1763,6 @@ export function REPL({
   }, [pickNewSpinnerTip]);
 
   // Session backgrounding — hook is below, after getToolUseContext
-
-  const hasRunningTeammates = useMemo(() => getAllInProcessTeammateTasks(tasks).some(t => t.status === 'running'), [tasks]);
 
   // Show deferred turn duration message once all swarm teammates finish
   useEffect(() => {
@@ -4689,7 +4730,6 @@ export function REPL({
   // viewedAgentTask: teammate OR local_agent — drives the boolean checks
   // below. viewedTeammateTask: teammate-only narrowed, for teammate-specific
   // field access (inProgressToolUseIDs).
-  const viewedTask = viewingAgentTaskId ? tasks[viewingAgentTaskId] : undefined;
   const viewedTeammateTask = viewedTask && isInProcessTeammateTask(viewedTask) ? viewedTask : undefined;
   const viewedAgentTask = viewedTeammateTask ?? (viewedTask && isLocalAgentTask(viewedTask) ? viewedTask : undefined);
 
@@ -4780,7 +4820,10 @@ export function REPL({
               {"external" === 'ant' && <TungstenLiveMonitor />}
               {feature('WEB_BROWSER_TOOL') ? WebBrowserPanelModule && <WebBrowserPanelModule.WebBrowserPanel /> : null}
               <Box flexGrow={1} />
-              {showSpinner && <SpinnerWithVerb mode={streamMode} spinnerTip={spinnerTip} responseLengthRef={responseLengthRef} apiMetricsRef={apiMetricsRef} overrideMessage={spinnerMessage} spinnerSuffix={stopHookSpinnerSuffix} verbose={verbose} loadingStartTimeRef={loadingStartTimeRef} totalPausedMsRef={totalPausedMsRef} pauseStartTimeRef={pauseStartTimeRef} overrideColor={spinnerColor} overrideShimmerColor={spinnerShimmerColor} hasActiveTools={inProgressToolUseIDs.size > 0} leaderIsIdle={!isLoading} progress={spinnerProgress} />}
+              {/* Keep SpinnerWithVerb mounted to avoid 120+ component mount/unmount
+                  cycles when showSpinner toggles. display:none makes the node take
+                  zero space in layout — Yoga skips it entirely. */}
+              <SpinnerWithVerb mode={streamMode} spinnerTip={spinnerTip} responseLengthRef={responseLengthRef} apiMetricsRef={apiMetricsRef} overrideMessage={spinnerMessage} spinnerSuffix={stopHookSpinnerSuffix} verbose={verbose} loadingStartTimeRef={loadingStartTimeRef} totalPausedMsRef={totalPausedMsRef} pauseStartTimeRef={pauseStartTimeRef} overrideColor={spinnerColor} overrideShimmerColor={spinnerShimmerColor} hasActiveTools={inProgressToolUseIDs.size > 0} leaderIsIdle={!isLoading} progress={spinnerProgress} display={showSpinner ? 'flex' : 'none'} />
               {!showSpinner && !isLoading && !userInputOnProcessing && !hasRunningTeammates && isBriefOnly && !viewedAgentTask && <BriefIdleStatus />}
               {isFullscreenEnvEnabled() && <PromptInputQueuedCommands />}
             </>} bottom={<Box flexDirection={feature('BUDDY') && companionNarrow ? 'column' : 'row'} width="100%" alignItems={feature('BUDDY') && companionNarrow ? undefined : 'flex-end'}>
@@ -4802,7 +4845,7 @@ export function REPL({
                 {!showSpinner && !toolJSX?.isLocalJSXCommand && showExpandedTodos && tasksV2 && tasksV2.length > 0 && <Box width="100%" flexDirection="column">
                       <TaskListV2 tasks={tasksV2} isStandalone={true} />
                     </Box>}
-                {goal?.id && goal?.status && <Box width="100%" flexDirection="column">
+                {goalHasIdAndStatus && <Box width="100%" flexDirection="column">
                       <GoalProgressWithBoundary />
                     </Box>}
                 {focusedInputDialog === 'sandbox-permission' && <SandboxPermissionRequest key={sandboxPermissionRequestQueue[0]!.hostPattern.host} hostPattern={sandboxPermissionRequestQueue[0]!.hostPattern} onUserResponse={(response: {
