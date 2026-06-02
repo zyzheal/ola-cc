@@ -17,6 +17,8 @@ import { interpolateColor, toRGBColor } from './utils.js';
 const SEP_WIDTH = stringWidth(' · ');
 const THINKING_BARE_WIDTH = stringWidth('thinking');
 const SHOW_TOKENS_AFTER_MS = 30_000;
+export const DEFAULT_INTERVAL_MS = 200;
+export const AGENT_ACTIVE_INTERVAL_MS = 500;
 
 // Thinking shimmer constants. Previously lived in a separate ThinkingShimmerText
 // component with its own useAnimationFrame(50) — inlined here to reuse our
@@ -66,6 +68,8 @@ export type SpinnerAnimationRowProps = {
   // Thinking (state owned by parent, mode-dependent)
   thinkingStatus: 'thinking' | number | null;
   effortSuffix: string;
+  /** Agent is running — throttle animation to reduce commit overlap with agent progress updates */
+  agentActive?: boolean;
 };
 
 /**
@@ -98,9 +102,18 @@ export function SpinnerAnimationRow({
   foregroundedTeammate,
   leaderIsIdle = false,
   thinkingStatus,
-  effortSuffix
+  effortSuffix,
+  agentActive = false,
 }: SpinnerAnimationRowProps): React.ReactNode {
-  const [viewportRef, time] = useAnimationFrame(reducedMotion ? null : 50);
+  // PROFILING: measure spinner render body time
+  const _rStart = performance.now();
+  // 200ms animation interval: spinner glyph rotation at 5fps is visually
+  // smooth enough while reducing React commit frequency by 4x vs 50ms.
+  // Each commit triggers resetAfterCommit → scheduleRender → onRender,
+  // so 50ms (20fps) produces 20 commits/s × 148 selector evaluations
+  // = 2960 selector checks/s.  200ms (5fps) drops to 5 commits/s.
+  const intervalMs = agentActive ? AGENT_ACTIVE_INTERVAL_MS : DEFAULT_INTERVAL_MS;
+  const [viewportRef, time] = useAnimationFrame(reducedMotion ? null : intervalMs);
 
   // === Elapsed time (wall-clock, derived from refs each frame) ===
   const now = Date.now();
@@ -226,6 +239,12 @@ export function SpinnerAnimationRow({
         </> : !foregroundedTeammate ? <>
           <Text dimColor>(working…)</Text>
         </> : null;
+  // PROFILING: store spinner render body time (sampled every 50 renders)
+  const _rBodyMs = performance.now() - _rStart;
+  const _profRc = (globalThis as any).__spinnerRenderCount = ((globalThis as any).__spinnerRenderCount ?? 0) + 1;
+  if (_profRc % 50 === 0) {
+    (globalThis as any).__lastSpinnerBodyMs = _rBodyMs;
+  }
   return <Box ref={viewportRef} flexDirection="row" flexWrap="wrap" marginTop={1} width="100%">
       <SpinnerGlyph frame={frame} messageColor={messageColor} stalledIntensity={overrideColor ? 0 : stalledIntensity} reducedMotion={reducedMotion} time={time} />
       <GlimmerMessage message={message} mode={mode} messageColor={messageColor} glimmerIndex={glimmerIndex} flashOpacity={flashOpacity} shimmerColor={shimmerColor} stalledIntensity={overrideColor ? 0 : stalledIntensity} />
