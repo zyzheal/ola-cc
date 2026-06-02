@@ -19,11 +19,11 @@ import { TaskListV2 } from './TaskListV2.js';
 import { useTasksV2 } from '../hooks/useTasksV2.js';
 import type { Task } from '../utils/tasks.js';
 import { useAppState } from '../state/AppState.js';
+import { useDerivedStore } from '../hooks/useDerivedStore.js';
 import { useTerminalSize } from '../hooks/useTerminalSize.js';
 import { stringWidth } from '../ink/stringWidth.js';
 import { getDefaultCharacters, type SpinnerMode } from './Spinner/index.js';
 import { SpinnerAnimationRow } from './Spinner/SpinnerAnimationRow.js';
-import { useSettings } from '../hooks/useSettings.js';
 import { isInProcessTeammateTask } from '../tasks/InProcessTeammateTask/types.js';
 import { isBackgroundTask } from '../tasks/types.js';
 import { getAllInProcessTeammateTasks } from '../tasks/InProcessTeammateTask/InProcessTeammateTask.js';
@@ -64,6 +64,8 @@ type Props = {
   leaderIsIdle?: boolean;
   /** Progress percentage (0-100) for compact progress bar */
   progress?: number | null;
+  /** Ink display prop — 'none' hides the node from layout without unmounting */
+  display?: 'flex' | 'none';
 };
 
 // Thin wrapper: branches on isBriefOnly so the two variants have independent
@@ -85,7 +87,7 @@ export function SpinnerWithVerb(props: Props): React.ReactNode {
   // BriefTool.ts would leak tool-name strings into external builds. Single
   // spinner instance → hooks stay unconditional (two subs, negligible).
   if ((feature('KAIROS') || feature('KAIROS_BRIEF')) && (getKairosActive() || getUserMsgOptIn() && (briefEnvEnabled || getFeatureValue_CACHED_MAY_BE_STALE('tengu_kairos_brief', false))) && isBriefOnly && !viewingAgentTaskId) {
-    return <BriefSpinner mode={props.mode} overrideMessage={props.overrideMessage} />;
+    return <Box display={props.display}><BriefSpinner mode={props.mode} overrideMessage={props.overrideMessage} /></Box>;
   }
   return <SpinnerWithVerbInner {...props} />;
 }
@@ -102,11 +104,16 @@ function SpinnerWithVerbInner({
   spinnerSuffix,
   verbose,
   hasActiveTools = false,
+  display,
   leaderIsIdle = false,
   progress = null
 }: Props): React.ReactNode {
-  const settings = useSettings();
-  const reducedMotion = settings.prefersReducedMotion ?? false;
+  const reducedMotion = useDerivedStore(
+    useMemo(() => (s: { settings?: { prefersReducedMotion?: boolean } }) => s.settings?.prefersReducedMotion ?? false, []),
+  );
+  const tipsEnabled = useDerivedStore(
+    useMemo(() => (s: { settings?: { spinnerTipsEnabled?: boolean } }) => s.settings?.spinnerTipsEnabled !== false, []),
+  );
 
   // NOTE: useAnimationFrame(50) lives in SpinnerAnimationRow, not here.
   // This component only re-renders when props or app state change —
@@ -114,18 +121,24 @@ function SpinnerWithVerbInner({
   // (frame, glimmer, stalled intensity, token counter, thinking shimmer,
   // elapsed-time timer) are computed inside the child.
 
-  const tasks = useAppState(s => s.tasks);
   const viewingAgentTaskId = useAppState(s_0 => s_0.viewingAgentTaskId);
   const expandedView = useAppState(s_1 => s_1.expandedView);
   const showExpandedTodos = expandedView === 'tasks';
   const showSpinnerTree = expandedView === 'teammates';
   const selectedIPAgentIndex = useAppState(s_2 => s_2.selectedIPAgentIndex);
   const viewSelectionMode = useAppState(s_3 => s_3.viewSelectionMode);
-  // Get foregrounded teammate (if viewing a teammate's transcript)
-  const foregroundedTeammate = viewingAgentTaskId ? getViewedTeammateTask({
-    viewingAgentTaskId,
-    tasks
-  }) : undefined;
+  // Narrow selector via useDerivedStore: subscribe to the specific viewed task,
+  // NOT the entire tasks map. Only re-renders when the viewed teammate's
+  // structural content changes — NOT when other tasks update their progress.
+  const foregroundedTeammate = useDerivedStore(
+    useMemo(
+      () => viewingAgentTaskId
+        ? (s: { tasks: Record<string, unknown>; viewingAgentTaskId: string }) =>
+            getViewedTeammateTask({ viewingAgentTaskId, tasks: s.tasks })
+        : () => undefined,
+      [viewingAgentTaskId],
+    ),
+  );
   const {
     columns
   } = useTerminalSize();
@@ -193,23 +206,30 @@ function SpinnerWithVerbInner({
   const effortValue = useAppState(s_4 => s_4.effortValue);
   const effortSuffix = getEffortSuffix(getMainLoopModel(), effortValue);
 
-  // Check if any running in-process teammates exist (needed for both modes)
-  const runningTeammates = getAllInProcessTeammateTasks(tasks).filter(t => t.status === 'running');
-  const hasRunningTeammates = runningTeammates.length > 0;
-  const allIdle = hasRunningTeammates && runningTeammates.every(t_0 => t_0.isIdle);
-
-  // Gather aggregate token stats from all running swarm teammates
-  // In spinner-tree mode, skip aggregation (teammates have their own lines in the tree)
-  let teammateTokens = 0;
-  if (!showSpinnerTree) {
-    for (const task_0 of Object.values(tasks)) {
-      if (isInProcessTeammateTask(task_0) && task_0.status === 'running') {
-        if (task_0.progress?.tokenCount) {
-          teammateTokens += task_0.progress.tokenCount;
+  // Derived store subscription: only re-renders when the derived values
+  // (runningTeammates, allIdle, teammateTokens) actually change.
+  // This avoids re-rendering on every task progress update when the set
+  // of running teammates hasn't changed.
+  const { runningTeammates, hasRunningTeammates, allIdle, teammateTokens } = useDerivedStore(
+    React.useCallback((state) => {
+      const tasks = state.tasks;
+      const running = getAllInProcessTeammateTasks(tasks).filter(t => t.status === 'running');
+      const hasRunning = running.length > 0;
+      const idle = hasRunning && running.every(t_0 => t_0.isIdle);
+      let tokens = 0;
+      if (!showSpinnerTree) {
+        for (const task_0 of Object.values(tasks)) {
+          if (isInProcessTeammateTask(task_0) && task_0.status === 'running') {
+            if (task_0.progress?.tokenCount) {
+              tokens += task_0.progress.tokenCount;
+            }
+          }
         }
       }
-    }
-  }
+      return { runningTeammates: running, hasRunningTeammates: hasRunning, allIdle: idle, teammateTokens: tokens };
+    }, [showSpinnerTree]),
+    (a, b) => a.hasRunningTeammates === b.hasRunningTeammates && a.allIdle === b.allIdle && a.teammateTokens === b.teammateTokens,
+  );
 
   // Stale read of the refs for showBtwTip below — we're off the 50ms clock
   // so this only updates when props/app state change, which is sufficient for
@@ -265,7 +285,6 @@ function SpinnerWithVerbInner({
   // off the 50ms clock) is fine. Other triggers (mode change, setMessages)
   // cause re-renders that refresh this in practice.
   let contextTipsActive = false;
-  const tipsEnabled = settings.spinnerTipsEnabled !== false;
   const showClearTip = tipsEnabled && elapsedSnapshot > 1_800_000;
   const showBtwTip = tipsEnabled && elapsedSnapshot > 30_000 && !getGlobalConfig().btwUseCount;
   const effectiveTip = contextTipsActive ? undefined : showClearTip && !nextTask ? 'Use /clear to start fresh when switching topics and free up context' : showBtwTip && !nextTask ? "Use /btw to ask a quick side question without interrupting Claude's current work" : spinnerTip;
@@ -289,7 +308,7 @@ function SpinnerWithVerbInner({
       }
     }
   }
-  return <Box flexDirection="column" width="100%" alignItems="flex-start">
+  return <Box flexDirection="column" width="100%" alignItems="flex-start" display={display}>
       {progress !== null ? (
         <Box flexDirection="column" width="100%" marginBottom={0}>
           <Box flexDirection="row" alignItems="center">
@@ -302,7 +321,7 @@ function SpinnerWithVerbInner({
           </Box>
         </Box>
       ) : (
-        <SpinnerAnimationRow mode={mode} reducedMotion={reducedMotion} hasActiveTools={hasActiveTools} responseLengthRef={responseLengthRef} message={message} messageColor={messageColor} shimmerColor={shimmerColor} overrideColor={overrideColor} loadingStartTimeRef={loadingStartTimeRef} totalPausedMsRef={totalPausedMsRef} pauseStartTimeRef={pauseStartTimeRef} spinnerSuffix={spinnerSuffix} verbose={verbose} columns={columns} hasRunningTeammates={hasRunningTeammates} teammateTokens={teammateTokens} foregroundedTeammate={foregroundedTeammate} leaderIsIdle={leaderIsIdle} thinkingStatus={thinkingStatus} effortSuffix={effortSuffix} />
+        <SpinnerAnimationRow mode={mode} reducedMotion={reducedMotion} hasActiveTools={hasActiveTools} responseLengthRef={responseLengthRef} message={message} messageColor={messageColor} shimmerColor={shimmerColor} overrideColor={overrideColor} loadingStartTimeRef={loadingStartTimeRef} totalPausedMsRef={totalPausedMsRef} pauseStartTimeRef={pauseStartTimeRef} spinnerSuffix={spinnerSuffix} verbose={verbose} columns={columns} hasRunningTeammates={hasRunningTeammates} teammateTokens={teammateTokens} foregroundedTeammate={foregroundedTeammate} leaderIsIdle={leaderIsIdle} thinkingStatus={thinkingStatus} effortSuffix={effortSuffix} agentActive={hasRunningTeammates} />
       )}
       {showSpinnerTree && hasRunningTeammates ? <TeammateSpinnerTree selectedIndex={selectedIPAgentIndex} isInSelectionMode={viewSelectionMode === 'selecting-agent'} allIdle={allIdle} leaderVerb={leaderIsIdle ? undefined : leaderVerb} leaderIdleText={leaderIsIdle ? 'Idle' : undefined} leaderTokenCount={leaderTokenCount} /> : showExpandedTodos && tasksV2 && tasksV2.length > 0 ? <Box width="100%" flexDirection="column">
           <MessageResponse>
@@ -344,8 +363,9 @@ function BriefSpinner(t0) {
     mode,
     overrideMessage
   } = t0;
-  const settings = useSettings();
-  const reducedMotion = settings.prefersReducedMotion ?? false;
+  const reducedMotion = useDerivedStore(
+    useMemo(() => (s: { settings?: { prefersReducedMotion?: boolean } }) => s.settings?.prefersReducedMotion ?? false, []),
+  );
   const [randomVerb] = useState(_temp4);
   const verb = overrideMessage ?? randomVerb;
   const connStatus = useAppState(_temp5);
@@ -369,7 +389,10 @@ function BriefSpinner(t0) {
   }
   useEffect(t1, t2);
   const [, time] = useAnimationFrame(reducedMotion ? null : 120);
-  const runningCount = useAppState(_temp6);
+  const runningCount = useDerivedStore(
+    useMemo(() => (s: { tasks: Record<string, unknown>; remoteBackgroundTaskCount?: number }) =>
+      count(Object.values(s.tasks), isBackgroundTask) + (s.remoteBackgroundTaskCount ?? 0), []),
+  );
   const showConnWarning = connStatus === "reconnecting" || connStatus === "disconnected";
   const connText = connStatus === "reconnecting" ? "Reconnecting" : "Disconnected";
   const dotFrame = Math.floor(time / 300) % 3;
@@ -464,9 +487,6 @@ function BriefSpinner(t0) {
 // as BriefSpinner so the input bar never jumps when toggling between
 // working/idle/disconnected. See BriefSpinner's comment for the
 // Notifications overlay coupling.
-function _temp6(s_0) {
-  return count(Object.values(s_0.tasks), isBackgroundTask) + s_0.remoteBackgroundTaskCount;
-}
 function _temp5(s) {
   return s.remoteConnectionStatus;
 }
@@ -476,7 +496,10 @@ function _temp4() {
 export function BriefIdleStatus() {
   const $ = _c(9);
   const connStatus = useAppState(_temp7);
-  const runningCount = useAppState(_temp8);
+  const runningCount = useDerivedStore(
+    useMemo(() => (s: { tasks: Record<string, unknown>; remoteBackgroundTaskCount?: number }) =>
+      count(Object.values(s.tasks), isBackgroundTask) + (s.remoteBackgroundTaskCount ?? 0), []),
+  );
   const {
     columns
   } = useTerminalSize();
@@ -523,16 +546,14 @@ export function BriefIdleStatus() {
   }
   return t2;
 }
-function _temp8(s_0) {
-  return count(Object.values(s_0.tasks), isBackgroundTask) + s_0.remoteBackgroundTaskCount;
-}
 function _temp7(s) {
   return s.remoteConnectionStatus;
 }
 export function Spinner() {
   const $ = _c(8);
-  const settings = useSettings();
-  const reducedMotion = settings.prefersReducedMotion ?? false;
+  const reducedMotion = useDerivedStore(
+    useMemo(() => (s: { settings?: { prefersReducedMotion?: boolean } }) => s.settings?.prefersReducedMotion ?? false, []),
+  );
   const [ref, time] = useAnimationFrame(reducedMotion ? null : 120);
   if (reducedMotion) {
     let t0;
