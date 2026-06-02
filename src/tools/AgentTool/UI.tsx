@@ -20,6 +20,7 @@ import type { Message, ProgressMessage } from '../../types/message.js';
 import type { AgentToolProgress } from '../../types/tools.js';
 import { count } from '../../utils/array.js';
 import { getSearchOrReadFromContent, getSearchReadSummaryText } from '../../utils/collapseReadSearch.js';
+import { logCpuDiag } from '../../utils/eventLoopWatchdog.js';
 import { getDisplayPath } from '../../utils/file.js';
 import { formatDuration, formatNumber } from '../../utils/format.js';
 import { buildSubagentLookups, createAssistantMessage, EMPTY_LOOKUPS } from '../../utils/messages.js';
@@ -31,6 +32,7 @@ import { inputSchema } from './AgentTool.js';
 import { getAgentColor } from './agentColorManager.js';
 import { GENERAL_PURPOSE_AGENT } from './built-in/generalPurposeAgent.js';
 const MAX_PROGRESS_MESSAGES_TO_SHOW = 3;
+const MAX_TRANSCRIPT_MESSAGES = 10;
 
 /**
  * Guard: checks if progress data has a `message` field (agent_progress or
@@ -42,7 +44,13 @@ function hasProgressMessage(data: Progress): data is AgentToolProgress {
     return false;
   }
   const msg = (data as AgentToolProgress).message;
-  return msg != null && typeof msg === 'object' && 'type' in msg;
+  if (msg == null || typeof msg !== 'object' || !('type' in msg)) {
+    return false;
+  }
+  // AssistantMessage.message is optional — downstream code always accesses
+  // msg.message.content, so guard against undefined inner message too.
+  const inner = (msg as { message?: unknown }).message;
+  return inner != null && typeof inner === 'object';
 }
 
 /**
@@ -250,10 +258,16 @@ function VerboseAgentTranscript(t0) {
     tools,
     verbose
   } = t0;
+  // CPU optimization: limit transcript messages to prevent fiber tree bloat.
+  // With 40+ tool uses, rendering all messages creates 2000+ fiber nodes,
+  // causing prepareForCommit to take 1.5s and blocking the event loop.
+  const slicedMessages = progressMessages.length > MAX_TRANSCRIPT_MESSAGES
+    ? progressMessages.slice(-MAX_TRANSCRIPT_MESSAGES)
+    : progressMessages
   let t1;
-  if ($[0] !== progressMessages) {
-    t1 = buildSubagentLookups(progressMessages.filter(_temp2).map(_temp3));
-    $[0] = progressMessages;
+  if ($[0] !== slicedMessages) {
+    t1 = buildSubagentLookups(slicedMessages.filter(_temp2).map(_temp3));
+    $[0] = slicedMessages;
     $[1] = t1;
   } else {
     t1 = $[1];
@@ -263,8 +277,8 @@ function VerboseAgentTranscript(t0) {
     inProgressToolUseIDs
   } = t1;
   let t2;
-  if ($[2] !== agentLookups || $[3] !== inProgressToolUseIDs || $[4] !== progressMessages || $[5] !== tools || $[6] !== verbose) {
-    const filteredMessages = progressMessages.filter(_temp4);
+  if ($[2] !== agentLookups || $[3] !== inProgressToolUseIDs || $[4] !== slicedMessages || $[5] !== tools || $[6] !== verbose) {
+    const filteredMessages = slicedMessages.filter(_temp4);
     let t3;
     if ($[8] !== agentLookups || $[9] !== inProgressToolUseIDs || $[10] !== tools || $[11] !== verbose) {
       t3 = progressMessage => <MessageResponse key={progressMessage.uuid} height={1}><MessageComponent message={progressMessage.data.message} lookups={agentLookups} addMargin={false} tools={tools} commands={[]} verbose={verbose} inProgressToolUseIDs={inProgressToolUseIDs} progressMessagesForMessage={[]} shouldAnimate={false} shouldShowDot={false} isTranscriptMode={false} isStatic={true} /></MessageResponse>;
@@ -286,13 +300,20 @@ function VerboseAgentTranscript(t0) {
   } else {
     t2 = $[7];
   }
+  const hiddenCount = progressMessages.length - slicedMessages.length;
   let t3;
-  if ($[13] !== t2) {
-    t3 = <>{t2}</>;
+  if ($[13] !== t2 || $[14] !== hiddenCount) {
+    t3 = <>
+      {t2}
+      {hiddenCount > 0 && <MessageResponse height={1}>
+          <Text dimColor>+{hiddenCount} more tool uses (ctrl+o to expand)</Text>
+        </MessageResponse>}
+    </>;
     $[13] = t2;
-    $[14] = t3;
+    $[14] = hiddenCount;
+    $[15] = t3;
   } else {
-    t3 = $[14];
+    t3 = $[15];
   }
   return t3;
 }
@@ -447,7 +468,8 @@ export function renderToolUseProgressMessage(progressMessages: ProgressMessage<P
   verbose,
   terminalSize,
   inProgressToolCallCount,
-  isTranscriptMode = false
+  isTranscriptMode = false,
+  initFallbackText
 }: {
   tools: Tools;
   verbose: boolean;
@@ -457,10 +479,16 @@ export function renderToolUseProgressMessage(progressMessages: ProgressMessage<P
   };
   inProgressToolCallCount?: number;
   isTranscriptMode?: boolean;
+  /** Fallback text to show instead of "Initializing…" when progress messages
+   *  are empty (e.g. from asyncInitFallbacks / AppState.tasks lastActivity). */
+  initFallbackText?: string;
 }): React.ReactNode {
+  // When there are no progress messages yet, fall back to initFallbackText
+  // (from task state's lastActivity, e.g. "Reading src/ink/ink.tsx") or
+  // the generic "Initializing…" text.
   if (!progressMessages.length) {
     return <MessageResponse height={1}>
-        <Text dimColor>{INITIALIZING_TEXT}</Text>
+        <Text dimColor>{initFallbackText ?? INITIALIZING_TEXT}</Text>
       </MessageResponse>;
   }
 
@@ -533,13 +561,20 @@ export function renderToolUseProgressMessage(progressMessages: ProgressMessage<P
   // initializing text so MessageResponse doesn't render a bare ⎿.
   if (displayedMessages.length === 0 && !(isTranscriptMode && prompt)) {
     return <MessageResponse height={1}>
-        <Text dimColor>{INITIALIZING_TEXT}</Text>
+        <Text dimColor>{initFallbackText ?? INITIALIZING_TEXT}</Text>
       </MessageResponse>;
   }
+  // CPU optimization: only build lookups for displayed messages, not all 40+.
+  // buildSubagentLookups iterates every message to build tool_use/tool_result maps.
+  // With 40+ progress messages this is O(n) per frame; limiting to displayed set
+  // makes it O(displayed) which is typically 3-6 messages.
+  const displayedData = displayedMessages
+    .filter((pm): pm is { type: 'original'; message: ProgressMessage<AgentToolProgress> } => pm.type === 'original')
+    .map(pm => pm.message.data)
   const {
     lookups: subagentLookups,
     inProgressToolUseIDs: collapsedInProgressIDs
-  } = buildSubagentLookups(progressMessages.filter((pm): pm is ProgressMessage<AgentToolProgress> => hasProgressMessage(pm.data)).map(pm => pm.data));
+  } = buildSubagentLookups(displayedData)
   return <MessageResponse>
       <Box flexDirection="column">
         <SubAgentProvider>
@@ -659,10 +694,15 @@ export function renderGroupedAgentToolUse(toolUses: Array<{
 }>, options: {
   shouldAnimate: boolean;
   tools: Tools;
+  /** Fallback init progress for async agents whose progressMessages are empty
+   * (because the stream is already done when onInitProgress fires).
+   * Map from tool_use_id to init step text (e.g. "Preparing context…"). */
+  asyncInitFallbacks?: Map<string, string>;
 }): React.ReactNode | null {
   const {
     shouldAnimate,
-    tools
+    tools,
+    asyncInitFallbacks
   } = options;
 
   // Calculate stats for each agent
@@ -670,11 +710,20 @@ export function renderGroupedAgentToolUse(toolUses: Array<{
     param,
     isResolved,
     isError,
+    isInProgress,
     progressMessages,
     result
   }) => {
     const stats = calculateAgentStats(progressMessages);
-    const lastToolInfo = extractLastToolInfo(progressMessages, tools);
+    let lastToolInfo = extractLastToolInfo(progressMessages, tools);
+    // When progressMessages are empty (e.g. stream done before onInitProgress fires,
+    // or init phase before first query() yield), use the fallback from task state's
+    // lastActivity. Use isInProgress (not !isResolved) because async_launched returns
+    // a tool_result immediately, making isResolved=true while the agent is still running.
+    if (!lastToolInfo && isInProgress && asyncInitFallbacks?.has(param.id)) {
+      lastToolInfo = asyncInitFallbacks.get(param.id);
+      logCpuDiag(`[UI] asyncInitFallback used: toolUseId=${param.id} text="${lastToolInfo}"`);
+    }
     const parsedInput = inputSchema().safeParse(param.input);
 
     // teammate_spawned is not part of the exported Output type (cast through unknown
@@ -802,8 +851,10 @@ export function extractLastToolInfo(progressMessages: ProgressMessage<Progress>[
   }
 
   // Count trailing consecutive search/read operations from the end
+  // and collect individual tool names for multi-activity display
   let searchCount = 0;
   let readCount = 0;
+  const trailingToolNames: string[] = [];
   for (let i = progressMessages.length - 1; i >= 0; i--) {
     const msg = progressMessages[i]!;
     if (!hasProgressMessage(msg.data)) {
@@ -818,12 +869,30 @@ export function extractLastToolInfo(progressMessages: ProgressMessage<Progress>[
         } else if (info.isRead) {
           readCount++;
         }
+        // Collect tool name from the corresponding tool_use block
+        const content = msg.data.message.message.content[0];
+        if (content?.type === 'tool_result') {
+          const toolUse = toolUseByID.get(content.tool_use_id);
+          if (toolUse && trailingToolNames.length < 3) {
+            trailingToolNames.unshift(toolUse.name);
+          }
+        }
       }
     } else {
       break;
     }
   }
   if (searchCount + readCount >= 2) {
+    // Show individual tool names with "+N more" format
+    const totalCount = searchCount + readCount;
+    if (trailingToolNames.length > 0) {
+      const shown = trailingToolNames.join(' ');
+      const remaining = totalCount - trailingToolNames.length;
+      if (remaining > 0) {
+        return `${shown} +${remaining} more tool uses`;
+      }
+      return shown;
+    }
     return getSearchReadSummaryText(searchCount, readCount, true);
   }
 
