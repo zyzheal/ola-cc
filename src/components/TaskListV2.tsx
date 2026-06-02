@@ -5,6 +5,7 @@ import { useTerminalSize } from '../hooks/useTerminalSize.js';
 import { stringWidth } from '../ink/stringWidth.js';
 import { Box, Text } from '../ink.js';
 import { useAppState } from '../state/AppState.js';
+import { useDerivedStore } from '../hooks/useDerivedStore.js';
 import { isInProcessTeammateTask } from '../tasks/InProcessTeammateTask/types.js';
 import { AGENT_COLOR_TO_THEME_COLOR, type AgentColorName } from '../tools/AgentTool/agentColorManager.js';
 import { isAgentSwarmsEnabled } from '../utils/agentSwarmsEnabled.js';
@@ -31,7 +32,9 @@ export function TaskListV2({
   tasks,
   isStandalone = false
 }: Props): React.ReactNode {
-  const teamContext = useAppState(s => s.teamContext);
+  const teammates = useDerivedStore(
+    React.useMemo(() => (s: { teamContext?: { teammates?: Record<string, unknown> } }) => s.teamContext?.teammates ?? null, []),
+  )
   const appStateTasks = useAppState(s_0 => s_0.tasks);
   const [, forceUpdate] = React.useState(0);
   const {
@@ -92,8 +95,8 @@ export function TaskListV2({
 
   // Build a map of teammate name -> theme color
   const teammateColors: Record<string, keyof Theme> = {};
-  if (isAgentSwarmsEnabled() && teamContext?.teammates) {
-    for (const teammate of Object.values(teamContext.teammates)) {
+  if (isAgentSwarmsEnabled() && teammates) {
+    for (const teammate of Object.values(teammates)) {
       if (teammate.color) {
         const themeColor = AGENT_COLOR_TO_THEME_COLOR[teammate.color as AgentColorName];
         if (themeColor) {
