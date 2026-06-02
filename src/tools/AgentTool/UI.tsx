@@ -252,7 +252,7 @@ type VerboseAgentTranscriptProps = {
   verbose: boolean;
 };
 function VerboseAgentTranscript(t0) {
-  const $ = _c(15);
+  const $ = _c(16);
   const {
     progressMessages,
     tools,
@@ -293,7 +293,7 @@ function VerboseAgentTranscript(t0) {
     t2 = filteredMessages.map(t3);
     $[2] = agentLookups;
     $[3] = inProgressToolUseIDs;
-    $[4] = progressMessages;
+    $[4] = slicedMessages;
     $[5] = tools;
     $[6] = verbose;
     $[7] = t2;
