@@ -870,7 +870,7 @@ export async function* runAgent({
       toolUseContext: agentToolUseContext,
       querySource,
       maxTurns: maxTurns ?? agentDefinition.maxTurns ?? 50,
-maxToolCalls: getMaxToolCalls(maxToolCalls),
+      maxToolCalls: getMaxToolCalls(maxToolCalls),
     })) {
       checkCpuHotspot('runAgent_message_yield')
       _initLog(`first query() message: type=${message.type}`)
@@ -955,16 +955,7 @@ maxToolCalls: getMaxToolCalls(maxToolCalls),
         // Handle max turns reached signal from query.ts
         if (message.attachment.type === 'max_turns_reached') {
           logForDebugging(
-            `[Agent
-: $
-{
-  agentDefinition.agentType
-}
-] Reached max turns limit ($
-{
-  message.attachment.maxTurns
-}
-)`,
+            `[Agent: ${agentDefinition.agentType}] Reached max turns limit (${message.attachment.maxTurns})`,
           )
           break
         }

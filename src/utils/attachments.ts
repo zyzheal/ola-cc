@@ -659,6 +659,11 @@ export type Attachment =
       turnCount: number
     }
   | {
+      type: 'max_tool_calls_reached'
+      totalToolCalls: number
+      maxToolCalls: number
+    }
+  | {
       type: 'current_session_memory'
       content: string
       path: string
