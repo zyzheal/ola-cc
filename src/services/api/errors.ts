@@ -66,7 +66,7 @@ export function isPromptTooLongMessage(msg: AssistantMessage): boolean {
   if (!msg.isApiErrorMessage) {
     return false
   }
-  const content = msg.message.content
+  const content = msg.message?.content
   if (!Array.isArray(content)) {
     return false
   }
@@ -286,7 +286,7 @@ function logToolUseToolResultMismatch(
     for (let i = 0; i < messagesForAPI.length; i++) {
       const msg = messagesForAPI[i]
       if (!msg) continue
-      const content = msg.message.content
+      const content = msg.message?.content
       if (Array.isArray(content)) {
         for (const block of content) {
           if (
@@ -308,7 +308,7 @@ function logToolUseToolResultMismatch(
       const msg = messages[i]
       if (!msg) continue
       if (msg.type === 'assistant' && 'message' in msg) {
-        const content = msg.message.content
+        const content = msg.message?.content
         if (Array.isArray(content)) {
           for (const block of content) {
             if (
@@ -330,10 +330,10 @@ function logToolUseToolResultMismatch(
     for (let i = normalizedIndex + 1; i < messagesForAPI.length; i++) {
       const msg = messagesForAPI[i]
       if (!msg) continue
-      const content = msg.message.content
+      const content = msg.message?.content
       if (Array.isArray(content)) {
         for (const block of content) {
-          const role = msg.message.role
+          const role = msg.message?.role
           if (block.type === 'tool_use' && 'id' in block) {
             normalizedSeq.push(`${role}:tool_use:${block.id}`)
           } else if (block.type === 'tool_result' && 'tool_use_id' in block) {
@@ -363,10 +363,10 @@ function logToolUseToolResultMismatch(
         case 'user':
         case 'assistant': {
           if ('message' in msg) {
-            const content = msg.message.content
+            const content = msg.message?.content
             if (Array.isArray(content)) {
               for (const block of content) {
-                const role = msg.message.role
+                const role = msg.message?.role
                 if (block.type === 'tool_use' && 'id' in block) {
                   preNormalizedSeq.push(`${role}:tool_use:${block.id}`)
                 } else if (
@@ -1283,7 +1283,7 @@ export function getErrorMessageIfRefusal(
 
   const baseMessage = getIsNonInteractiveSession()
     ? `${API_ERROR_MESSAGE_PREFIX}: ola-cc is unable to respond to this request, which appears to violate our Usage Policy (https://www.anthropic.com/legal/aup). Try rephrasing the request or attempting a different approach.`
-    : `${API_ERROR_MESSAGE_PREFIX}: ola-cc is unable to respond to this request, which appears to violate our Usage Policy (https://www.anthropic.com/legal/aup). Please double press esc to edit your last message or start a new session for ola-cc to assist with a different task.`
+    : `${API_ERROR_MESSAGE_PREFIX}: ola-cc is unable to respond to this request, which appears to violate our Usage Policy (https://www.anthropic.com/legal/aup). Please double press esc to edit your last message, or use /clear to start a new session for ola-cc to assist with a different task.`
 
   const modelSuggestion =
     model !== 'claude-sonnet-4-20250514'

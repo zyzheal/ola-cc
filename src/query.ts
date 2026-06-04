@@ -178,7 +178,7 @@ function quickMessageByteEstimate(msg: Message): number {
 	const MEDIA_BLOCK_BYTES = 8 * 1024;
 	let total = OVERHEAD;
 
-	if (Array.isArray(msg.message.content)) {
+	if (Array.isArray(msg.message?.content)) {
 		for (const block of msg.message.content) {
 			if (block.type === "text" && "text" in block) {
 				total += Buffer.byteLength((block as { text: string }).text, "utf8");
@@ -247,9 +247,9 @@ function* yieldMissingToolResultBlocks(
 ) {
 	for (const assistantMessage of assistantMessages) {
 		// Extract all tool use blocks from this assistant message
-		const toolUseBlocks = assistantMessage.message.content.filter(
+		const toolUseBlocks = assistantMessage.message?.content?.filter(
 			(content) => content.type === "tool_use",
-		) as ToolUseBlock[];
+		) as ToolUseBlock[] ?? [];
 
 		// Emit an interruption message for each tool use
 		for (const toolUse of toolUseBlocks) {
@@ -416,6 +416,11 @@ async function* queryLoop(
 	// Standalone let (NOT on State) to survive compact/reset where state = {...}
 	// would lose the count.
 	let totalToolCalls = 0;
+
+	// Expose remaining budget for fork subagent inheritance
+	if (maxToolCalls) {
+		state.toolUseContext.getRemainingToolCalls = () => maxToolCalls - totalToolCalls;
+	}
 
 	const budgetTracker = feature("TOKEN_BUDGET") ? createBudgetTracker() : null;
 
@@ -742,7 +747,7 @@ async function* queryLoop(
 
 		queryCheckpoint("query_autocompact_start");
 		logForDebugging?.(`[QUERY LOOP] entering autocompact setup`);
-		const { compactionResult, consecutiveFailures } = await deps.autocompact(
+		const { compactionResult, consecutiveFailures, compactionError } = await deps.autocompact(
 			messagesForQuery,
 			toolUseContext,
 			{
@@ -841,6 +846,23 @@ async function* queryLoop(
 				...(tracking ?? { compacted: false, turnId: "", turnCounter: 0 }),
 				consecutiveFailures,
 			};
+
+			// If the compaction failure was due to a safety refusal, warn the user
+			// proactively. The subsequent query will likely also be refused.
+			if (
+				compactionError &&
+				(compactionError.includes("refusal") ||
+					compactionError.includes("high risk") ||
+					compactionError.includes("Usage Policy"))
+			) {
+				yield createAssistantAPIErrorMessage({
+					content:
+						"Auto-compact failed: the conversation content was flagged by the safety system. " +
+						"The upcoming query may also be rejected. If this persists, press Esc twice to edit your last message, " +
+						"or use /clear to start a new session.",
+					error: "invalid_request",
+				});
+			}
 		}
 
 		//TODO: no need to set toolUseContext.messages during set-up since it is updated here
@@ -1117,6 +1139,7 @@ async function* queryLoop(
 						let yieldMessage: typeof message = message;
 						if (message.type === "assistant") {
 							let clonedContent: typeof message.message.content | undefined;
+							if (!message.message?.content) break;
 							for (let i = 0; i < message.message.content.length; i++) {
 								const block = message.message.content[i]!;
 								if (
@@ -1143,7 +1166,7 @@ async function* queryLoop(
 											(k) => !(k in originalInput),
 										);
 										if (addedFields) {
-											clonedContent ??= [...message.message.content];
+											clonedContent ??= [...(message.message?.content ?? [])];
 											clonedContent[i] = { ...block, input: inputCopy };
 										}
 									}
@@ -1197,9 +1220,9 @@ async function* queryLoop(
 						if (message.type === "assistant") {
 							assistantMessages.push(message);
 
-							const msgToolUseBlocks = message.message.content.filter(
+							const msgToolUseBlocks = message.message?.content?.filter(
 								(content) => content.type === "tool_use",
-							) as ToolUseBlock[];
+							) as ToolUseBlock[] ?? [];
 							if (msgToolUseBlocks.length > 0) {
 								toolUseBlocks.push(...msgToolUseBlocks);
 								needsFollowUp = true;
@@ -1371,7 +1394,7 @@ async function* queryLoop(
 			logEvent("tengu_query_error", {
 				assistantMessages: assistantMessages.length,
 				toolUses: assistantMessages.flatMap((_) =>
-					_.message.content.filter((content) => content.type === "tool_use"),
+					_.message?.content?.filter((content) => content.type === "tool_use") ?? [],
 				).length,
 
 				queryChainId: queryChainIdForAnalytics,
@@ -1974,8 +1997,8 @@ async function* queryLoop(
 			// However, if the model's last response is asking a question (e.g., "这个方案对吗？"),
 			// we should yield to the REPL and wait for natural user input instead of auto-continuing.
 			const lastAssistantMsg = assistantMessages.at(-1);
-			const lastAssistantText = lastAssistantMsg?.message.content
-				.filter((block) => block.type === "text")
+			const lastAssistantText = lastAssistantMsg?.message?.content
+				?.filter((block) => block.type === "text")
 				.map((block) => ("text" in block ? block.text : ""))
 				.filter(Boolean)
 				.join("")
@@ -2129,6 +2152,15 @@ async function* queryLoop(
 			return { reason: "max_tool_calls", totalToolCalls };
 		}
 
+		// Budget warning: inject hint when approaching limit (80%)
+		if (maxToolCalls && totalToolCalls >= maxToolCalls * 0.8 && totalToolCalls < maxToolCalls) {
+			const remaining = maxToolCalls - totalToolCalls
+			yield createUserMessage({
+				content: `[Budget Warning] You have ${remaining} tool calls remaining out of ${maxToolCalls}. Please prioritize completing the task efficiently.`,
+				isMeta: true,
+			});
+		}
+
 		// Dispatch tool_completed events for goal runtime tracking
 		if (toolUseBlocks.length > 0 && toolUseContext.getAppState().goal?.id) {
 			const appState = toolUseContext.getAppState();
@@ -2222,9 +2254,9 @@ async function* queryLoop(
 			const lastAssistantMessage = assistantMessages.at(-1);
 			let lastAssistantText: string | undefined;
 			if (lastAssistantMessage) {
-				const textBlocks = lastAssistantMessage.message.content.filter(
+				const textBlocks = lastAssistantMessage.message?.content?.filter(
 					(block) => block.type === "text",
-				);
+				) ?? [];
 				if (textBlocks.length > 0) {
 					const lastTextBlock = textBlocks.at(-1);
 					if (lastTextBlock && "text" in lastTextBlock) {
@@ -2240,8 +2272,8 @@ async function* queryLoop(
 				const toolResult = toolResults.find(
 					(result) =>
 						result.type === "user" &&
-						Array.isArray(result.message.content) &&
-						result.message.content.some(
+						Array.isArray(result.message?.content) &&
+						result.message?.content?.some(
 							(content) =>
 								content.type === "tool_result" &&
 								content.tool_use_id === block.id,
@@ -2249,8 +2281,8 @@ async function* queryLoop(
 				);
 				const resultContent =
 					toolResult?.type === "user" &&
-					Array.isArray(toolResult.message.content)
-						? toolResult.message.content.find(
+					Array.isArray(toolResult.message?.content)
+						? toolResult.message?.content.find(
 								(c): c is ToolResultBlockParam =>
 									c.type === "tool_result" && c.tool_use_id === block.id,
 							)
@@ -2503,8 +2535,8 @@ async function* queryLoop(
 		// Check if goal should auto-continue after turn completion
 		// Skip auto-continue if the model's last response is asking a question
 		const lastAssistantMsgForAuto = assistantMessages.at(-1);
-		const lastAssistantTextForAuto = lastAssistantMsgForAuto?.message.content
-			.filter((block) => block.type === "text")
+		const lastAssistantTextForAuto = lastAssistantMsgForAuto?.message?.content
+			?.filter((block) => block.type === "text")
 			.map((block) => ("text" in block ? block.text : ""))
 			.filter(Boolean)
 			.join("")
