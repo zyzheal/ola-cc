@@ -206,6 +206,21 @@ function SpinnerWithVerbInner({
   const effortValue = useAppState(s_4 => s_4.effortValue);
   const effortSuffix = getEffortSuffix(getMainLoopModel(), effortValue);
 
+  // Check if there are running background agents (not in-process teammates)
+  const runningBackgroundCount = useDerivedStore(
+    React.useCallback((state) => {
+      const tasks = state.tasks;
+      let count = 0;
+      for (const task of Object.values(tasks ?? {})) {
+        if (isBackgroundTask(task) && !isInProcessTeammateTask(task)) {
+          count++;
+        }
+      }
+      return count;
+    }, []),
+    (a, b) => a === b,
+  );
+
   // Derived store subscription: only re-renders when the derived values
   // (runningTeammates, allIdle, teammateTokens) actually change.
   // This avoids re-rendering on every task progress update when the set
@@ -267,6 +282,18 @@ function SpinnerWithVerbInner({
           </Text>
         </Box>
         {showSpinnerTree && <TeammateSpinnerTree selectedIndex={selectedIPAgentIndex} isInSelectionMode={viewSelectionMode === 'selecting-agent'} allIdle={allIdle} leaderTokenCount={leaderTokenCount} leaderIdleText="Idle" />}
+      </Box>;
+  }
+
+  // When leader is idle but background agents are running (no teammates),
+  // show a dim indicator so the user knows work is still happening.
+  if (leaderIsIdle && runningBackgroundCount > 0 && !foregroundedTeammate) {
+    return <Box flexDirection="column" width="100%" alignItems="flex-start">
+        <Box flexDirection="row" flexWrap="wrap" marginTop={1} width="100%">
+          <Text dimColor>
+            {TEARDROP_ASTERISK} Idle · {runningBackgroundCount} agent{runningBackgroundCount > 1 ? 's' : ''} running in background
+          </Text>
+        </Box>
       </Box>;
   }
 
