@@ -303,6 +303,7 @@ export async function autoCompactIfNeeded(
   wasCompacted: boolean
   compactionResult?: CompactionResult
   consecutiveFailures?: number
+  compactionError?: string
 }> {
   if (isEnvTruthy(process.env.DISABLE_COMPACT)) {
     return { wasCompacted: false }
@@ -419,6 +420,15 @@ export async function autoCompactIfNeeded(
         { level: 'warn' },
       )
     }
-    return { wasCompacted: false, consecutiveFailures: nextFailures }
+    // Propagate the error message so the caller can surface it to the user.
+    // This is especially important for safety refusals — the user needs to
+    // know why their conversation can't be compacted and how to recover.
+    const errorMessage =
+      error instanceof Error ? error.message : String(error)
+    return {
+      wasCompacted: false,
+      consecutiveFailures: nextFailures,
+      compactionError: errorMessage,
+    }
   }
 }
