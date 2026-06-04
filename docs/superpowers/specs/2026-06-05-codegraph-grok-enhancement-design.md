@@ -1,7 +1,7 @@
 # CodeGraph + Grok 图算法增强设计
 
 > 日期: 2026-06-05
-> 状态: Draft (v2 — 三方评审修复版)
+> 状态: Draft (v3 — 结构补全版)
 > 范围: GraphEngine 图算法引擎 + 双引擎增强
 > 评审: 架构师(3P0/5P1/5P2) + 算法专家(5P0/5P1/5P2) + 领域架构师(2P0/3P1/3P2)
 
@@ -69,8 +69,8 @@ src/tools/GrokTool/
 │  reverse:   Map<string, Map<string, EdgeMeta>>              │
 │  nodeMeta:  Map<string, NodeMetadata>                       │
 │                                                              │
-│  EdgeMeta = { type: 'calls'|'imports'|'data'|'control',     │
-│               weight: number }                               │
+│  EdgeMeta = { type: 'calls'|'imports'|'data'|'control'|     │
+│               'inherits'|'implements', weight: number }      │
 └───────────────────────┬─────────────────────────────────────┘
                         │
                         ▼
@@ -91,7 +91,26 @@ src/tools/GrokTool/
 - `.codegraph/codegraph.db` — 通过 `bun:sqlite` 读取 codegraph CLI 的索引
 - `.understand-anything/knowledge-graph.json` — 直接解析 JSON
 
-适配器将两种格式统一转换为 `adjacency` + `nodeMeta` 内部表示。
+**字段映射规则**:
+
+| 内部字段 | codegraph.db (SQLite) | knowledge-graph.json |
+|---------|----------------------|---------------------|
+| `nodeMeta.id` | `symbols.qualified_name` | `nodes[].id` |
+| `nodeMeta.name` | `symbols.name` | `nodes[].label` |
+| `nodeMeta.kind` | `symbols.kind` (function/class/variable/module) | `nodes[].type` |
+| `nodeMeta.file` | `symbols.file_path` | `nodes[].file` |
+| `nodeMeta.line` | `symbols.start_line` | `nodes[].line` |
+| `nodeMeta.signature` | `symbols.signature` | `nodes[].metadata.signature` |
+| `nodeMeta.layer` | — (无) | `nodes[].metadata.layer` |
+| `nodeMeta.domain` | — (无) | `nodes[].metadata.domain` |
+| `edge.type` | `edges.kind` (call/import/data_flow) | `edges[].relation` |
+| `edge.weight` | `edges.weight` (默认 1) | `edges[].weight` (默认 1) |
+| `adjacency[from][to]` | 从 `edges` 表构建 | 从 `edges[]` 数组构建 |
+| `reverse[to][from]` | 同上，反向索引 | 同上，反向索引 |
+
+**类型映射**: codegraph.db 的 `call`→`calls`, `import`→`imports`, `data_flow`→`data`, `inherit`→`inherits`, `implement`→`implements`。未知类型映射为 `control`。
+
+**数据源缺失处理**: 见 Section 9（错误处理）。
 
 ### 2.3 图数据结构
 
@@ -131,6 +150,7 @@ export class GraphEngine {
   tarjanSCC(): SCCResult[]                                  // Tarjan SCC (O(V+E))
   topologicalSort(): TopoResult                             // 拓扑排序，有环返回 SCC (O(V+E))
   pageRank(damping?: number, maxIter?: number): CentralityResult  // PageRank (O(k·E))
+  dominatorTree(root: string): Map<string, string | null>   // 支配树 (O(V+E))
   deltaGraph(old: GraphSnapshot, curr: GraphSnapshot): DeltaResult  // 差分图 (O(V+E))
 
   // ── Phase 3b: 中复杂度 + 核心场景 ──
@@ -153,6 +173,84 @@ interface GraphOperationResult<T> {
   _nextSteps?: string[]         // 建议的下一步操作
   data: T
   metadata: { nodeCount: number; edgeCount?: number; truncated: boolean }
+}
+
+// ── 返回类型定义 ──
+
+interface TraversalResult {
+  nodes: string[]               // 访问顺序
+  edges: Array<{ from: string; to: string }>
+  depth: Map<string, number>    // 节点→深度
+}
+
+interface ReachabilityResult {
+  reachable: string[]           // 可达节点集
+  via: Map<string, string[]>    // 节点→到达路径（中间节点）
+}
+
+interface SCCResult {
+  id: number
+  nodes: string[]
+  size: number
+}
+
+interface TopoResult {
+  order: string[]               // 拓扑序（SCC 缩为超级节点 "SCC:Name"）
+  cycles?: SCCResult[]          // 有环时附带 SCC
+}
+
+interface CentralityResult {
+  scores: Map<string, number>   // 节点→分值（归一化 0-1）
+  top: Array<{ node: string; score: number }>  // 前 N 名
+}
+
+interface DeltaResult {
+  added: string[]               // 新增节点
+  removed: string[]             // 删除节点
+  edgeAdded: Array<{ from: string; to: string; type: string }>
+  edgeRemoved: Array<{ from: string; to: string; type: string }>
+  summary: { nodesDelta: number; edgesDelta: number }
+}
+
+interface SliceResult {
+  symbols: string[]             // 切片中的符号
+  dataFlows: Array<{ from: string; to: string; via: string }>  // 数据流路径
+}
+
+interface MetricsResult {
+  fanIn: Map<string, number>    // 节点→扇入
+  fanOut: Map<string, number>   // 节点→扇出
+  instability: Map<string, number>  // 节点→不稳定度 (fanOut/(fanIn+fanOut))
+  lcom: Map<string, number>     // 类→LCOM（内聚度）
+}
+
+interface CommunityResult {
+  communities: Array<{ id: number; nodes: string[]; size: number }>
+  modularity: number            // 模块度 Q ∈ [0,1]
+  resolution: number
+}
+
+interface CouplingResult {
+  pairs: Array<{ a: string; b: string; score: number; coChanges: number }>
+  window: { since: string; until: string }
+}
+
+interface GraphSnapshot {
+  adjacency: Map<string, Map<string, EdgeMeta>>
+  nodeMeta: Map<string, NodeMetadata>
+  timestamp: number
+}
+
+interface KatzOpts {
+  alpha?: number                // 衰减因子，默认 0.1
+  epsilon?: number              // 收敛阈值，默认 1e-6
+  maxIter?: number              // 最大迭代次数，默认 100
+}
+
+interface TemporalOpts {
+  since?: string                // ISO 日期，默认 6 个月前
+  limit?: number                // 最大耦合对数，默认 50
+  minCoChanges?: number         // 最小共现次数，默认 3
 }
 ```
 
@@ -235,6 +333,60 @@ const toposortSchema = z.object({
   operation: z.literal('codegraph_toposort'),
   maxNodes: z.number().min(1).max(200).optional().describe('最大返回节点数（默认 50）'),
 })
+
+// codegraph_pagerank
+const pagerankSchema = z.object({
+  operation: z.literal('codegraph_pagerank'),
+  damping: z.number().min(0).max(1).optional().describe('阻尼因子（默认 0.85）'),
+  maxNodes: z.number().min(1).max(100).optional().describe('返回 Top N 节点（默认 20）'),
+})
+
+// codegraph_impact_deep
+const impactDeepSchema = z.object({
+  operation: z.literal('codegraph_impact_deep'),
+  symbol: z.string().max(1000).describe('目标符号名称'),
+  maxNodes: z.number().min(1).max(100).optional().describe('最大返回节点数（默认 20）'),
+})
+
+// codegraph_roles
+const rolesSchema = z.object({
+  operation: z.literal('codegraph_roles'),
+  maxNodes: z.number().min(1).max(200).optional().describe('最大返回节点数（默认 50）'),
+})
+
+// codegraph_coupling
+const couplingSchema = z.object({
+  operation: z.literal('codegraph_coupling'),
+  maxNodes: z.number().min(1).max(100).optional().describe('最大返回节点数（默认 30）'),
+})
+
+// codegraph_delta
+const deltaSchema = z.object({
+  operation: z.literal('codegraph_delta'),
+  oldSnapshot: z.string().describe('旧快照标识（commit hash 或时间戳）'),
+  newSnapshot: z.string().optional().describe('新快照标识（默认当前）'),
+})
+
+// codegraph_centrality
+const centralitySchema = z.object({
+  operation: z.literal('codegraph_centrality'),
+  method: z.enum(['katz', 'betweenness', 'both']).optional().describe('中心性算法（默认 both）'),
+  sampleSize: z.number().min(10).max(1000).optional().describe('Betweenness 采样数（默认 200）'),
+  maxNodes: z.number().min(1).max(100).optional().describe('返回 Top N 节点（默认 20）'),
+})
+
+// grok_architecture
+const grokArchitectureSchema = z.object({
+  operation: z.literal('grok_architecture'),
+  maxCommunities: z.number().min(1).max(50).optional().describe('最大返回社区数（默认 10）'),
+})
+
+// grok_hotspots
+const grokHotspotsSchema = z.object({
+  operation: z.literal('grok_hotspots'),
+  maxNodes: z.number().min(1).max(50).optional().describe('返回 Top N 热点（默认 10）'),
+  since: z.string().optional().describe('时间窗口起始（ISO 日期，默认 6 个月前）'),
+})
 ```
 
 ### 3.4 返回格式示例
@@ -265,6 +417,50 @@ const toposortSchema = z.object({
   },
   metadata: { nodeCount: 45, truncated: false }
 }
+
+// codegraph_pagerank 返回
+{
+  _summary: "Top 3 核心节点：AuthMiddleware(0.18), Router(0.15), DBPool(0.12)",
+  _nextSteps: ["codegraph_impact_deep(AuthMiddleware)", "codegraph_coupling"],
+  data: {
+    scores: [
+      { node: "AuthMiddleware", score: 0.18 },
+      { node: "Router", score: 0.15 },
+      { node: "DBPool", score: 0.12 }
+    ]
+  },
+  metadata: { nodeCount: 156, truncated: false }
+}
+
+// codegraph_coupling 返回
+{
+  _summary: "高耦合模块：AuthService↔TokenManager (不稳定度 0.89)，建议解耦",
+  _nextSteps: ["codegraph_scc", "codegraph_community"],
+  data: {
+    highCoupling: [
+      { node: "AuthService", fanIn: 12, fanOut: 8, instability: 0.40 },
+      { node: "TokenManager", fanIn: 3, fanOut: 15, instability: 0.83 }
+    ],
+    lcom: [
+      { class: "UserService", lcom: 0.72, methods: 18, fields: 12 }
+    ]
+  },
+  metadata: { nodeCount: 156, truncated: false }
+}
+
+// codegraph_community 返回
+{
+  _summary: "发现 5 个社区，模块度 Q=0.72，最大社区包含 34 个节点（认证模块）",
+  _nextSteps: ["codegraph_roles", "codegraph_coupling"],
+  data: {
+    communities: [
+      { id: 0, nodes: ["AuthService", "TokenManager", ...], size: 34, label: "认证模块" },
+      { id: 1, nodes: ["DBPool", "QueryBuilder", ...], size: 22, label: "数据层" }
+    ],
+    modularity: 0.72
+  },
+  metadata: { nodeCount: 156, truncated: false }
+}
 ```
 
 ## 4. 性能目标（修正版）
@@ -273,7 +469,7 @@ const toposortSchema = z.object({
 |------|------|------|
 | 查询类 (bfs/dfs/search/scc/toposort/delta) | <10ms | O(V+E)，遍历类 |
 | 分析类 (pagerank/katz/coupling/roles) | <2s | O(k·E) 或 O(V+E) |
-| 深度分析类 (betweenness/leiden/temporal) | <10s | 采样近似 + 超时保护 |
+| 深度分析类 (betweenness/louvain/temporal) | <10s | 采样近似 + 超时保护 |
 | 全量索引 (100K LOC) | <30s | 由 codegraph CLI 处理 |
 | 增量更新 | <500ms (单文件) | 三级检测 |
 | 内存占用 | <200MB (100K 节点) | 加权邻接表 |
@@ -333,7 +529,7 @@ const GRAPH_AUTO_TRIGGERS = {
 ### Phase 3a: 低复杂度高价值 (1.5 天)
 - [ ] `tarjanSCC()` — 显式栈迭代版（避免递归栈溢出）
 - [ ] `topologicalSort()` — SCC 缩点后拓扑排序
-- [ ] `deltaGraph()` — 结构差分
+- [ ] `deltaGraph()` — 结构差分（比较两快照的节点/边增删，生成 DeltaResult）
 - [ ] `pageRank()` — 幂迭代，O(k·E)
 - [ ] `backwardReachability()` — 反向 BFS
 - [ ] CodeGraph 5 个新 operation + Zod schema + 测试
@@ -357,9 +553,12 @@ const GRAPH_AUTO_TRIGGERS = {
 - [ ] BM25 searchHint 优化
 
 ### Phase 5: 测试与优化 (2 天)
-- [ ] 集成测试（真实项目端到端）
-- [ ] 性能基准测试（100K 节点规模）
-- [ ] 文档更新
+- [ ] 单元测试：每个算法 3+ 测试用例（小图、空图、大图边界）
+- [ ] 集成测试：GraphStore.load() 双数据源 + GraphEngine 管道
+- [ ] 性能基准测试：100K 节点规模，验证 Section 4 各类目标
+- [ ] 超时测试：深度分析类 30s 超时 + 进度回调验证
+- [ ] 错误处理测试：数据源缺失、损坏、部分加载
+- [ ] 文档更新：README + CLAUDE.md 架构描述
 
 **总计: 12 天**（评审建议从 10 天调整为 12 天）
 
@@ -374,7 +573,53 @@ const GRAPH_AUTO_TRIGGERS = {
 | 递归栈溢出 (Tarjan) | 大图崩溃 | 所有 DFS 算法使用显式栈迭代 |
 | Grok→GraphEngine 调用开销 | 两次加载 | GraphStore 单例 + 内存缓存 |
 
-## 8. 参考工具
+## 8. 与现有 API 的兼容性
+
+新增操作不修改现有 `codegraph_impact`、`codegraph_callers` 等行为。`operationEnum` 仅追加新值，Zod schema 向后兼容（新字段均为 optional）。
+
+现有 CodegraphManager 的 CLI 调用路径不变。GraphEngine 仅在新操作（`codegraph_scc` 等）中被调用，现有操作继续走 CLI 直接查询。
+
+## 9. 错误处理
+
+### 9.1 数据源缺失
+
+| 场景 | 行为 |
+|------|------|
+| `.codegraph/codegraph.db` 不存在 | 返回 `{ error: true, message: "CodeGraph 索引未初始化", suggestion: "执行 codegraph_init" }` |
+| `.understand-anything/knowledge-graph.json` 不存在 | 返回 `{ error: true, message: "Grok 知识图谱未生成", suggestion: "执行 grok_generate" }` |
+| 两个数据源都不存在 | 返回合并错误信息，建议先初始化其中一个 |
+| SQLite 文件损坏 | 捕获 `bun:sqlite` 异常，返回 `{ error: true, message: "索引文件损坏", suggestion: "执行 codegraph_init 重建" }` |
+| JSON 解析失败 | 捕获 JSON parse 错误，返回 `{ error: true, message: "知识图谱格式异常", suggestion: "执行 grok_generate 重建" }` |
+
+### 9.2 算法执行错误
+
+| 场景 | 行为 |
+|------|------|
+| 目标符号不存在 | 返回 `{ error: true, message: "未找到符号: X", suggestion: "执行 codegraph_search 查找" }` |
+| 图为空（0 节点） | 返回空结果 `{ data: { ... }, metadata: { nodeCount: 0, truncated: false } }` |
+| 超时（30s） | 返回 `{ error: true, message: "分析超时", partial?: { 已完成的部分结果 } }` |
+| 内存超限 | 捕获 OOM，返回 `{ error: true, message: "图规模过大，请缩小范围" }` |
+| SCC/TopSort 无限循环 | 显式栈 + 最大迭代计数器（10 × |V|），超限返回部分结果 |
+
+### 9.3 进度回调
+
+深度分析类操作（betweenness/louvain/temporal）通过 `_onProgress` 回调报告进度：
+
+```typescript
+_onProgress?.({
+  toolUseID: '',
+  data: {
+    type: 'graph_progress',
+    operation: 'codegraph_community',
+    stage: 'computing',        // preparing | computing | assembling | done
+    progress: 45,              // 0-100
+    elapsed: 2300,             // ms
+    message: '迭代 12/50，模块度 Q=0.68',
+  }
+})
+```
+
+## 10. 参考工具
 
 | 工具 | Stars | 借鉴内容 |
 |------|-------|---------|
