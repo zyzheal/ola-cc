@@ -26,6 +26,7 @@ import { getDefaultCharacters, type SpinnerMode } from './Spinner/index.js';
 import { SpinnerAnimationRow } from './Spinner/SpinnerAnimationRow.js';
 import { isInProcessTeammateTask } from '../tasks/InProcessTeammateTask/types.js';
 import { isBackgroundTask } from '../tasks/types.js';
+import type { AgentProgress } from '../tasks/LocalAgentTask/LocalAgentTask.js';
 import { getAllInProcessTeammateTasks } from '../tasks/InProcessTeammateTask/InProcessTeammateTask.js';
 import { getEffortSuffix } from '../utils/effort.js';
 import { getMainLoopModel } from '../utils/model/model.js';
@@ -286,15 +287,9 @@ function SpinnerWithVerbInner({
   }
 
   // When leader is idle but background agents are running (no teammates),
-  // show a dim indicator so the user knows work is still happening.
+  // show animated progress for each background agent.
   if (leaderIsIdle && runningBackgroundCount > 0 && !foregroundedTeammate) {
-    return <Box flexDirection="column" width="100%" alignItems="flex-start">
-        <Box flexDirection="row" flexWrap="wrap" marginTop={1} width="100%">
-          <Text dimColor>
-            {TEARDROP_ASTERISK} Idle · {runningBackgroundCount} agent{runningBackgroundCount > 1 ? 's' : ''} running in background
-          </Text>
-        </Box>
-      </Box>;
+    return <BackgroundAgentIndicator count={runningBackgroundCount} />;
   }
 
   // When viewing an idle teammate, show static idle display instead of animated spinner
@@ -621,6 +616,61 @@ export function Spinner() {
   }
   return t2;
 }
+/**
+ * Animated indicator shown when the main loop is idle but background agents are running.
+ * Shows each agent with a spinning glyph, elapsed time, and token count.
+ */
+function BackgroundAgentIndicator({ count }: { count: number }): React.ReactNode {
+  const [, time] = useAnimationFrame(200);
+  const frame = Math.floor(time / 200) % SPINNER_FRAMES.length;
+  const spinnerChar = SPINNER_FRAMES[frame];
+
+  // Get background agent task details from store
+  const agentDetails = useDerivedStore(
+    React.useCallback((state) => {
+      const tasks = state.tasks ?? {};
+      const agents: Array<{
+        description: string
+        elapsed: number
+        tokenCount: number
+        lastTool?: string
+      }> = [];
+      for (const task of Object.values(tasks)) {
+        if (isBackgroundTask(task) && !isInProcessTeammateTask(task) && 'progress' in task) {
+          const agentTask = task as { description?: string; startTime?: number; progress?: AgentProgress; identity?: { agentName?: string } };
+          const elapsed = agentTask.startTime ? Date.now() - agentTask.startTime : 0;
+          agents.push({
+            description: agentTask.identity?.agentName || agentTask.description || 'agent',
+            elapsed,
+            tokenCount: agentTask.progress?.tokenCount ?? 0,
+            lastTool: agentTask.progress?.lastActivity?.toolName,
+          });
+        }
+      }
+      return agents;
+    }, []),
+    (a, b) => a.length === b.length && a.every((x, i) => x.elapsed === b[i]?.elapsed && x.tokenCount === b[i]?.tokenCount),
+  );
+
+  return <Box flexDirection="column" width="100%" alignItems="flex-start">
+    {agentDetails.map((agent, i) => {
+      const elapsedStr = formatDuration(agent.elapsed);
+      const tokenStr = agent.tokenCount > 0 ? ` · ${formatNumber(agent.tokenCount)} tokens` : '';
+      const toolStr = agent.lastTool ? ` · ${agent.lastTool}` : '';
+      return <Box key={i} flexDirection="row" flexWrap="wrap" marginTop={i === 0 ? 1 : 0}>
+        <Text dimColor>{spinnerChar} </Text>
+        <Text dimColor>{agent.description} </Text>
+        <Text dimColor>({elapsedStr}{tokenStr}{toolStr})</Text>
+      </Box>;
+    })}
+    {count > agentDetails.length && agentDetails.length > 0 &&
+      <Box flexDirection="row" marginTop={0}>
+        <Text dimColor>  +{count - agentDetails.length} more</Text>
+      </Box>
+    }
+  </Box>;
+}
+
 function findNextPendingTask(tasks: Task[] | undefined): Task | undefined {
   if (!tasks) {
     return undefined;
