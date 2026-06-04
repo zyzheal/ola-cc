@@ -1,7 +1,7 @@
 # CodeGraph + Grok 图算法增强设计
 
 > 日期: 2026-06-05
-> 状态: Draft (v3 — 结构补全版)
+> 状态: Draft (v4 — 三方深度评审修复版)
 > 范围: GraphEngine 图算法引擎 + 双引擎增强
 > 评审: 架构师(3P0/5P1/5P2) + 算法专家(5P0/5P1/5P2) + 领域架构师(2P0/3P1/3P2)
 
@@ -96,19 +96,28 @@ src/tools/GrokTool/
 | 内部字段 | codegraph.db (SQLite) | knowledge-graph.json |
 |---------|----------------------|---------------------|
 | `nodeMeta.id` | `symbols.qualified_name` | `nodes[].id` |
-| `nodeMeta.name` | `symbols.name` | `nodes[].label` |
-| `nodeMeta.kind` | `symbols.kind` (function/class/variable/module) | `nodes[].type` |
+| `nodeMeta.name` | `symbols.name` | `nodes[].name` |
+| `nodeMeta.kind` | `symbols.kind` (function/class/variable/module) | `nodes[].kind` |
 | `nodeMeta.file` | `symbols.file_path` | `nodes[].file` |
 | `nodeMeta.line` | `symbols.start_line` | `nodes[].line` |
-| `nodeMeta.signature` | `symbols.signature` | `nodes[].metadata.signature` |
-| `nodeMeta.layer` | — (无) | `nodes[].metadata.layer` |
-| `nodeMeta.domain` | — (无) | `nodes[].metadata.domain` |
-| `edge.type` | `edges.kind` (call/import/data_flow) | `edges[].relation` |
-| `edge.weight` | `edges.weight` (默认 1) | `edges[].weight` (默认 1) |
+| `nodeMeta.signature` | `symbols.signature` | `nodes[].signature` |
+| `nodeMeta.layer` | — (无) | `nodes[].layer`（顶层字段，非 metadata 嵌套） |
+| `nodeMeta.domain` | — (无) | `nodes[].domain`（顶层字段，非 metadata 嵌套） |
+| `edge.type` | `edges.kind` (call/import/data_flow) | `edges[].type` |
+| `edge.weight` | `edges.weight` (默认 1) | — (无 weight 字段，默认 1) |
 | `adjacency[from][to]` | 从 `edges` 表构建 | 从 `edges[]` 数组构建 |
 | `reverse[to][from]` | 同上，反向索引 | 同上，反向索引 |
 
-**类型映射**: codegraph.db 的 `call`→`calls`, `import`→`imports`, `data_flow`→`data`, `inherit`→`inherits`, `implement`→`implements`。未知类型映射为 `control`。
+**类型映射**: codegraph.db 的 `call`→`calls`, `import`→`imports`, `data_flow`→`data`, `inherit`→`inherits`, `implement`→`implements`。Grok 的 `depends`→`imports`, `relates`→`control`。未知类型映射为 `control`。
+
+**双数据源合并策略**:
+
+当两个数据源同时存在时，GraphStore.load() 按以下规则合并：
+
+1. **符号身份匹配**: codegraph 使用 `qualified_name`（如 `src/auth.ts:AuthService.login`），Grok 使用 `file:name`（如 `src/auth.ts:login`）。匹配规则：以 `file + name` 做二级索引，Grok 的 `file:name` 解析为 `{file, name}` 后与 codegraph 的 `{file_path, name}` 比较。
+2. **属性合并优先级**: codegraph.db 提供精确的 AST 级数据（signature、line），Grok JSON 提供语义层数据（layer、domain、summary）。合并时：AST 字段以 codegraph 为准，语义字段以 Grok 为准。
+3. **边去重**: 同一对节点的同类型边去重（以 `{from, to, type}` 三元组为 key）。不同类型边保留（如 codegraph 的 `calls` + Grok 的 `depends` 同时存在）。
+4. **单一数据源**: 当仅一个数据源存在时，直接加载，不做合并。
 
 **数据源缺失处理**: 见 Section 9（错误处理）。
 
@@ -117,20 +126,27 @@ src/tools/GrokTool/
 ```typescript
 // 评审修复：邻接表扩展为加权+类型化，兼容所有算法
 interface EdgeMeta {
-  type: 'calls' | 'imports' | 'data' | 'control' | 'inherits' | 'implements'
+  type: 'calls' | 'imports' | 'data' | 'control' | 'inherits' | 'implements' | 'relates' | 'depends'
   weight: number  // 调用频率/依赖强度，默认 1
 }
+
+// 适配器映射规则：Grok 的 'depends'→'imports', 'relates'→'control'
+// codegraph 的 'call'→'calls', 'import'→'imports', 'data_flow'→'data'
+// 未知类型默认映射为 'control'
 
 interface NodeMetadata {
   id: string
   name: string
-  kind: 'function' | 'class' | 'variable' | 'module' | 'file'
+  kind: string      // 'function'|'class'|'variable'|'module'|'file'|'symbol' 等，宽松类型兼容 LLM 输出
   file: string
   line: number
   signature?: string
-  layer?: string    // Grok 专有：架构层
-  domain?: string   // Grok 专有：业务域
+  layer?: string    // Grok 专有：架构层（顶层字段）
+  domain?: string   // Grok 专有：业务域（顶层字段）
 }
+
+// 适配器规范化：LLM 输出的 kind 值（interface/type/enum 等）保留原样
+// role 分类等算法通过 kind 前缀匹配而非严格枚举
 ```
 
 ### 2.4 GraphEngine API
@@ -148,10 +164,15 @@ export class GraphEngine {
   // ── Phase 3a: 低复杂度 + 高价值 ──
   backwardReachability(nodeId: string): ReachabilityResult  // 反向可达性 (O(V+E))
   tarjanSCC(): SCCResult[]                                  // Tarjan SCC (O(V+E))
+  // 显式栈迭代版，关键状态机见下方伪代码
   topologicalSort(): TopoResult                             // 拓扑排序，有环返回 SCC (O(V+E))
   pageRank(damping?: number, maxIter?: number): CentralityResult  // PageRank (O(k·E))
+  // 收敛度量: L1 范数（业界标准），epsilon=1e-6
+  // 悬挂节点（出度=0）: 概率质量均匀分配给所有节点（标准做法）
   dominatorTree(root: string): Map<string, string | null>   // 支配树 (O(V+E))
   deltaGraph(old: GraphSnapshot, curr: GraphSnapshot): DeltaResult  // 差分图 (O(V+E))
+  // 注意：GraphSnapshot 获取机制需 Phase 0 验证 codegraph CLI 是否支持历史索引
+  // 若不支持，降级为基于 IncrementalSync 的增量 diff（对比 dirty 文件对应的节点/边）
 
   // ── Phase 3b: 中复杂度 + 核心场景 ──
   classifyRoles(): Map<string, RoleType>                  // 角色分类 (O(V+E))
@@ -163,6 +184,9 @@ export class GraphEngine {
   betweennessCentrality(sampleSize?: number): CentralityResult  // 近似 Betweenness (O(k·E))
   louvainCommunity(resolution?: number): CommunityResult  // Louvain 社区检测 (O(V·logV))
   temporalCoupling(opts?: TemporalOpts): CouplingResult   // 时间耦合 (O(C·F²))
+  // 性能约束: maxCommits=50000, maxFiles=500, 6个月窗口
+  // 增量缓存: .codegraph/temporal-cache.json 持久化已解析 commit→files 映射
+  // git log 命令: --name-status -M（含重命名检测）--no-merges
 }
 
 type RoleType = 'entry' | 'core' | 'utility' | 'adaptor' | 'dead' | 'leaf'
@@ -192,6 +216,7 @@ interface SCCResult {
   id: number
   nodes: string[]
   size: number
+  isTrivial: boolean   // size=1 时为 true（不在任何环中）
 }
 
 interface TopoResult {
@@ -200,8 +225,7 @@ interface TopoResult {
 }
 
 interface CentralityResult {
-  scores: Map<string, number>   // 节点→分值（归一化 0-1）
-  top: Array<{ node: string; score: number }>  // 前 N 名
+  scores: Array<{ node: string; score: number }>  // 按分值降序，归一化 0-1
 }
 
 interface DeltaResult {
@@ -218,16 +242,17 @@ interface SliceResult {
 }
 
 interface MetricsResult {
-  fanIn: Map<string, number>    // 节点→扇入
-  fanOut: Map<string, number>   // 节点→扇出
-  instability: Map<string, number>  // 节点→不稳定度 (fanOut/(fanIn+fanOut))
-  lcom: Map<string, number>     // 类→LCOM（内聚度）
+  highCoupling: Array<{ node: string; fanIn: number; fanOut: number; instability: number }>
+  lcom: Array<{ class: string; lcom: number; methods: number; fields: number }>
+  // LCOM* (Henderson-Sellers) ∈ [0, 2]，0=完全内聚，2=完全无内聚
 }
 
 interface CommunityResult {
   communities: Array<{ id: number; nodes: string[]; size: number }>
-  modularity: number            // 模块度 Q ∈ [0,1]
+  modularity: number            // Newman 模块度 Q ∈ [-0.5, 1]，实践中 [0.3, 0.7]
   resolution: number
+  // 注意: resolution limit — resolution=1.0 时，小于 sqrt(2m) 条边的小社区可能被合并
+  // resolution>2.0 可能产生过度碎片化
 }
 
 interface CouplingResult {
@@ -254,13 +279,54 @@ interface TemporalOpts {
 }
 ```
 
+**Tarjan SCC 显式栈伪代码**（关键状态机）:
+
+```
+function tarjanSCC():
+  index = 0
+  stack = []           // SCC 栈
+  callStack = []       // 显式调用栈，每帧: {nodeId, neighbors, neighborIdx, lowlink, onStack}
+  result = []
+
+  for each node v:
+    if v.index exists: continue
+    callStack.push({v, neighbors(v), 0, index, true})
+    v.index = index++
+
+    while callStack not empty:
+      frame = callStack.peek()
+      // 阶段1: 首次访问 — 遍历邻居
+      if frame.neighborIdx < frame.neighbors.length:
+        w = frame.neighbors[frame.neighborIdx++]
+        if w.index not exists:
+          callStack.push({w, neighbors(w), 0, index, true})
+          w.index = index++
+        else if w.onStack:
+          frame.lowlink = min(frame.lowlink, w.index)
+      // 阶段2: 所有邻居处理完毕 — 回溯
+      else:
+        if frame.lowlink == frame.node.index:
+          scc = []
+          do: w = stack.pop(); w.onStack = false; scc.push(w)
+          while w != frame.node
+          result.push(scc)
+        parent = callStack[callStack.length - 2]
+        if parent: parent.lowlink = min(parent.lowlink, frame.lowlink)
+        callStack.pop()
+
+// 三个关键不变量:
+// 1. index[v] 严格单调递增（分配后不变）
+// 2. onStack 精确等于当前 DFS 路径上的节点
+// 3. lowlink[v] ≤ index[v]，回溯时取 min
+```
+
 **评审修复说明**:
 
 | 修复项 | 变更 |
 |--------|------|
 | P0: 邻接表缺边权重/类型 | 扩展为 `Map<string, Map<string, EdgeMeta>>` |
 | P0: BackwardSlice 需 SDG | 重命名为 `backwardReachability`（近似切片），Phase 3b 增加 `backwardDataSlice`（数据依赖切片） |
-| P0: Betweenness 100K 超时 | 改为 `betweennessCentrality(sampleSize=200)` 采样近似，O(k·E) ≈ 0.1s |
+| P0: Betweenness 100K 超时 | 改为 `betweennessCentrality(sampleSize=200)` 采样近似，O(k·E) ≈ 0.1s，经验精度取决于图拓扑，不保证固定误差率 |
 | P0: Katz 缺收敛条件 | 添加 `KatzOpts { alpha, epsilon, maxIter }`，默认 α=0.1, ε=1e-6, maxIter=100 |
 | P0: 缺调用图构建说明 | 调用图由 codegraph CLI 预构建，GraphStore.load() 直接加载 |
 | P1: 缺 PageRank | 增加 `pageRank()`，比 Katz 更常用（Sourcegraph/Google 均使用） |
@@ -297,6 +363,8 @@ interface TemporalOpts {
 | `grok_hotspots` | 热点分析 | 调用 `GraphEngine.pageRank()` + `temporalCoupling()` → LLM 摘要 |
 
 **评审修复**: Grok 新 operation 明确为"调用 GraphEngine 底层算法 + LLM 语义总结"，不在 Grok 端重复实现图算法。
+
+**实现位置**: `grok_architecture` 和 `grok_hotspots` 在 `GrokTool.ts` 的 `call()` 方法中实现（而非 GrokManager），由 Tool 层加载 GraphStore + GraphEngine 并调用 GrokManager 仅做 LLM 摘要。GrokManager 是 1800+ 行的自包含类，不应引入 GraphEngine 依赖。
 
 ### 3.3 输入 Schema 示例
 
@@ -495,6 +563,11 @@ const GRAPH_AUTO_TRIGGERS = {
 
 **评审修复**: debounce 从 per-tool 改为 per-operation，`ToolTierState.lastCallTime` 的 key 从 tool name 改为 `tool:operation`。
 
+**迁移策略**: 保持现有 per-tool debounce 不变，新增 per-operation debounce 作为独立层：
+- `isOpDebounced(state, "codegraph:codegraph_scc")` 使用独立的 `Map<string, number>`
+- 现有 `isDebounced(state, "codegraph")` 逻辑不受影响
+- `CODEGRAPH_MAX_CALLS` 保持 per-tool 上限（2），新 operation 共享此配额
+
 ### 5.2 System Prompt 指导
 
 ```
@@ -515,7 +588,13 @@ const GRAPH_AUTO_TRIGGERS = {
 
 ## 6. 实施计划（修正版）
 
-### Phase 1: GraphEngine 核心 (3 天)
+### Phase 0: 数据源验证 (1 天)
+- [ ] `sqlite3 .codegraph/codegraph.db ".schema"` — 验证实际表结构
+- [ ] `bun:sqlite` compile 模式兼容性测试
+- [ ] `knowledge-graph.json` 结构确认（与 GrokManager GraphNode/GraphEdge 对齐）
+- [ ] 若 schema 不可控，评估 CLI `--dump-json` 替代方案
+
+### Phase 1: GraphEngine 核心 (5 天)
 - [ ] `src/services/graph/GraphEngine.ts` — 加权邻接表 + 基础遍历
 - [ ] `GraphEngine.test.ts` — BFS/DFS + 边权重测试
 - [ ] `src/services/graph/GraphStore.ts` — 数据适配器（codegraph.db + knowledge-graph.json）
@@ -560,14 +639,14 @@ const GRAPH_AUTO_TRIGGERS = {
 - [ ] 错误处理测试：数据源缺失、损坏、部分加载
 - [ ] 文档更新：README + CLAUDE.md 架构描述
 
-**总计: 12 天**（评审建议从 10 天调整为 12 天）
+**总计: 14 天**（含 Phase 0 验证 1 天 + Phase 1 扩展至 5 天）
 
 ## 7. 风险与缓解
 
 | 风险 | 影响 | 缓解 |
 |------|------|------|
 | Louvain 实现复杂 | Phase 3c 延期 | 参考 graphology-communities-louvain，300-400 行 |
-| Betweenness 采样精度不足 | 结果偏差 | 默认 sampleSize=200，可配置，误差 <5% |
+| Betweenness 采样精度不足 | 排名偏差 | 默认 sampleSize=200，可配置，精度取决于图拓扑 |
 | bun:sqlite 兼容性 | 构建失败 | 优先验证 bun:sqlite 在 compile 模式下的行为 |
 | git log 解析慢 | temporal 超时 | 滑动时间窗口 + 增量缓存 + 30s 超时 |
 | 递归栈溢出 (Tarjan) | 大图崩溃 | 所有 DFS 算法使用显式栈迭代 |
