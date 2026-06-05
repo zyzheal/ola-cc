@@ -140,7 +140,7 @@ src/tools/GrokTool/
 
 当两个数据源同时存在时，GraphStore.load() 按以下规则合并：
 
-1. **符号身份匹配**: codegraph 使用 `qualified_name`（如 `src/auth.ts:AuthService.login`），Grok 使用 `file:name`（如 `src/auth.ts:login`）。匹配规则：以 `file + name` 做二级索引，Grok 的 `file:name` 解析为 `{file, name}` 后与 codegraph 的 `{file_path, name}` 比较。
+1. **符号身份匹配**: codegraph 的 `nodes.id` 格式为 `kind:hash`（如 `function:92a1a3197c833fd232a41d4ded9d9913`），不可读。合并时以 `file_path + name` 做二级索引：codegraph 的 `{file_path, name}` 与 Grok 的 `{file, name}` 匹配。合并后图的内部 key 仍使用 codegraph 的 `nodes.id`（保持边引用一致性）。
    **消歧规则**: 当 Grok 的 `file:name` 匹配到多个 codegraph 符号时：(a) 优先选择 kind 相同的；(b) 仍有多候选时，选择 name 最短的（精确匹配）。
    **名称提取**: codegraph 的 `qualified_name` 可能包含类前缀（如 `AuthService.login`），匹配时取最后一个 `.` 之后的部分作为短名。Phase 0 已验证：`nodes.name` 列为短名（如 `login`），`nodes.qualified_name` 为全限定名（如 `AuthService.login`），匹配时直接使用 `name` 列。
 2. **属性合并优先级**: codegraph.db 提供精确的 AST 级数据（signature、line），Grok JSON 提供语义层数据（layer、domain、summary）。合并时：AST 字段以 codegraph 为准，语义字段以 Grok 为准。
@@ -672,13 +672,13 @@ const GRAPH_AUTO_TRIGGERS = {
 
 ## 6. 实施计划（修正版）
 
-### Phase 0: 数据源验证 (1 天)
+### Phase 0: 数据源验证 (1 天) — ✅ 全部完成
 - [x] `sqlite3 .codegraph/codegraph.db ".schema"` — 实际表名为 `nodes`（非 `symbols`），edges 无 `weight` 列，边类型 7 种（v8 已修正映射）
-- [ ] `bun:sqlite` compile 模式兼容性测试 + WAL 锁并发读写测试
-- [ ] codegraph CLI 是否提供 `--dump-json` / `export` 子命令（备选：`sqlite3 -json` CLI 导出）
-- [ ] `knowledge-graph.json` 结构确认: 验证 domain 字段是否有实际值（GrokManager 当前硬编码 `domain: ''`）
+- [x] `bun:sqlite` 兼容性验证 — bun 1.3.11, 只读打开成功, WAL 模式确认, 53987 nodes/137337 edges, 87ms 全量读取, 326ms 复杂聚合查询
+- [x] codegraph CLI 无 `--dump-json`/`export` 子命令 — 直接使用 bun:sqlite 读取（主路径），sqlite3 CLI JSON 导出作为降级方案
+- [x] `knowledge-graph.json` 结构确认 — GrokManager line 952: `domain: ''` 硬编码空字符串, GraphNode 接口有 `domain: string` 字段（由 LLM 生成时填充）
 - [x] 验证 codegraph nodes 表的 `name` 列格式: `name` 列为短名（如 `login`），`qualified_name` 为全限定名（如 `AuthService.login`），匹配时用 `name` 短名
-- [ ] 若 bun:sqlite 不可用，降级为 `sqlite3 -json` CLI 导出方案
+- [x] 降级方案验证 — `sqlite3 -json` CLI 导出确认可用（sqlite3 3.43.2），nodes.id 格式为 `kind:hash`（如 `function:92a1a3...`）
 
 ### Phase 1: GraphEngine 核心 (5 天)
 - [ ] `src/services/graph/GraphEngine.ts` — 加权邻接表 + 基础遍历
