@@ -58,3 +58,41 @@
 - **Exports**: `OPERATION_TIERS`, `DEFERRED_OPERATIONS`, `getOperationDescription()`
 - **Tests**: 14 tests passing (schema, tiers, descriptions, deferred operations)
 - **Backward Compatibility**: `codegraph_impact` with depth<=2 uses CLI, depth>2 uses GraphEngine
+
+### EdgeMeta[] Array Storage — Phase 1a-2 + 1a-4 (2026-06-05) - DONE
+- **Type System**: `GraphData.adjacency/reverse` changed from `Map<string, Map<string, EdgeMeta>>` to `Map<string, Map<string, EdgeMeta[]>>`
+- **addEdge Refactored**: Removed `${to}::${type}` merged key pattern, now stores edges as arrays
+- **GraphEngine Updated**: 14+ edge iteration locations adapted for array pattern
+- **Compatibility Helpers**: `getEdge()`, `getAllOutEdges()`, `getAllInEdges()` for flat iteration
+- **GraphSnapshot**: adjacency type updated to `EdgeMeta[]`
+- **Tests**: 97 pass, 3 fail (pre-existing louvain/betweenness/katz bugs, not EdgeMeta[] related)
+- **Files Modified**: GraphStore.ts, GraphEngine.ts, testHelpers.ts, GraphStore.test.ts, GraphEngine.test.ts
+
+### ErrorRecovery (F-111) + GraphStore Cache Invalidation — Phase 2 (2026-06-06) - DONE
+- **ErrorRecovery**: 4 层错误恢复策略 (`src/services/graph/ErrorRecovery.ts`)
+  - Layer 1: `withTimeout` — 算法超时恢复，Promise.race + fallback
+  - Layer 2: `withDbProtection` — DB 损坏恢复，捕获 SQLITE_CORRUPT/SQLITE_NOTADB
+  - Layer 3: `withGrokDegradation` — Grok 降级，ENOENT/SyntaxError 降级到 codegraph-only
+  - Layer 4: `merge` — 合并多个 RecoveryResult，收集 errors/warnings
+- **GraphStore Cache Invalidation**:
+  - `needsReload` getter — 标记脏后返回 true
+  - `getStale()` — 返回当前数据（即使已过期），用于降级模式
+  - `needsReloadFlag` — 内部状态跟踪
+- **Tests**: 17 ErrorRecovery + 7 GraphStore cache = 24 新测试通过
+- **Files**: ErrorRecovery.ts, ErrorRecovery.test.ts, GraphStore.ts (修改), GraphStore.test.ts (修改)
+
+### StructuralFingerprint (F-21) + ChangeClassifier (F-22) — Phase 1b (2026-06-06) - DONE
+- **StructuralFingerprint**: 计算 codegraph.db 中每个文件的 AST 结构哈希
+  - 数据源: bun:sqlite 查询 nodes/edges
+  - 哈希: {name, kind, signature, start_line, end_line} + sorted edges → sha256
+  - 持久化: .codegraph/fingerprints.json
+  - delta 检测: added/removed/changed 文件列表
+- **ChangeClassifier**: 4 种变更类型分类
+  - signature_change: 签名/调用图变更 → 需重建
+  - import_change: 依赖边变更
+  - implementation_change: 行号变更 → 仅更新节点
+  - comment_change: 注释变更 → 无需重建
+  - 优先级: signature > import > implementation > comment
+- **Tests**: 14 tests passing (5 StructuralFingerprint + 9 ChangeClassifier)
+- **Commit**: 6e687760
+- **Files**: StructuralFingerprint.ts, ChangeClassifier.ts, + 2 test files

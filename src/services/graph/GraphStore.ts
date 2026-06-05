@@ -121,6 +121,7 @@ export class GraphStore {
   public readonly nodeMeta = new Map<string, NodeMetadata>()
 
   private loaded = false
+  private needsReloadFlag = false
   private loadingPromise: Promise<GraphData> | null = null
 
   private constructor(private readonly projectRoot: string) {}
@@ -188,6 +189,7 @@ export class GraphStore {
     }
 
     this.loaded = true
+    this.needsReloadFlag = false
     return { adjacency: this.adjacency, reverse: this.reverse, nodeMeta: this.nodeMeta }
   }
 
@@ -197,6 +199,7 @@ export class GraphStore {
   async reload(): Promise<GraphData> {
     this.clear()
     this.loaded = false
+    this.needsReloadFlag = false
     this.loadingPromise = null
     return this.load()
   }
@@ -206,7 +209,24 @@ export class GraphStore {
    */
   markDirty(): void {
     this.loaded = false
+    this.needsReloadFlag = true
     this.loadingPromise = null
+  }
+
+  /**
+   * 是否需要重新加载（dirty 状态）
+   */
+  get needsReload(): boolean {
+    return this.needsReloadFlag
+  }
+
+  /**
+   * 获取当前数据（即使已过期）
+   * 用于降级模式：即使数据不新鲜，也返回已加载的内容
+   */
+  getStale(): GraphData | null {
+    if (this.nodeMeta.size === 0) return null
+    return { adjacency: this.adjacency, reverse: this.reverse, nodeMeta: this.nodeMeta }
   }
 
   private clear(): void {
