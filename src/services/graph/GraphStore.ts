@@ -19,6 +19,7 @@ import { Database } from 'bun:sqlite'
 import { readFileSync, existsSync } from 'fs'
 import { resolve } from 'path'
 import { logForDebugging } from '../../utils/debug.js'
+import { createDefaultRegistry } from './parsers/index.js'
 
 // ============================================================
 // Types (aligned with design doc §2.3)
@@ -187,6 +188,9 @@ export class GraphStore {
     if (hasGrok) {
       this.loadGrok(grokJsonPath, fileKeyToId)
     }
+
+    // Phase 4: Load non-code file parsers
+    this.loadParsers(this.projectRoot)
 
     // Re-export chain tracking: derive 'exports' edges from imports + export metadata
     this.extractReExports()
@@ -428,6 +432,77 @@ export class GraphStore {
 
     if (reExportCount > 0) {
       logForDebugging(`[GraphStore] extractReExports: derived ${reExportCount} exports edge(s)`)
+    }
+  }
+
+  // ----------------------------------------------------------
+  // Phase 4: Non-code file parsers
+  // ----------------------------------------------------------
+
+  /**
+   * Parse non-code files (Dockerfile, CI, YAML, JSON, etc.) and merge
+   * extracted nodes/edges into the graph.
+   */
+  private loadParsers(projectRoot: string): void {
+    try {
+      const registry = createDefaultRegistry()
+      const results = registry.parseAll(projectRoot)
+
+      let totalNodes = 0
+      let totalEdges = 0
+
+      for (const result of results) {
+        for (const node of result.nodes) {
+          const parserEdgeType: EdgeMeta['type'] = 'control'
+          this.nodeMeta.set(node.id, {
+            id: node.id,
+            name: node.name,
+            kind: node.kind,
+            file: node.file,
+            line: node.line,
+            ...node.metadata as Record<string, unknown>,
+          })
+          totalNodes++
+        }
+
+        for (const edge of result.edges) {
+          // Map parser edge types to GraphStore edge types
+          const edgeType = this.mapParserEdgeType(edge.type)
+          this.addEdge(edge.from, edge.to, edgeType, 1)
+          totalEdges++
+        }
+      }
+
+      if (results.length > 0) {
+        logForDebugging(`[GraphStore] loadParsers: ${results.length} files, ${totalNodes} nodes, ${totalEdges} edges`)
+      }
+    } catch (e) {
+      // Parser errors are non-fatal — log and continue
+      logForDebugging(`[GraphStore] loadParsers failed (non-fatal): ${e}`)
+    }
+  }
+
+  /**
+   * Map parser edge type strings to GraphStore EdgeMeta types.
+   */
+  private mapParserEdgeType(type: string): EdgeMeta['type'] {
+    switch (type) {
+      case 'uses': return 'control'
+      case 'depends': return 'imports'
+      case 'triggers': return 'control'
+      case 'references': return 'data'
+      case 'contains': return 'contains'
+      case 'exposes': return 'control'
+      case 'defines': return 'contains'
+      case 'executes': return 'control'
+      case 'extends': return 'inherits'
+      case 'indexes': return 'data'
+      case 'has_field': return 'contains'
+      case 'has_column': return 'contains'
+      case 'has_rpc': return 'contains'
+      case 'accepts': return 'data'
+      case 'returns': return 'data'
+      default: return 'control'
     }
   }
 
