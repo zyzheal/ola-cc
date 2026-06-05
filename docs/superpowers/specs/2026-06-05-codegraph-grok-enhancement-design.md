@@ -1,7 +1,7 @@
 # CodeGraph + Grok 图算法增强设计
 
 > 日期: 2026-06-05
-> 状态: Draft (v4 — 三方深度评审修复版)
+> 状态: Draft (v5 — 第四轮评审修复版)
 > 范围: GraphEngine 图算法引擎 + 双引擎增强
 > 评审: 架构师(3P0/5P1/5P2) + 算法专家(5P0/5P1/5P2) + 领域架构师(2P0/3P1/3P2)
 
@@ -115,6 +115,7 @@ src/tools/GrokTool/
 当两个数据源同时存在时，GraphStore.load() 按以下规则合并：
 
 1. **符号身份匹配**: codegraph 使用 `qualified_name`（如 `src/auth.ts:AuthService.login`），Grok 使用 `file:name`（如 `src/auth.ts:login`）。匹配规则：以 `file + name` 做二级索引，Grok 的 `file:name` 解析为 `{file, name}` 后与 codegraph 的 `{file_path, name}` 比较。
+   **消歧规则**: 当 Grok 的 `file:name` 匹配到多个 codegraph 符号时：(a) 优先选择 kind 相同的；(b) 仍有多候选时，选择 name 最短的（精确匹配）。具体匹配策略取决于 Phase 0 验证 codegraph symbols 表的 `name` 列格式。
 2. **属性合并优先级**: codegraph.db 提供精确的 AST 级数据（signature、line），Grok JSON 提供语义层数据（layer、domain、summary）。合并时：AST 字段以 codegraph 为准，语义字段以 Grok 为准。
 3. **边去重**: 同一对节点的同类型边去重（以 `{from, to, type}` 三元组为 key）。不同类型边保留（如 codegraph 的 `calls` + Grok 的 `depends` 同时存在）。
 4. **单一数据源**: 当仅一个数据源存在时，直接加载，不做合并。
@@ -168,21 +169,27 @@ export class GraphEngine {
   topologicalSort(): TopoResult                             // 拓扑排序，有环返回 SCC (O(V+E))
   pageRank(damping?: number, maxIter?: number): CentralityResult  // PageRank (O(k·E))
   // 收敛度量: L1 范数（业界标准），epsilon=1e-6
-  // 悬挂节点（出度=0）: 概率质量均匀分配给所有节点（标准做法）
+  // 悬挂节点（出度=0）: 概率质量均匀分配给所有节点
+  // 公式: PR_new[v] = (1-d)/N + d * (Σ PR[u]/outDeg(u) + danglingSum/N)
+  //   其中 danglingSum = Σ PR[d] for d where outDeg(d)==0
   dominatorTree(root: string): Map<string, string | null>   // 支配树 (O(V+E))
   deltaGraph(old: GraphSnapshot, curr: GraphSnapshot): DeltaResult  // 差分图 (O(V+E))
   // 注意：GraphSnapshot 获取机制需 Phase 0 验证 codegraph CLI 是否支持历史索引
   // 若不支持，降级为基于 IncrementalSync 的增量 diff（对比 dirty 文件对应的节点/边）
 
   // ── Phase 3b: 中复杂度 + 核心场景 ──
-  classifyRoles(): Map<string, RoleType>                  // 角色分类 (O(V+E))
+  classifyRoles(opts?: RoleOpts): Map<string, RoleType>   // 角色分类 (O(V+E))
   backwardDataSlice(nodeId: string): SliceResult          // 数据依赖切片 (O(V+E))
+  // DDG 来源: codegraph.db 的 data_flow 边（Phase 0 验证）
+  // 降级策略: 若 DDG 不可用，退化为 backwardReachability（调用图近似切片）
   couplingMetrics(): MetricsResult                        // 内聚/耦合度量 (O(V+E))
 
   // ── Phase 3c: 高复杂度 + 增值功能 ──
   katzCentrality(opts?: KatzOpts): CentralityResult       // Katz 中心性 (O(k·E))
   betweennessCentrality(sampleSize?: number): CentralityResult  // 近似 Betweenness (O(k·E))
-  louvainCommunity(resolution?: number): CommunityResult  // Louvain 社区检测 (O(V·logV))
+  louvainCommunity(opts?: LouvainOpts): CommunityResult   // Louvain 社区检测 (O(V·logV))
+  // 收敛条件: 内层 — 本轮无节点移动 或 delta Q < epsilon
+  //          外层 — modularity 增益 < epsilon 或 达到 maxLevels
   temporalCoupling(opts?: TemporalOpts): CouplingResult   // 时间耦合 (O(C·F²))
   // 性能约束: maxCommits=50000, maxFiles=500, 6个月窗口
   // 增量缓存: .codegraph/temporal-cache.json 持久化已解析 commit→files 映射
@@ -190,6 +197,21 @@ export class GraphEngine {
 }
 
 type RoleType = 'entry' | 'core' | 'utility' | 'adaptor' | 'dead' | 'leaf'
+
+// 分类规则（按优先级排序，先匹配者胜）:
+// 1. dead:   从所有 entry 点反向 BFS 不可达
+// 2. entry:  fanIn = 0 且 fanOut > 0（无被调用，只调用别人）
+// 3. leaf:   fanOut = 0 且 fanIn > 0（只被调用，不调用别人）
+// 4. adaptor: 跨模块边占比 > 50%（桥接两个模块）
+// 5. core:   PageRank 排名前 20% 且 fanIn > median
+// 6. utility: fanIn > P75 且 fanOut < P25（被大量调用但不调用别人）
+// 冲突优先级: dead > entry > leaf > adaptor > core > utility
+
+interface RoleOpts {
+  corePercentile?: number     // core 的 PageRank 百分位阈值，默认 0.8
+  utilityFanInPercentile?: number  // utility 的 fanIn 百分位，默认 0.75
+  adaptorCrossModuleRatio?: number // adaptor 的跨模块边占比，默认 0.5
+}
 
 // 评审修复：统一返回结构
 interface GraphOperationResult<T> {
@@ -248,9 +270,10 @@ interface MetricsResult {
 }
 
 interface CommunityResult {
-  communities: Array<{ id: number; nodes: string[]; size: number }>
+  communities: Array<{ id: number; nodes: string[]; size: number; label?: string }>
   modularity: number            // Newman 模块度 Q ∈ [-0.5, 1]，实践中 [0.3, 0.7]
   resolution: number
+  // label 由上层（CodegraphTool/GrokManager）通过 LLM 生成，GraphEngine 只返回 id+nodes+size
   // 注意: resolution limit — resolution=1.0 时，小于 sqrt(2m) 条边的小社区可能被合并
   // resolution>2.0 可能产生过度碎片化
 }
@@ -276,6 +299,14 @@ interface TemporalOpts {
   since?: string                // ISO 日期，默认 6 个月前
   limit?: number                // 最大耦合对数，默认 50
   minCoChanges?: number         // 最小共现次数，默认 3
+  maxCommits?: number           // 最大解析 commit 数，默认 50000
+}
+
+interface LouvainOpts {
+  resolution?: number           // 社区粒度，默认 1.0
+  epsilon?: number              // 外层 modularity 增益阈值，默认 1e-6
+  maxLevels?: number            // 最大层级数，默认 10
+  maxPasses?: number            // 内层最大 pass 数，默认 100
 }
 ```
 
@@ -365,6 +396,13 @@ function tarjanSCC():
 **评审修复**: Grok 新 operation 明确为"调用 GraphEngine 底层算法 + LLM 语义总结"，不在 Grok 端重复实现图算法。
 
 **实现位置**: `grok_architecture` 和 `grok_hotspots` 在 `GrokTool.ts` 的 `call()` 方法中实现（而非 GrokManager），由 Tool 层加载 GraphStore + GraphEngine 并调用 GrokManager 仅做 LLM 摘要。GrokManager 是 1800+ 行的自包含类，不应引入 GraphEngine 依赖。
+
+**GraphStore 初始化契约**:
+- GraphStore 为 per-projectRoot 单例，惰性初始化
+- 首次调用 `GraphStore.getInstance(projectRoot)` 时加载数据源
+- codegraph.db 访问路径: 若 Phase 0 验证 bun:sqlite 直连可行则直接读取，否则通过 CodegraphManager 新增 `exportGraphJSON()` 方法导出
+- 缓存失效: `IncrementalSync` 检测到 dirty 时标记，下次 load() 重新加载
+- 线程安全: 同一 projectRoot 的并发调用返回同一实例
 
 ### 3.3 输入 Schema 示例
 
@@ -586,13 +624,19 @@ const GRAPH_AUTO_TRIGGERS = {
 - 死代码清理 → codegraph_roles（dead 分类）确认后删除
 ```
 
+**searchHint 更新**（Phase 4）:
+- codegraph: `'code graph AST callers callees impact trace scc cycle toposort pagerank community centrality coupling temporal delta roles slice dependency analysis'`
+- grok: `'knowledge graph code understanding semantic analysis architecture hotspots community roles'`
+
 ## 6. 实施计划（修正版）
 
 ### Phase 0: 数据源验证 (1 天)
-- [ ] `sqlite3 .codegraph/codegraph.db ".schema"` — 验证实际表结构
-- [ ] `bun:sqlite` compile 模式兼容性测试
-- [ ] `knowledge-graph.json` 结构确认（与 GrokManager GraphNode/GraphEdge 对齐）
-- [ ] 若 schema 不可控，评估 CLI `--dump-json` 替代方案
+- [ ] `sqlite3 .codegraph/codegraph.db ".schema"` — 验证实际表结构（symbols/edges 表列名）
+- [ ] `bun:sqlite` compile 模式兼容性测试 + WAL 锁并发读写测试
+- [ ] codegraph CLI 是否提供 `--dump-json` / `export` 子命令（避免直连 SQLite）
+- [ ] `knowledge-graph.json` 结构确认: 验证 domain 字段是否有实际值（GrokManager 当前硬编码 `domain: ''`）
+- [ ] 验证 codegraph symbols 表的 `name` 列格式（短名 vs qualified_name，影响合并匹配）
+- [ ] 若 schema 不可控或有 WAL 锁冲突，改用 CLI `--dump-json` 导出方案
 
 ### Phase 1: GraphEngine 核心 (5 天)
 - [ ] `src/services/graph/GraphEngine.ts` — 加权邻接表 + 基础遍历
