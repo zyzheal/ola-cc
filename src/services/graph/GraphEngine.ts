@@ -69,7 +69,7 @@ export interface CouplingResult {
 }
 
 export interface GraphSnapshot {
-  adjacency: Map<string, Map<string, EdgeMeta>>
+  adjacency: Map<string, Map<string, EdgeMeta[]>>
   nodeMeta: Map<string, NodeMetadata>
   timestamp: number
 }
@@ -100,6 +100,19 @@ export interface TemporalOpts {
   limit?: number
   minCoChanges?: number
   maxCommits?: number
+}
+
+// ============================================================
+// Deterministic PRNG (mulberry32, seed=0xc0de)
+// ============================================================
+
+function mulberry32(seed: number): () => number {
+  return () => {
+    seed |= 0; seed = seed + 0x6D2B79F5 | 0
+    let t = Math.imul(seed ^ seed >>> 15, 1 | seed)
+    t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t
+    return ((t ^ t >>> 14) >>> 0) / 4294967296
+  }
 }
 
 // ============================================================
@@ -783,13 +796,25 @@ export class GraphEngine {
    * α < 1/λ_max 保证收敛
    */
   katzCentrality(opts?: KatzOpts): CentralityResult {
-    const alpha = opts?.alpha ?? 0.1
     const epsilon = opts?.epsilon ?? 1e-6
     const maxIter = opts?.maxIter ?? 100
 
     const nodes = this.getAllNodeIds()
     const N = nodes.length
     if (N === 0) return { scores: [] }
+
+    // Auto-compute alpha from max in-degree if not specified
+    let maxInDeg = 0
+    if (opts?.alpha === undefined) {
+      for (const node of nodes) {
+        let deg = 0
+        for (const [, edges] of this.store.getInEdges(node)) {
+          for (const _ of edges) deg++
+        }
+        if (deg > maxInDeg) maxInDeg = deg
+      }
+    }
+    const alpha = opts?.alpha ?? (maxInDeg > 0 ? 0.9 / Math.sqrt(maxInDeg) : 0.1)
 
     const x = new Map<string, number>()
     for (const node of nodes) x.set(node, 1)
@@ -924,14 +949,11 @@ export class GraphEngine {
     }
     if (totalWeight === 0) totalWeight = 1
 
-    // 节点度数（出边 + 入边，与 totalWeight = 2m 一致）
+    // 节点度数（仅出边，与 totalWeight = Σout 一致）
     const degree = new Map<string, number>()
     for (const node of nodes) {
       let deg = 0
       for (const [, edges] of this.store.getOutEdges(node)) {
-        for (const edge of edges) deg += edge.weight
-      }
-      for (const [, edges] of this.store.getInEdges(node)) {
         for (const edge of edges) deg += edge.weight
       }
       degree.set(node, deg)
@@ -952,21 +974,11 @@ export class GraphEngine {
         const currentCommunity = community.get(node)!
         const nodeDeg = degree.get(node) ?? 0
 
-        // 计算邻居社区（出边 + 入边，与 degree 定义一致）
+        // 计算邻居社区（仅出边，与 degree 定义一致）
         const neighborCommunities = new Map<number, number>()
         const outEdges = this.store.getOutEdges(node)
-        const inEdges = this.store.getInEdges(node)
 
         for (const [neighbor, edges] of outEdges) {
-          const nc = community.get(neighbor)
-          if (nc !== undefined) {
-            for (const edge of edges) {
-              neighborCommunities.set(nc, (neighborCommunities.get(nc) ?? 0) + edge.weight)
-            }
-          }
-        }
-
-        for (const [neighbor, edges] of inEdges) {
           const nc = community.get(neighbor)
           if (nc !== undefined) {
             for (const edge of edges) {
@@ -983,11 +995,10 @@ export class GraphEngine {
           if (candidateComm === currentCommunity) continue
 
           // Modularity gain: ΔQ = resolution * (k_i_in/2m - k_i * Σ_tot / (2m)^2)
-          // degree = in+out, so 2m = 2 * totalWeight
+          // degree = out-degree only, totalWeight = 2m
           const sigmaIn = edgeWeightToComm
           const sigmaTot = communityDegreeSum.get(candidateComm) ?? 0
-          const twoM = 2 * totalWeight
-          const gain = resolution * ((sigmaIn / twoM) - (nodeDeg * sigmaTot) / (twoM * twoM))
+          const gain = resolution * ((sigmaIn / totalWeight) - (nodeDeg * sigmaTot) / (totalWeight * totalWeight))
 
           if (gain > bestGain) {
             bestGain = gain
@@ -1035,9 +1046,8 @@ export class GraphEngine {
           }
         }
       }
-      // degree = in+out, so 2m = 2 * totalWeight
-      const twoM = 2 * totalWeight
-      Q += (internalWeight / twoM) - resolution * Math.pow(commDegree / twoM, 2)
+      // degree = out-degree only, totalWeight = 2m
+      Q += (internalWeight / totalWeight) - resolution * Math.pow(commDegree / totalWeight, 2)
     }
 
     return { communities, modularity: Math.round(Q * 1000) / 1000, resolution }
@@ -1126,8 +1136,9 @@ export class GraphEngine {
   private sampleNodes(nodes: string[], count: number): string[] {
     if (count >= nodes.length) return [...nodes]
     const shuffled = [...nodes]
+    const rand = mulberry32(0xc0de)
     for (let i = shuffled.length - 1; i > 0; i--) {
-      const j = Math.floor(Math.random() * (i + 1));
+      const j = Math.floor(rand() * (i + 1));
       [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]]
     }
     return shuffled.slice(0, count)
