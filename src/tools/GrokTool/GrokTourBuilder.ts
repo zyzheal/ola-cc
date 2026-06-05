@@ -3,6 +3,28 @@
 
 import type { GraphNode, GraphEdge, GraphData, GrokChatResult } from './GrokTypes.js'
 import type { GrokAnalyzer } from './GrokAnalyzer.js'
+import type { GraphStore } from '../../services/graph/GraphStore.js'
+import type { GraphEngine } from '../../services/graph/GraphEngine.js'
+
+// ============================================================
+// Enhanced Tour Types
+// ============================================================
+
+export interface EnhancedTourStep {
+  file: string
+  description: string
+  importance: number      // PageRank score (0-1)
+  fanIn: number
+  fanOut: number
+  dependencies: string[]  // node IDs to read first
+}
+
+export interface EnhancedTour {
+  steps: EnhancedTourStep[]
+  entryPoints: string[]   // high PageRank + low fan-in
+  coreModules: string[]   // high PageRank + high fan-in
+  generatedAt: number
+}
 
 // ============================================================
 // GrokTourBuilder Class
@@ -111,5 +133,128 @@ Provide a concise answer with file:line references.`
       .map(({ node: n, score }: { node: GraphNode; score: number }) => ({ file: n.file, line: n.line || 0, relevance: score }))
 
     return { answer, sources }
+  }
+
+  /**
+   * 生成基于图数据的增强学习路径
+   *
+   * 使用 PageRank + fan-in/fan-out + 反向依赖链构建数据驱动的代码阅读顺序。
+   * 排序策略：
+   *   1. 高 PageRank + 高 fan-in → 核心模块（先读）
+   *   2. 高 PageRank + 低 fan-in → 入口点（次读）
+   *   3. 依赖链 → "先读 X 再读 Y"
+   */
+  generateEnhancedTour(store: GraphStore, engine: GraphEngine): EnhancedTour {
+    const allNodes = engine.getAllNodeIds()
+    if (allNodes.length === 0) {
+      return { steps: [], entryPoints: [], coreModules: [], generatedAt: Date.now() }
+    }
+
+    // 1. PageRank 评分
+    const pr = engine.pageRank()
+    const prMap = new Map(pr.scores.map(s => [s.node, s.score]))
+
+    // 2. 计算 fan-in / fan-out
+    const fanInMap = new Map<string, number>()
+    const fanOutMap = new Map<string, number>()
+    for (const nodeId of allNodes) {
+      fanInMap.set(nodeId, store.getInNeighborIds(nodeId).length)
+      fanOutMap.set(nodeId, store.getOutNeighborIds(nodeId).length)
+    }
+
+    // 3. 计算百分位阈值
+    const prSorted = [...prMap.values()].sort((a, b) => b - a)
+    const fanInSorted = [...fanInMap.values()].sort((a, b) => b - a)
+    const prP50 = prSorted[Math.floor(prSorted.length * 0.5)] ?? 0
+    const fanInP50 = fanInSorted[Math.floor(fanInSorted.length * 0.5)] ?? 0
+
+    // 4. 分类：
+    //    - entryPoints: fanIn=0 且 fanOut>0（结构上是源节点，PR 天然低）
+    //    - coreModules: PR >= P50 且 fanIn >= P50
+    const entryPoints: string[] = []
+    const coreModules: string[] = []
+
+    for (const nodeId of allNodes) {
+      const prScore = prMap.get(nodeId) ?? 0
+      const fi = fanInMap.get(nodeId) ?? 0
+      const fo = fanOutMap.get(nodeId) ?? 0
+
+      if (fi === 0 && fo > 0) {
+        // 结构入口点：无入边、有出边
+        entryPoints.push(nodeId)
+      } else if (fo === 0 && fi > 0) {
+        // sink 节点：有入边、无出边（不归入 core）
+      } else if (prScore >= prP50 && fi >= fanInP50) {
+        // 核心模块：高重要性 + 高被依赖
+        coreModules.push(nodeId)
+      }
+    }
+
+    // 按 PageRank 排序
+    entryPoints.sort((a, b) => (prMap.get(b) ?? 0) - (prMap.get(a) ?? 0))
+    coreModules.sort((a, b) => (prMap.get(b) ?? 0) - (prMap.get(a) ?? 0))
+
+    // 5. 为每个节点计算反向依赖链（谁依赖它）
+    const depsMap = new Map<string, string[]>()
+    for (const nodeId of allNodes) {
+      const reach = engine.backwardReachability(nodeId)
+      // 排除自身，只保留直接依赖（via 中有记录的）
+      const deps = reach.reachable.filter(n => n !== nodeId && reach.via.has(n))
+      depsMap.set(nodeId, deps.slice(0, 5)) // 最多 5 个依赖
+    }
+
+    // 6. 构建增强步骤：先入口点，再核心模块，最后其余
+    const visited = new Set<string>()
+    const steps: EnhancedTourStep[] = []
+
+    const addStep = (nodeId: string, description: string) => {
+      if (visited.has(nodeId)) return
+      visited.add(nodeId)
+
+      const meta = store.getNode(nodeId)
+      const prScore = prMap.get(nodeId) ?? 0
+      const fi = fanInMap.get(nodeId) ?? 0
+      const fo = fanOutMap.get(nodeId) ?? 0
+
+      steps.push({
+        file: meta?.file ?? nodeId,
+        description,
+        importance: prScore,
+        fanIn: fi,
+        fanOut: fo,
+        dependencies: depsMap.get(nodeId) ?? [],
+      })
+    }
+
+    // 入口点优先
+    for (const nodeId of entryPoints) {
+      addStep(nodeId, 'Entry point — start here to understand the system flow')
+    }
+
+    // 核心模块次之
+    for (const nodeId of coreModules) {
+      addStep(nodeId, 'Core module — central to the architecture, heavily depended upon')
+    }
+
+    // 其余节点按 PageRank 降序
+    const remaining = allNodes
+      .filter(n => !visited.has(n))
+      .sort((a, b) => (prMap.get(b) ?? 0) - (prMap.get(a) ?? 0))
+
+    for (const nodeId of remaining) {
+      const fi = fanInMap.get(nodeId) ?? 0
+      const fo = fanOutMap.get(nodeId) ?? 0
+      const role = fi === 0 && fo > 0 ? 'Leaf source'
+        : fo === 0 && fi > 0 ? 'Sink — terminal dependency'
+        : 'Supporting module'
+      addStep(nodeId, role)
+    }
+
+    return {
+      steps,
+      entryPoints: entryPoints.slice(0, 10),
+      coreModules: coreModules.slice(0, 10),
+      generatedAt: Date.now(),
+    }
   }
 }
