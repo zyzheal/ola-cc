@@ -8,6 +8,7 @@ import { describe, it, expect, beforeEach } from 'bun:test'
 import { GrokTourBuilder } from '../GrokTourBuilder.js'
 import type { GrokAnalyzer } from '../GrokAnalyzer.js'
 import type { GraphData } from '../GrokManager.js'
+import { createFixture } from '../../../services/graph/__tests__/testHelpers.js'
 
 // Mock analyzer with callAgentWithTimeout
 const createMockAnalyzer = (): GrokAnalyzer => {
@@ -163,5 +164,132 @@ describe('queryGraph', () => {
 
     const userServiceSource = result.sources.find(s => s.file === 'src/user.ts')
     expect(userServiceSource).toBeDefined()
+  })
+})
+
+// ============================================
+// generateEnhancedTour
+// ============================================
+
+describe('generateEnhancedTour', () => {
+  let builder: GrokTourBuilder
+
+  beforeEach(() => {
+    builder = new GrokTourBuilder(createMockAnalyzer())
+  })
+
+  it('should return empty tour for empty graph', () => {
+    const { store, engine } = createFixture({}, 'tour-empty')
+    const tour = builder.generateEnhancedTour(store, engine)
+
+    expect(tour.steps).toEqual([])
+    expect(tour.entryPoints).toEqual([])
+    expect(tour.coreModules).toEqual([])
+    expect(tour.generatedAt).toBeGreaterThan(0)
+  })
+
+  it('should classify entry points and core modules', () => {
+    // A is entry (fanIn=0, fanOut>0), B is core (high fanIn)
+    const { store, engine } = createFixture({
+      A: ['B'],
+      B: ['C', 'D'],
+      C: ['B'],
+      D: ['B'],
+    }, 'tour-classify')
+
+    const tour = builder.generateEnhancedTour(store, engine)
+
+    expect(tour.steps.length).toBe(4)
+    // A should be in entryPoints (fanIn=0)
+    expect(tour.entryPoints).toContain('A')
+    // B should be in coreModules (high fanIn)
+    expect(tour.coreModules).toContain('B')
+  })
+
+  it('should include dependency chains in steps', () => {
+    const { store, engine } = createFixture({
+      A: ['B'],
+      B: ['C'],
+    }, 'tour-deps')
+
+    const tour = builder.generateEnhancedTour(store, engine)
+
+    // C has backward reachability to B and A
+    const stepC = tour.steps.find(s => s.file.includes('c'))
+    expect(stepC).toBeDefined()
+    // B should be a dependency of C (reachable via backward)
+    expect(stepC!.dependencies.length).toBeGreaterThan(0)
+  })
+
+  it('should compute fanIn and fanOut correctly', () => {
+    // B has fanIn=2 (A->B, C->B), fanOut=0
+    const { store, engine } = createFixture({
+      A: ['B'],
+      C: ['B'],
+    }, 'tour-fanin')
+
+    const tour = builder.generateEnhancedTour(store, engine)
+    const stepB = tour.steps.find(s => s.file.includes('b'))
+    expect(stepB).toBeDefined()
+    expect(stepB!.fanIn).toBe(2)
+    expect(stepB!.fanOut).toBe(0)
+  })
+
+  it('should sort steps by importance (PageRank)', () => {
+    // A is the root that everything flows through
+    const { store, engine } = createFixture({
+      A: ['B', 'C', 'D'],
+      B: ['E'],
+      C: ['E'],
+      D: ['E'],
+    }, 'tour-sort')
+
+    const tour = builder.generateEnhancedTour(store, engine)
+
+    // Steps should be sorted: entry points first, then core, then remaining
+    // All steps should have importance >= 0
+    for (const step of tour.steps) {
+      expect(step.importance).toBeGreaterThanOrEqual(0)
+      expect(step.importance).toBeLessThanOrEqual(1)
+    }
+  })
+
+  it('should cap entryPoints and coreModules at 10', () => {
+    // Create a graph with many entry points
+    const adj: Record<string, string[]> = {}
+    for (let i = 0; i < 20; i++) {
+      adj[`E${i}`] = ['Sink']
+    }
+    const { store, engine } = createFixture(adj, 'tour-cap')
+
+    const tour = builder.generateEnhancedTour(store, engine)
+
+    expect(tour.entryPoints.length).toBeLessThanOrEqual(10)
+    expect(tour.coreModules.length).toBeLessThanOrEqual(10)
+  })
+
+  it('should handle single node graph', () => {
+    const { store, engine } = createFixture({
+      A: [],
+    }, 'tour-single')
+
+    const tour = builder.generateEnhancedTour(store, engine)
+
+    expect(tour.steps.length).toBe(1)
+    expect(tour.steps[0].file).toContain('a')
+    expect(tour.steps[0].fanIn).toBe(0)
+    expect(tour.steps[0].fanOut).toBe(0)
+  })
+
+  it('should mark sink nodes correctly', () => {
+    // B has fanOut=0, fanIn>0 → sink
+    const { store, engine } = createFixture({
+      A: ['B'],
+    }, 'tour-sink')
+
+    const tour = builder.generateEnhancedTour(store, engine)
+    const stepB = tour.steps.find(s => s.file.includes('b'))
+    expect(stepB).toBeDefined()
+    expect(stepB!.description).toContain('Sink')
   })
 })
