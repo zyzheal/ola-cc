@@ -916,3 +916,43 @@ describe('betweennessCentrality', () => {
     expect(center.score).toBeGreaterThanOrEqual(leaf.score)
   })
 })
+
+// ============================================================
+// 15. Integration: real codegraph.db
+// ============================================================
+
+describe('integration: real codegraph.db', () => {
+  test('should load and run PageRank on actual data', async () => {
+    const { GraphStore } = await import('../GraphStore.js')
+    const store = GraphStore.getInstance(process.cwd())
+    await store.load()
+
+    const engine = new GraphEngine(store)
+    const result = engine.pageRank()
+
+    expect(result.scores.length).toBeGreaterThan(1000)
+    expect(result.scores[0].score).toBeGreaterThan(0)
+  }, 30000)
+
+  test('should classify roles on actual data', async () => {
+    const { GraphStore } = await import('../GraphStore.js')
+    const store = GraphStore.getInstance(process.cwd())
+    await store.load()
+
+    const engine = new GraphEngine(store)
+    const roles = engine.classifyRoles()
+
+    expect(roles.size).toBe(store.size.nodes)
+  }, 30000)
+
+  test('should find SCCs on actual data', async () => {
+    const { GraphStore } = await import('../GraphStore.js')
+    const store = GraphStore.getInstance(process.cwd())
+    await store.load()
+
+    const engine = new GraphEngine(store)
+    const sccs = engine.tarjanSCC()
+
+    expect(sccs.length).toBeGreaterThan(0)
+  }, 30000)
+})
