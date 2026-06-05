@@ -33,14 +33,14 @@ describe('CodegraphTool — Operation Schema', () => {
       expect(schema.shape.depth).toBeDefined()
     })
 
-    it('should have exactly 21 operations (20 after merge + codegraph_unresolved)', () => {
+    it('should have exactly 22 operations (20 after merge + codegraph_unresolved + codegraph_kind_map)', () => {
       const schema = codegraphTool.inputSchema
       const enumValues = schema.shape.operation.options
       // Original: 22 ops
       // Removed: codegraph_explore, codegraph_impact_deep
-      // Added: codegraph_unresolved
-      // Result: 21 ops
-      expect(enumValues.length).toBe(21)
+      // Added: codegraph_unresolved, codegraph_kind_map
+      // Result: 22 ops
+      expect(enumValues.length).toBe(22)
     })
   })
 
@@ -69,8 +69,8 @@ describe('CodegraphTool — Operation Schema', () => {
       expect(OPERATION_TIERS.analysis.length).toBe(4)
     })
 
-    it('should classify remaining 12 operations as advanced', () => {
-      expect(OPERATION_TIERS.advanced.length).toBe(12)
+    it('should classify remaining 13 operations as advanced', () => {
+      expect(OPERATION_TIERS.advanced.length).toBe(13)
       expect(OPERATION_TIERS.advanced).toContain('codegraph_context')
       expect(OPERATION_TIERS.advanced).toContain('codegraph_callers')
       expect(OPERATION_TIERS.advanced).toContain('codegraph_callees')
@@ -145,10 +145,10 @@ describe('CodegraphTool — Operation Schema', () => {
       expect(enumValues).toContain('codegraph_unresolved')
     })
 
-    it('should have 21 operations after adding codegraph_unresolved', () => {
+    it('should have 22 operations after adding codegraph_unresolved + codegraph_kind_map', () => {
       const schema = codegraphTool.inputSchema
       const enumValues = schema.shape.operation.options
-      expect(enumValues.length).toBe(21)
+      expect(enumValues.length).toBe(22)
     })
 
     it('should classify codegraph_unresolved as advanced', () => {

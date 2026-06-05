@@ -20,6 +20,7 @@ import type { GraphSnapshot } from '../../services/graph/GraphEngine.js';
 import { FtsSearch } from '../../services/graph/FtsSearch.js';
 import { RrfSearch } from '../../services/graph/RrfSearch.js';
 import { UnresolvedRefManager } from '../../services/graph/UnresolvedRefManager.js';
+import { normalizeKind, isValidKind, VALID_KINDS, getKindAliases } from '../../services/graph/NodeKindNormalizer.js';
 import { execSync } from 'child_process';
 import { resolve } from 'path';
 
@@ -51,6 +52,8 @@ const operationEnum = z.enum([
   'codegraph_temporal',
   // Phase Z4 operations
   'codegraph_unresolved',
+  // Phase 6a diagnostic
+  'codegraph_kind_map',
 ]);
 
 const inputSchema = z.object({
@@ -145,6 +148,7 @@ export const codegraphTool = buildTool({
       codegraph_centrality: '中心性分析',
       codegraph_temporal: '时间耦合',
       codegraph_unresolved: '未解析引用',
+      codegraph_kind_map: '类型映射诊断',
     }
     const label = labels[op] || op
     const detail = input?.query || input?.symbol || ''
@@ -719,6 +723,63 @@ export const codegraphTool = buildTool({
           break;
         }
 
+        case 'codegraph_kind_map': {
+          sendProgress('kind_map', 'Building kind/edge mapping diagnostics…')
+          // Edge kind mapping: codegraph → canonical EdgeType
+          const store = GraphStore.getInstance(projectRoot);
+          await store.load();
+          const edgeMap: Record<string, string> = {
+            calls: 'calls', imports: 'imports', contains: 'contains',
+            references: 'data', extends: 'inherits', implements: 'implements',
+            exports: 'exports', type_of: 'type_of', returns: 'returns',
+            instantiates: 'instantiates', overrides: 'overrides', decorates: 'decorates',
+            subscribes: 'subscribes', publishes: 'publishes', middleware: 'middleware',
+            flow_step: 'flow_step', cross_domain: 'cross_domain',
+            reads: 'reads', writes: 'writes', tests: 'tests',
+            configures: 'configures', deploys: 'deploys', monitors: 'monitors',
+            validates: 'validates', transforms: 'transforms', caches: 'caches',
+            queues: 'queues', notifies: 'notifies',
+            serializes: 'serializes', deserializes: 'deserializes',
+            encrypts: 'encrypts', decrypts: 'decrypts', compresses: 'compresses',
+            logs: 'logs', metrics: 'metrics', traces_edge: 'traces',
+            authenticates: 'authenticates', authorizes: 'authorizes',
+            rate_limits: 'rate_limits',
+          }
+          // Count edge types in graph
+          const edgeTypeCounts: Record<string, number> = {}
+          for (const outMap of store.adjacency.values()) {
+            for (const edges of outMap.values()) {
+              for (const edge of edges) {
+                edgeTypeCounts[edge.type] = (edgeTypeCounts[edge.type] ?? 0) + 1
+              }
+            }
+          }
+          // Count node kinds in graph
+          const nodeKindCounts: Record<string, number> = {}
+          for (const node of store.nodeMeta.values()) {
+            nodeKindCounts[node.kind] = (nodeKindCounts[node.kind] ?? 0) + 1
+          }
+          result = {
+            edgeKindMapping: edgeMap,
+            nodeKindAliases: getKindAliases(),
+            validNodeKinds: [...VALID_KINDS],
+            graphStats: {
+              nodeKinds: nodeKindCounts,
+              edgeTypes: edgeTypeCounts,
+              totalNodes: store.nodeMeta.size,
+            },
+            normalizeKindExamples: {
+              fn: normalizeKind('fn'),
+              cls: normalizeKind('cls'),
+              struct: normalizeKind('struct'),
+              trait: normalizeKind('trait'),
+              proc: normalizeKind('proc'),
+              iface: normalizeKind('iface'),
+            },
+          }
+          break
+        }
+
         default:
           return { data: { error: true, message: `未知操作: ${input.operation}` } };
       }
@@ -823,6 +884,7 @@ export const OPERATION_TIERS = {
     'codegraph_coupling',
     'codegraph_temporal',
     'codegraph_unresolved',
+    'codegraph_kind_map',
   ],
 } as const;
 
@@ -907,6 +969,9 @@ const OPERATION_DESCRIPTIONS: Record<string, { core: string; analysis: string; a
   },
   codegraph_unresolved: {
     advanced: 'Scan for unresolved references — dangling imports, calls, and type uses that point to symbols not in the graph. Use to find missing dependencies or indexing gaps.',
+  },
+  codegraph_kind_map: {
+    advanced: 'Diagnostic: returns edge kind mapping (codegraph→canonical), node kind normalization table, and current graph statistics by kind/type.',
   },
 };
 
