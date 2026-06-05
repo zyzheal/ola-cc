@@ -25,9 +25,20 @@ import { createDefaultRegistry } from './parsers/index.js'
 // Types (aligned with design doc §2.3)
 // ============================================================
 
+export type EdgeType =
+  | 'calls' | 'imports' | 'data' | 'control' | 'inherits' | 'implements'
+  | 'contains' | 'exports' | 'type_of' | 'returns' | 'instantiates' | 'overrides'
+  | 'decorates'
+  // P1 edge types (F-53)
+  | 'subscribes' | 'publishes' | 'middleware' | 'flow_step' | 'cross_domain'
+
+export type EdgeConfidence = 'EXTRACTED' | 'INFERRED' | 'AMBIGUOUS'
+
 export interface EdgeMeta {
-  type: 'calls' | 'imports' | 'data' | 'control' | 'inherits' | 'implements' | 'contains' | 'exports' | 'type_of' | 'returns' | 'instantiates' | 'overrides' | 'decorates'
+  type: EdgeType
   weight: number
+  confidence?: EdgeConfidence   // F-85
+  metadata?: Record<string, unknown>
 }
 
 export interface NodeMetadata {
@@ -49,6 +60,13 @@ export interface NodeMetadata {
   is_async?: boolean
   is_static?: boolean
   is_abstract?: boolean
+  // Phase Z1: full 21-field spec (F-52)
+  start_column?: number
+  end_column?: number
+  decorators?: string[]
+  type_parameters?: string[]
+  updated_at?: number
+  provenance?: string
 }
 
 export interface GraphData {
@@ -57,11 +75,22 @@ export interface GraphData {
   nodeMeta: Map<string, NodeMetadata>
 }
 
+/** F-54: File-level tracking record */
+export interface FileRecord {
+  path: string
+  language: string
+  size: number
+  lineCount: number
+  nodeCount: number
+  contentHash: string
+  lastModified: number
+}
+
 // ============================================================
 // Edge type mapping (Phase 1b: expanded to 12+1)
 // ============================================================
 
-const CODEGRAPH_EDGE_MAP: Record<string, EdgeMeta['type']> = {
+const CODEGRAPH_EDGE_MAP: Record<string, EdgeType> = {
   calls: 'calls',
   imports: 'imports',
   contains: 'contains',
@@ -74,18 +103,24 @@ const CODEGRAPH_EDGE_MAP: Record<string, EdgeMeta['type']> = {
   instantiates: 'instantiates',
   overrides: 'overrides',
   decorates: 'decorates',
+  // P1 edge types (F-53 / EdgeType P1)
+  subscribes: 'subscribes',
+  publishes: 'publishes',
+  middleware: 'middleware',
+  flow_step: 'flow_step',
+  cross_domain: 'cross_domain',
 }
 
-const GROK_EDGE_MAP: Record<string, EdgeMeta['type']> = {
+const GROK_EDGE_MAP: Record<string, EdgeType> = {
   depends: 'imports',
   relates: 'control',
 }
 
-function mapCodegraphEdgeKind(kind: string): EdgeMeta['type'] {
+function mapCodegraphEdgeKind(kind: string): EdgeType {
   return CODEGRAPH_EDGE_MAP[kind] ?? 'control'
 }
 
-function mapGrokEdgeType(type: string): EdgeMeta['type'] {
+function mapGrokEdgeType(type: string): EdgeType {
   return GROK_EDGE_MAP[type] ?? 'control'
 }
 
@@ -93,11 +128,13 @@ function mapGrokEdgeType(type: string): EdgeMeta['type'] {
 // Schema-aware column resolution
 // ============================================================
 
-/** All columns we want to SELECT from nodes table (if they exist) */
+/** All columns we want to SELECT from nodes table (if they exist) — 21 fields (F-52) */
 const DESIRED_NODE_COLUMNS = [
   'id', 'kind', 'name', 'qualified_name', 'file_path', 'start_line',
   'end_line', 'signature', 'docstring', 'language', 'visibility',
   'is_exported', 'is_async', 'is_static', 'is_abstract',
+  'start_column', 'end_column', 'decorators', 'type_parameters',
+  'updated_at', 'provenance',
 ] as const
 
 /**
@@ -120,6 +157,7 @@ export class GraphStore {
   public readonly adjacency = new Map<string, Map<string, EdgeMeta[]>>()
   public readonly reverse = new Map<string, Map<string, EdgeMeta[]>>()
   public readonly nodeMeta = new Map<string, NodeMetadata>()
+  public readonly fileRecords = new Map<string, FileRecord>()  // F-54
 
   private loaded = false
   private needsReloadFlag = false
@@ -240,6 +278,7 @@ export class GraphStore {
     this.adjacency.clear()
     this.reverse.clear()
     this.nodeMeta.clear()
+    this.fileRecords.clear()
   }
 
   // ----------------------------------------------------------
@@ -300,6 +339,13 @@ export class GraphStore {
         if (row.is_async != null) meta.is_async = !!row.is_async
         if (row.is_static != null) meta.is_static = !!row.is_static
         if (row.is_abstract != null) meta.is_abstract = !!row.is_abstract
+        // Phase Z1: Full 21-field spec (F-52)
+        if (row.start_column != null) meta.start_column = row.start_column as number
+        if (row.end_column != null) meta.end_column = row.end_column as number
+        if (row.decorators != null) meta.decorators = parseJsonArray(row.decorators as string)
+        if (row.type_parameters != null) meta.type_parameters = parseJsonArray(row.type_parameters as string)
+        if (row.updated_at != null) meta.updated_at = row.updated_at as number
+        if (row.provenance != null) meta.provenance = row.provenance as string
 
         this.nodeMeta.set(id, meta)
 
@@ -317,8 +363,11 @@ export class GraphStore {
 
       for (const edge of edges) {
         const edgeType = mapCodegraphEdgeKind(edge.kind)
-        this.addEdge(edge.source, edge.target, edgeType, 1)
+        this.addEdge(edge.source, edge.target, edgeType, 1, 'EXTRACTED')
       }
+
+      // F-54: Build fileRecords from node data
+      this.buildFileRecords()
     } finally {
       db!.close()
     }
@@ -382,13 +431,13 @@ export class GraphStore {
       }
     }
 
-    // 加载 Grok edges（合并到已有 adjacency）
+    // 加载 Grok edges（合并到已有 adjacency）— AMBIGUOUS confidence (F-85)
     for (const edge of data.edges) {
       const edgeType = mapGrokEdgeType(edge.type)
       // Resolve edge endpoints: try fileKeyToId for codegraph merge
       const fromId = fileKeyToId?.get(edge.from) ?? edge.from
       const toId = fileKeyToId?.get(edge.to) ?? edge.to
-      this.addEdge(fromId, toId, edgeType, 1)
+      this.addEdge(fromId, toId, edgeType, 1, 'AMBIGUOUS')
     }
   }
 
@@ -466,9 +515,9 @@ export class GraphStore {
         }
 
         for (const edge of result.edges) {
-          // Map parser edge types to GraphStore edge types
+          // Map parser edge types to GraphStore edge types — INFERRED confidence (F-85)
           const edgeType = this.mapParserEdgeType(edge.type)
-          this.addEdge(edge.from, edge.to, edgeType, 1)
+          this.addEdge(edge.from, edge.to, edgeType, 1, 'INFERRED')
           totalEdges++
         }
       }
@@ -485,7 +534,7 @@ export class GraphStore {
   /**
    * Map parser edge type strings to GraphStore EdgeMeta types.
    */
-  private mapParserEdgeType(type: string): EdgeMeta['type'] {
+  private mapParserEdgeType(type: string): EdgeType {
     switch (type) {
       case 'uses': return 'control'
       case 'depends': return 'imports'
@@ -510,8 +559,8 @@ export class GraphStore {
   // Adjacency helpers
   // ----------------------------------------------------------
 
-  private addEdge(from: string, to: string, type: EdgeMeta['type'], weight: number): void {
-    const edgeMeta: EdgeMeta = { type, weight }
+  private addEdge(from: string, to: string, type: EdgeType, weight: number, confidence?: EdgeConfidence): void {
+    const edgeMeta: EdgeMeta = { type, weight, confidence }
 
     // 正向
     let fromMap = this.adjacency.get(from)
@@ -706,6 +755,43 @@ export class GraphStore {
   get isLoaded(): boolean {
     return this.loaded
   }
+
+  // ----------------------------------------------------------
+  // F-54: Build fileRecords from nodeMeta
+  // ----------------------------------------------------------
+
+  private buildFileRecords(): void {
+    const fileMap = new Map<string, { nodeCount: number; maxLine: number; language?: string }>()
+
+    for (const node of this.nodeMeta.values()) {
+      if (!node.file) continue
+      const entry = fileMap.get(node.file)
+      if (entry) {
+        entry.nodeCount++
+        if (node.line > entry.maxLine) entry.maxLine = node.line
+        if (node.end_line && node.end_line > entry.maxLine) entry.maxLine = node.end_line
+        if (node.language && !entry.language) entry.language = node.language
+      } else {
+        fileMap.set(node.file, {
+          nodeCount: 1,
+          maxLine: node.end_line ?? node.line,
+          language: node.language,
+        })
+      }
+    }
+
+    for (const [path, info] of fileMap) {
+      this.fileRecords.set(path, {
+        path,
+        language: info.language ?? 'unknown',
+        size: 0,         // size requires filesystem stat — left as 0 for DB-only load
+        lineCount: info.maxLine,
+        nodeCount: info.nodeCount,
+        contentHash: '',  // hash requires file read — left empty for DB-only load
+        lastModified: 0,  // requires filesystem stat
+      })
+    }
+  }
 }
 
 // ============================================================
@@ -727,6 +813,20 @@ interface GrokEdge {
   from: string
   to: string
   type: string
+}
+
+// ============================================================
+// Helpers
+// ============================================================
+
+/** Parse a JSON array string, returning empty array on failure */
+function parseJsonArray(raw: string): string[] {
+  try {
+    const parsed = JSON.parse(raw)
+    return Array.isArray(parsed) ? parsed : []
+  } catch {
+    return []
+  }
 }
 
 // ============================================================
