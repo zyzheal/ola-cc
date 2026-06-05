@@ -675,3 +675,99 @@ describe('Phase 1b: NodeKind preservation', () => {
     expect(uniqueKinds.size).toBe(22)
   })
 })
+
+// ============================================================
+// Phase 2: Cache invalidation enhancement
+// ============================================================
+
+describe('Phase 2: cache invalidation', () => {
+  const TEST_DIR = resolve('/tmp', 'graphstore-cache-test-' + Date.now())
+
+  afterEach(() => {
+    rmSync(TEST_DIR, { recursive: true, force: true })
+  })
+
+  test('needsReload should be false when loaded', async () => {
+    const store = await createStoreWithDb(
+      TEST_DIR + '/cache1',
+      `CREATE TABLE nodes (id TEXT PRIMARY KEY, kind TEXT, name TEXT, file_path TEXT, start_line INTEGER)`,
+      `CREATE TABLE edges (source TEXT, target TEXT, kind TEXT)`,
+      [`INSERT INTO nodes VALUES ('n:a', 'function', 'a', 'a.ts', 1)`],
+      [],
+    )
+    expect(store.needsReload).toBe(false)
+  })
+
+  test('needsReload should be true after markDirty', async () => {
+    const store = await createStoreWithDb(
+      TEST_DIR + '/cache2',
+      `CREATE TABLE nodes (id TEXT PRIMARY KEY, kind TEXT, name TEXT, file_path TEXT, start_line INTEGER)`,
+      `CREATE TABLE edges (source TEXT, target TEXT, kind TEXT)`,
+      [`INSERT INTO nodes VALUES ('n:a', 'function', 'a', 'a.ts', 1)`],
+      [],
+    )
+    store.markDirty()
+    expect(store.needsReload).toBe(true)
+  })
+
+  test('needsReload should be false after reload', async () => {
+    const store = await createStoreWithDb(
+      TEST_DIR + '/cache3',
+      `CREATE TABLE nodes (id TEXT PRIMARY KEY, kind TEXT, name TEXT, file_path TEXT, start_line INTEGER)`,
+      `CREATE TABLE edges (source TEXT, target TEXT, kind TEXT)`,
+      [`INSERT INTO nodes VALUES ('n:a', 'function', 'a', 'a.ts', 1)`],
+      [],
+    )
+    store.markDirty()
+    expect(store.needsReload).toBe(true)
+    await store.reload()
+    expect(store.needsReload).toBe(false)
+  })
+
+  test('getStale should return current data even when dirty', async () => {
+    const store = await createStoreWithDb(
+      TEST_DIR + '/cache4',
+      `CREATE TABLE nodes (id TEXT PRIMARY KEY, kind TEXT, name TEXT, file_path TEXT, start_line INTEGER)`,
+      `CREATE TABLE edges (source TEXT, target TEXT, kind TEXT)`,
+      [`INSERT INTO nodes VALUES ('n:a', 'function', 'a', 'a.ts', 1)`],
+      [],
+    )
+    expect(store.isLoaded).toBe(true)
+    store.markDirty()
+
+    // getStale should still return the data
+    const stale = store.getStale()
+    expect(stale).not.toBeNull()
+    expect(stale!.nodeMeta.size).toBe(1)
+    expect(stale!.nodeMeta.has('n:a')).toBe(true)
+  })
+
+  test('getStale should return null when never loaded', () => {
+    const dir = TEST_DIR + '/cache5'
+    mkdirSync(resolve(dir, '.codegraph'), { recursive: true })
+    const dbPath = resolve(dir, '.codegraph', 'codegraph.db')
+    const db = new Database(dbPath)
+    db.run(`CREATE TABLE nodes (id TEXT PRIMARY KEY, kind TEXT, name TEXT, file_path TEXT, start_line INTEGER)`)
+    db.run(`CREATE TABLE edges (source TEXT, target TEXT, kind TEXT)`)
+    db.close()
+
+    const store = GraphStore.getInstance(dir)
+    const stale = store.getStale()
+    expect(stale).toBeNull()
+  })
+})
+
+describe('Phase 2: GraphStoreError messages', () => {
+  test('GraphStoreError should have code, message, and suggestion', () => {
+    const err = new GraphStoreError('TEST_CODE', 'test message', 'test suggestion')
+    expect(err.code).toBe('TEST_CODE')
+    expect(err.message).toBe('test message')
+    expect(err.suggestion).toBe('test suggestion')
+    expect(err.name).toBe('GraphStoreError')
+  })
+
+  test('GraphStoreError suggestion is optional', () => {
+    const err = new GraphStoreError('NO_SUGGESTION', 'no suggestion')
+    expect(err.suggestion).toBeUndefined()
+  })
+})
