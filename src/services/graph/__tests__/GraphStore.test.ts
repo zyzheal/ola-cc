@@ -11,7 +11,8 @@
  */
 
 import { describe, test, expect, beforeEach, afterEach } from 'bun:test'
-import { GraphStore, GraphStoreError, type EdgeMeta, type NodeMetadata } from '../GraphStore.js'
+import { GraphStore, GraphStoreError, type EdgeMeta, type NodeMetadata, type FileRecord, type EdgeType, type EdgeConfidence } from '../GraphStore.js'
+import { CodegraphDbAdapter, GrokJsonAdapter, type DataSourceAdapter } from '../DataSourceAdapter.js'
 import { resolve } from 'path'
 import { Database } from 'bun:sqlite'
 import { mkdirSync, writeFileSync, rmSync } from 'fs'
@@ -898,5 +899,404 @@ describe('Phase 2: extractReExports', () => {
     // C should NOT have exports edge
     const edgesAC = store.getEdgeBetween('n:a', 'n:c')
     expect(edgesAC.some(e => e.type === 'exports')).toBe(false)
+  })
+})
+
+// ============================================================
+// Phase Z1: F-52 — NodeMetadata full 21 fields
+// ============================================================
+
+describe('Phase Z1: F-52 NodeMetadata full 21 fields', () => {
+  const TEST_DIR = resolve('/tmp', 'graphstore-z1-node21-' + Date.now())
+
+  afterEach(() => {
+    rmSync(TEST_DIR, { recursive: true, force: true })
+  })
+
+  test('should load all 21 fields when columns exist', async () => {
+    const store = await createStoreWithDb(
+      TEST_DIR + '/full21',
+      `CREATE TABLE nodes (
+        id TEXT PRIMARY KEY, kind TEXT, name TEXT, qualified_name TEXT,
+        file_path TEXT, start_line INTEGER, end_line INTEGER, signature TEXT,
+        docstring TEXT, language TEXT, visibility TEXT,
+        is_exported INTEGER, is_async INTEGER, is_static INTEGER, is_abstract INTEGER,
+        start_column INTEGER, end_column INTEGER, decorators TEXT, type_parameters TEXT,
+        updated_at INTEGER, provenance TEXT
+      )`,
+      `CREATE TABLE edges (source TEXT, target TEXT, kind TEXT)`,
+      [`INSERT INTO nodes VALUES (
+        'func:full', 'function', 'fullFunc', 'mod.fullFunc',
+        'src/full.ts', 10, 25, 'fn(x: T): R',
+        'Full doc', 'typescript', 'public',
+        1, 1, 0, 0,
+        4, 18, '["@Injectable"]', '["T", "R"]',
+        1717600000, 'ast-parser'
+      )`],
+      [],
+    )
+
+    const node = store.getNode('func:full')!
+    expect(node.id).toBe('func:full')
+    expect(node.name).toBe('fullFunc')
+    expect(node.kind).toBe('function')
+    expect(node.file).toBe('src/full.ts')
+    expect(node.line).toBe(10)
+    expect(node.signature).toBe('fn(x: T): R')
+    expect(node.qualified_name).toBe('mod.fullFunc')
+
+    // Phase 1b fields
+    expect(node.end_line).toBe(25)
+    expect(node.docstring).toBe('Full doc')
+    expect(node.language).toBe('typescript')
+    expect(node.visibility).toBe('public')
+    expect(node.is_exported).toBe(true)
+    expect(node.is_async).toBe(true)
+    expect(node.is_static).toBe(false)
+    expect(node.is_abstract).toBe(false)
+
+    // Phase Z1 new fields (F-52)
+    expect(node.start_column).toBe(4)
+    expect(node.end_column).toBe(18)
+    expect(node.decorators).toEqual(['@Injectable'])
+    expect(node.type_parameters).toEqual(['T', 'R'])
+    expect(node.updated_at).toBe(1717600000)
+    expect(node.provenance).toBe('ast-parser')
+  })
+
+  test('should handle missing Z1 columns gracefully', async () => {
+    // Minimal schema without Z1 columns
+    const store = await createStoreWithDb(
+      TEST_DIR + '/minimal21',
+      `CREATE TABLE nodes (id TEXT PRIMARY KEY, kind TEXT, name TEXT, file_path TEXT, start_line INTEGER)`,
+      `CREATE TABLE edges (source TEXT, target TEXT, kind TEXT)`,
+      [`INSERT INTO nodes VALUES ('func:min', 'function', 'minFunc', 'src/min.ts', 1)`],
+      [],
+    )
+
+    const node = store.getNode('func:min')!
+    expect(node.start_column).toBeUndefined()
+    expect(node.end_column).toBeUndefined()
+    expect(node.decorators).toBeUndefined()
+    expect(node.type_parameters).toBeUndefined()
+    expect(node.updated_at).toBeUndefined()
+    expect(node.provenance).toBeUndefined()
+  })
+
+  test('should handle malformed JSON in decorators/type_parameters', async () => {
+    const store = await createStoreWithDb(
+      TEST_DIR + '/malformed',
+      `CREATE TABLE nodes (
+        id TEXT PRIMARY KEY, kind TEXT, name TEXT, file_path TEXT, start_line INTEGER,
+        decorators TEXT, type_parameters TEXT
+      )`,
+      `CREATE TABLE edges (source TEXT, target TEXT, kind TEXT)`,
+      [`INSERT INTO nodes VALUES ('func:bad', 'function', 'badFunc', 'src/bad.ts', 1, 'not-json', '{bad}')`],
+      [],
+    )
+
+    const node = store.getNode('func:bad')!
+    // Should parse gracefully to empty arrays
+    expect(node.decorators).toEqual([])
+    expect(node.type_parameters).toEqual([])
+  })
+})
+
+// ============================================================
+// Phase Z1: F-53 — P1 edge types
+// ============================================================
+
+describe('Phase Z1: F-53 P1 edge types', () => {
+  test('EdgeType union should include all 18 types', () => {
+    const validTypes: EdgeType[] = [
+      'calls', 'imports', 'data', 'control', 'inherits', 'implements',
+      'contains', 'exports', 'type_of', 'returns', 'instantiates', 'overrides',
+      'decorates',
+      'subscribes', 'publishes', 'middleware', 'flow_step', 'cross_domain',
+    ]
+    expect(validTypes.length).toBe(18)
+  })
+
+  test('P1 edge types should be valid EdgeMeta types', () => {
+    const subscribes: EdgeMeta = { type: 'subscribes', weight: 1 }
+    const publishes: EdgeMeta = { type: 'publishes', weight: 1 }
+    const middleware: EdgeMeta = { type: 'middleware', weight: 1 }
+    const flowStep: EdgeMeta = { type: 'flow_step', weight: 1 }
+    const crossDomain: EdgeMeta = { type: 'cross_domain', weight: 1 }
+
+    expect(subscribes.type).toBe('subscribes')
+    expect(publishes.type).toBe('publishes')
+    expect(middleware.type).toBe('middleware')
+    expect(flowStep.type).toBe('flow_step')
+    expect(crossDomain.type).toBe('cross_domain')
+  })
+
+  const TEST_DIR = resolve('/tmp', 'graphstore-z1-p1edges-' + Date.now())
+
+  afterEach(() => {
+    rmSync(TEST_DIR, { recursive: true, force: true })
+  })
+
+  test('P1 edge types should map from codegraph edge kinds', async () => {
+    const edgeKinds = ['subscribes', 'publishes', 'middleware', 'flow_step', 'cross_domain']
+    const edgeInserts = edgeKinds.map(kind => `INSERT INTO edges VALUES ('n:a', 'n:b', '${kind}')`)
+
+    const store = await createStoreWithDb(
+      TEST_DIR + '/p1edges',
+      `CREATE TABLE nodes (id TEXT PRIMARY KEY, kind TEXT, name TEXT, file_path TEXT, start_line INTEGER)`,
+      `CREATE TABLE edges (source TEXT, target TEXT, kind TEXT)`,
+      [
+        `INSERT INTO nodes VALUES ('n:a', 'function', 'a', 'a.ts', 1)`,
+        `INSERT INTO nodes VALUES ('n:b', 'function', 'b', 'b.ts', 1)`,
+      ],
+      edgeInserts,
+    )
+
+    const edges = store.getEdgeBetween('n:a', 'n:b')
+    expect(edges.length).toBe(5)
+    const types = new Set(edges.map(e => e.type))
+    expect(types.has('subscribes')).toBe(true)
+    expect(types.has('publishes')).toBe(true)
+    expect(types.has('middleware')).toBe(true)
+    expect(types.has('flow_step')).toBe(true)
+    expect(types.has('cross_domain')).toBe(true)
+  })
+})
+
+// ============================================================
+// Phase Z1: F-54 — FileRecord
+// ============================================================
+
+describe('Phase Z1: F-54 FileRecord', () => {
+  const TEST_DIR = resolve('/tmp', 'graphstore-z1-filerecord-' + Date.now())
+
+  afterEach(() => {
+    rmSync(TEST_DIR, { recursive: true, force: true })
+  })
+
+  test('should build fileRecords from nodes', async () => {
+    const store = await createStoreWithDb(
+      TEST_DIR + '/filerecord1',
+      `CREATE TABLE nodes (
+        id TEXT PRIMARY KEY, kind TEXT, name TEXT, file_path TEXT, start_line INTEGER,
+        end_line INTEGER, language TEXT
+      )`,
+      `CREATE TABLE edges (source TEXT, target TEXT, kind TEXT)`,
+      [
+        `INSERT INTO nodes VALUES ('func:a', 'function', 'a', 'src/foo.ts', 1, 10, 'typescript')`,
+        `INSERT INTO nodes VALUES ('func:b', 'function', 'b', 'src/foo.ts', 12, 20, 'typescript')`,
+        `INSERT INTO nodes VALUES ('func:c', 'function', 'c', 'src/bar.ts', 1, 5, 'javascript')`,
+      ],
+      [],
+    )
+
+    expect(store.fileRecords.size).toBe(2)
+
+    const fooRecord = store.fileRecords.get('src/foo.ts')!
+    expect(fooRecord).toBeDefined()
+    expect(fooRecord.path).toBe('src/foo.ts')
+    expect(fooRecord.language).toBe('typescript')
+    expect(fooRecord.nodeCount).toBe(2)
+    expect(fooRecord.lineCount).toBe(20) // max end_line
+
+    const barRecord = store.fileRecords.get('src/bar.ts')!
+    expect(barRecord).toBeDefined()
+    expect(barRecord.nodeCount).toBe(1)
+    expect(barRecord.language).toBe('javascript')
+    expect(barRecord.lineCount).toBe(5)
+  })
+
+  test('fileRecords should be cleared on reload', async () => {
+    const store = await createStoreWithDb(
+      TEST_DIR + '/filerecord2',
+      `CREATE TABLE nodes (id TEXT PRIMARY KEY, kind TEXT, name TEXT, file_path TEXT, start_line INTEGER)`,
+      `CREATE TABLE edges (source TEXT, target TEXT, kind TEXT)`,
+      [`INSERT INTO nodes VALUES ('func:x', 'function', 'x', 'x.ts', 1)`],
+      [],
+    )
+
+    expect(store.fileRecords.size).toBe(1)
+    store.markDirty()
+    await store.load()
+    // After reload, fileRecords should be rebuilt
+    expect(store.fileRecords.size).toBe(1)
+  })
+
+  test('empty nodes should produce empty fileRecords', async () => {
+    const store = await createStoreWithDb(
+      TEST_DIR + '/filerecord3',
+      `CREATE TABLE nodes (id TEXT PRIMARY KEY, kind TEXT, name TEXT, file_path TEXT, start_line INTEGER)`,
+      `CREATE TABLE edges (source TEXT, target TEXT, kind TEXT)`,
+      [],
+      [],
+    )
+
+    expect(store.fileRecords.size).toBe(0)
+  })
+})
+
+// ============================================================
+// Phase Z1: F-85 — Edge confidence system
+// ============================================================
+
+describe('Phase Z1: F-85 Edge confidence', () => {
+  const TEST_DIR = resolve('/tmp', 'graphstore-z1-confidence-' + Date.now())
+
+  afterEach(() => {
+    rmSync(TEST_DIR, { recursive: true, force: true })
+  })
+
+  test('codegraph edges should have EXTRACTED confidence', async () => {
+    const store = await createStoreWithDb(
+      TEST_DIR + '/conf1',
+      `CREATE TABLE nodes (id TEXT PRIMARY KEY, kind TEXT, name TEXT, file_path TEXT, start_line INTEGER)`,
+      `CREATE TABLE edges (source TEXT, target TEXT, kind TEXT)`,
+      [
+        `INSERT INTO nodes VALUES ('n:a', 'function', 'a', 'a.ts', 1)`,
+        `INSERT INTO nodes VALUES ('n:b', 'function', 'b', 'b.ts', 1)`,
+      ],
+      [`INSERT INTO edges VALUES ('n:a', 'n:b', 'calls')`],
+    )
+
+    const edges = store.getEdgeBetween('n:a', 'n:b')
+    expect(edges.length).toBe(1)
+    expect(edges[0].confidence).toBe('EXTRACTED')
+  })
+
+  test('Grok edges should have AMBIGUOUS confidence', async () => {
+    const dir = TEST_DIR + '/conf2'
+    mkdirSync(resolve(dir, '.codegraph'), { recursive: true })
+
+    // Create empty codegraph DB
+    const dbPath = resolve(dir, '.codegraph', 'codegraph.db')
+    const db = new Database(dbPath)
+    db.run(`CREATE TABLE nodes (id TEXT PRIMARY KEY, kind TEXT, name TEXT, file_path TEXT, start_line INTEGER)`)
+    db.run(`CREATE TABLE edges (source TEXT, target TEXT, kind TEXT)`)
+    db.close()
+
+    // Create Grok JSON with edges
+    const grokDir = resolve(dir, '.understand-anything')
+    mkdirSync(grokDir, { recursive: true })
+    writeFileSync(resolve(grokDir, 'knowledge-graph.json'), JSON.stringify({
+      nodes: [
+        { id: 'grok:a', name: 'a', kind: 'function', file: 'a.ts', line: 1 },
+        { id: 'grok:b', name: 'b', kind: 'function', file: 'b.ts', line: 1 },
+      ],
+      edges: [{ from: 'grok:a', to: 'grok:b', type: 'depends' }],
+    }))
+
+    const store = GraphStore.getInstance(dir)
+    await store.load()
+
+    const edges = store.getEdgeBetween('grok:a', 'grok:b')
+    expect(edges.length).toBe(1)
+    expect(edges[0].confidence).toBe('AMBIGUOUS')
+  })
+
+  test('EdgeMeta should support optional metadata field', () => {
+    const edge: EdgeMeta = {
+      type: 'calls',
+      weight: 1,
+      confidence: 'EXTRACTED',
+      metadata: { line: 42, column: 10 },
+    }
+    expect(edge.metadata).toEqual({ line: 42, column: 10 })
+  })
+})
+
+// ============================================================
+// Phase Z1: F-95 — DataSourceAdapter
+// ============================================================
+
+describe('Phase Z1: F-95 DataSourceAdapter', () => {
+  const TEST_DIR = resolve('/tmp', 'graphstore-z1-adapter-' + Date.now())
+
+  afterEach(() => {
+    rmSync(TEST_DIR, { recursive: true, force: true })
+  })
+
+  test('CodegraphDbAdapter.isAvailable should return true when DB exists', async () => {
+    const dir = TEST_DIR + '/adapter1'
+    mkdirSync(resolve(dir, '.codegraph'), { recursive: true })
+    const db = new Database(resolve(dir, '.codegraph', 'codegraph.db'))
+    db.run(`CREATE TABLE nodes (id TEXT PRIMARY KEY, kind TEXT, name TEXT, file_path TEXT, start_line INTEGER)`)
+    db.run(`CREATE TABLE edges (source TEXT, target TEXT, kind TEXT)`)
+    db.close()
+
+    const adapter = new CodegraphDbAdapter(dir)
+    expect(adapter.isAvailable()).toBe(true)
+  })
+
+  test('CodegraphDbAdapter.isAvailable should return false when DB missing', () => {
+    const adapter = new CodegraphDbAdapter('/tmp/nonexistent-' + Date.now())
+    expect(adapter.isAvailable()).toBe(false)
+  })
+
+  test('CodegraphDbAdapter.load should return nodes and edges', async () => {
+    const dir = TEST_DIR + '/adapter2'
+    mkdirSync(resolve(dir, '.codegraph'), { recursive: true })
+    const db = new Database(resolve(dir, '.codegraph', 'codegraph.db'))
+    db.run(`CREATE TABLE nodes (id TEXT PRIMARY KEY, kind TEXT, name TEXT, file_path TEXT, start_line INTEGER, language TEXT)`)
+    db.run(`CREATE TABLE edges (source TEXT, target TEXT, kind TEXT)`)
+    db.run(`INSERT INTO nodes VALUES ('f:a', 'function', 'foo', 'src/a.ts', 10, 'typescript')`)
+    db.run(`INSERT INTO nodes VALUES ('f:b', 'function', 'bar', 'src/b.ts', 20, 'typescript')`)
+    db.run(`INSERT INTO edges VALUES ('f:a', 'f:b', 'calls')`)
+    db.close()
+
+    const adapter = new CodegraphDbAdapter(dir)
+    const result = await adapter.load()
+
+    expect(result.nodes.length).toBe(2)
+    expect(result.edges.length).toBe(1)
+    expect(result.nodes[0].id).toBe('f:a')
+    expect(result.edges[0].from).toBe('f:a')
+    expect(result.edges[0].to).toBe('f:b')
+    expect(result.edges[0].type).toBe('calls')
+  })
+
+  test('GrokJsonAdapter.isAvailable should return true when JSON exists', async () => {
+    const dir = TEST_DIR + '/adapter3'
+    mkdirSync(resolve(dir, '.understand-anything'), { recursive: true })
+    writeFileSync(resolve(dir, '.understand-anything', 'knowledge-graph.json'), '{"nodes":[],"edges":[]}')
+
+    const adapter = new GrokJsonAdapter(dir)
+    expect(adapter.isAvailable()).toBe(true)
+  })
+
+  test('GrokJsonAdapter.isAvailable should return false when JSON missing', () => {
+    const adapter = new GrokJsonAdapter('/tmp/nonexistent-' + Date.now())
+    expect(adapter.isAvailable()).toBe(false)
+  })
+
+  test('GrokJsonAdapter.load should return nodes and edges', async () => {
+    const dir = TEST_DIR + '/adapter4'
+    mkdirSync(resolve(dir, '.understand-anything'), { recursive: true })
+    writeFileSync(resolve(dir, '.understand-anything', 'knowledge-graph.json'), JSON.stringify({
+      nodes: [
+        { id: 'g:a', name: 'alpha', kind: 'function', file: 'a.ts', line: 1, layer: 'L1' },
+      ],
+      edges: [
+        { from: 'g:a', to: 'g:b', type: 'depends' },
+      ],
+    }))
+
+    const adapter = new GrokJsonAdapter(dir)
+    const result = await adapter.load()
+
+    expect(result.nodes.length).toBe(1)
+    expect(result.nodes[0].id).toBe('g:a')
+    expect(result.edges.length).toBe(1)
+    expect(result.edges[0].type).toBe('depends')
+  })
+
+  test('DataSourceAdapter interface should be implementable', () => {
+    // Verify the interface contract
+    const adapter: DataSourceAdapter = {
+      name: 'test',
+      isAvailable: () => true,
+      load: async () => ({ nodes: [], edges: [] }),
+    }
+    expect(adapter.name).toBe('test')
+    expect(adapter.isAvailable()).toBe(true)
   })
 })

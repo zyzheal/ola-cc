@@ -131,3 +131,36 @@
 - **Tests**: 80 tests (56 OperationRouter + 24 UnderstandChat) all passing
 - **Commit**: 1fc89aa1
 - **Files**: 4 new files
+
+### Algorithm Correctness + Rollback + Acceptance Matrix (F-112/F-114/F-115) — 2026-06-06 - DONE
+- **F-112 Algorithm Correctness Tests** (`src/services/graph/__tests__/algorithmCorrectness.test.ts`):
+  - 26 rigorous tests: PageRank convergence/symmetry, Louvain modularity bounds,
+    Katz convergence/finiteness, Betweenness determinism/bridge detection,
+    Tarjan SCC strong-connectivity, topological sort edge-ordering/cycle-detection
+- **F-114 RollbackManager** (`src/services/graph/RollbackManager.ts`):
+  - Snapshot backup/restore for knowledge-graph.json
+  - createRollback(): auto-tag + metadata + backup to .understand-anything/backups/
+  - listRollbacks(): sorted by timestamp descending
+  - rollback(): safety-net pre-rollback backup before restore
+  - deleteRollback(), prune(maxKeep) for cleanup
+  - 13 tests using temp directories
+- **F-115 AcceptanceMatrix** (`src/services/graph/AcceptanceMatrix.ts`):
+  - 6 user stories: symbol search, impact analysis, architecture understanding,
+    data flow tracing, cyclic dependency detection, onboarding
+  - verifyAll(): batch validation returning pass/fail/skip counts
+  - 14 tests across DAG/cycle/chain/star/empty topologies
+- **Commit**: aac97574
+- **Files**: 5 new files (2 source + 3 tests)
+- **Test Results**: 53 new tests all passing
+
+### Data Model Extensions (Phase Z1) — 2026-06-06 - DONE
+- **F-52 NodeMetadata full 21 fields**: Added start_column, end_column, decorators (string[]), type_parameters (string[]), updated_at (number), provenance (string) — total 21 fields
+- **F-53 EdgeMeta 5 P1 edge types**: subscribes, publishes, middleware, flow_step, cross_domain — total 18 edge types
+- **F-54 FileRecord interface**: File-level tracking (path, language, size, lineCount, nodeCount, contentHash, lastModified) + fileRecords Map on GraphStore, auto-built during loadCodegraph
+- **F-55 Query extension**: DESIRED_NODE_COLUMNS expanded to 21 fields, PRAGMA table_info handles missing columns gracefully
+- **F-85 Edge confidence system**: EXTRACTED (codegraph.db), INFERRED (parsers), AMBIGUOUS (Grok) — set during addEdge()
+- **F-95 DataSourceAdapter interface**: CodegraphDbAdapter + GrokJsonAdapter with isAvailable()/load() contract
+- **EdgeType P1**: 5 new entries in CODEGRAPH_EDGE_MAP (subscribes/publishes/middleware/flow_step/cross_domain)
+- **EdgeMeta enhancements**: Added `confidence?: EdgeConfidence` and `metadata?: Record<string, unknown>` fields
+- **Tests**: 19 new tests all passing (51 total non-integration pass)
+- **Files**: 4 files (1 new DataSourceAdapter.ts + 2 modified source + 1 modified test)
