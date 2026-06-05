@@ -125,6 +125,16 @@ Context compression lives in `src/services/compact/`:
 
 **设计原则:** 需要程序化调用的逻辑→TypeScript；需要用户判断的交互→Skill。详见 `docs/agent-evolution-system.md`。
 
+### GraphEngine
+
+图算法引擎 (`src/services/graph/`):
+- `GraphStore.ts` — 从 codegraph.db (bun:sqlite) + knowledge-graph.json (Grok) 加载，统一加权邻接表，7 种规范边类型映射
+- `GraphEngine.ts` — 15 种图算法（BFS/DFS/Tarjan SCC/PageRank/Louvain 社区检测/Katz/Betweenness Centrality/Dominator Tree 等），零外部依赖
+- `IncrementalSync.ts` — 三级增量同步（git diff → mtime → hash）
+- 双数据源合并：codegraph.db 节点/边 + Grok JSON 语义字段（layer/domain），身份匹配按 file+name
+- 性能基线（54K 节点/114K 边）：GraphStore.load 863ms, PageRank 2.8s, Tarjan SCC 39ms, Louvain 10.4s
+- Tool 层：CodegraphTool 扩展 11 个图操作（scc/toposort/pagerank/roles/community 等），GrokTool 扩展 2 个操作（grok_architecture/grok_hotspots）
+
 ### Event System
 
 事件系统使用 NATS 作为可选的事件总线：
@@ -272,6 +282,9 @@ Safety checks (`checkPathSafetyForAutoEdit` in `src/utils/permissions/filesystem
 | `src/tools/SingularityTool/` | TS→Skill 集成桥梁: `SingularityTool.ts` (34个singularity API操作 + whitelist白名单 + DiverseStrategies + GT契约evals验证) |
 | `src/services/singularity/EvolutionEngine.ts` | ASAEF 8阶段进化状态机 (P0→P8, Layer Promotion, Early Stopping) |
 | `src/services/singularity/storage.ts` | ExecutionRecord JSONL 持久化 + 防污染 train/test split |
+| `src/services/graph/GraphEngine.ts` | 核心图算法引擎（15 种算法：PageRank/Tarjan SCC/Louvain 等） |
+| `src/services/graph/GraphStore.ts` | 统一图存储层（codegraph.db + Grok JSON 双数据源适配器） |
+| `src/services/graph/IncrementalSync.ts` | 三级增量同步（git diff → mtime → hash） |
 
 ## Documentation Update Policy
 
@@ -368,3 +381,14 @@ Don't continue from a state you can't describe back.
 
 ## Match Conventions
 Conformance > taste. If a convention seems harmful, surface it — don't fork silently.
+
+## Context Resumption Rules
+
+After context compression or session restoration:
+
+1. **Read execution state FIRST** — check TodoWrite tasks and Memory files to determine where work left off. Do NOT re-derive the state from the summary alone.
+2. **Do NOT announce intentions** — never say "now I will do X" or "let me write the file". Just execute the next action directly.
+3. **Do NOT re-summarize** — the summary already contains the context. Restating it wastes turns and delays execution.
+4. **Continue from exact next action** — if a task was `in_progress`, resume at the precise step (e.g., `Write` the file, not "read files to prepare").
+5. **Use TodoWrite for multi-step work** — before starting complex tasks, create todos so compression doesn't lose execution position.
+6. **One action per recovery turn** — the first turn after resumption should be a tool call (Write/Edit/Bash), not a text message.
