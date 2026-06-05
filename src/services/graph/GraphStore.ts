@@ -5,6 +5,14 @@
  * 合并为统一的加权邻接表表示。
  *
  * 设计文档: docs/superpowers/specs/2026-06-05-codegraph-grok-enhancement-design.md §2.2
+ *
+ * Phase 1b changes:
+ * - EdgeType expansion: 7 → 12+1 (exports, type_of, returns, instantiates, overrides, decorates)
+ * - Schema validation: PRAGMA table_info before SELECT, graceful handling of missing columns
+ * - fileKeyToId identity bridge: Grok nodes merge with codegraph by file:name
+ * - New public API: getOutNeighborIds, getInNeighborIds, getEdgeBetween, getOutDegree, getInDegree, getWeightedOutDegree
+ * - loadingPromise concurrent lock: concurrent load() calls share same promise
+ * - NodeMetadata extended fields: end_line, docstring, language, visibility, is_exported, is_async, is_static, is_abstract
  */
 
 import { Database } from 'bun:sqlite'
@@ -17,7 +25,7 @@ import { logForDebugging } from '../../utils/debug.js'
 // ============================================================
 
 export interface EdgeMeta {
-  type: 'calls' | 'imports' | 'data' | 'control' | 'inherits' | 'implements' | 'contains'
+  type: 'calls' | 'imports' | 'data' | 'control' | 'inherits' | 'implements' | 'contains' | 'exports' | 'type_of' | 'returns' | 'instantiates' | 'overrides' | 'decorates'
   weight: number
 }
 
@@ -31,6 +39,15 @@ export interface NodeMetadata {
   qualified_name?: string
   layer?: string
   domain?: string
+  // Phase 1b extended fields (from codegraph.db)
+  end_line?: number
+  docstring?: string
+  language?: string
+  visibility?: string
+  is_exported?: boolean
+  is_async?: boolean
+  is_static?: boolean
+  is_abstract?: boolean
 }
 
 export interface GraphData {
@@ -40,7 +57,7 @@ export interface GraphData {
 }
 
 // ============================================================
-// Edge type mapping (design doc §2.2 v8)
+// Edge type mapping (Phase 1b: expanded to 12+1)
 // ============================================================
 
 const CODEGRAPH_EDGE_MAP: Record<string, EdgeMeta['type']> = {
@@ -50,7 +67,12 @@ const CODEGRAPH_EDGE_MAP: Record<string, EdgeMeta['type']> = {
   references: 'data',
   extends: 'inherits',
   implements: 'implements',
-  instantiates: 'calls',
+  exports: 'exports',
+  type_of: 'type_of',
+  returns: 'returns',
+  instantiates: 'instantiates',
+  overrides: 'overrides',
+  decorates: 'decorates',
 }
 
 const GROK_EDGE_MAP: Record<string, EdgeMeta['type']> = {
@@ -67,6 +89,27 @@ function mapGrokEdgeType(type: string): EdgeMeta['type'] {
 }
 
 // ============================================================
+// Schema-aware column resolution
+// ============================================================
+
+/** All columns we want to SELECT from nodes table (if they exist) */
+const DESIRED_NODE_COLUMNS = [
+  'id', 'kind', 'name', 'qualified_name', 'file_path', 'start_line',
+  'end_line', 'signature', 'docstring', 'language', 'visibility',
+  'is_exported', 'is_async', 'is_static', 'is_abstract',
+] as const
+
+/**
+ * Query PRAGMA table_info to get existing columns, then return
+ * the intersection with DESIRED_NODE_COLUMNS.
+ */
+function getExistingColumns(db: Database, table: string): string[] {
+  const rows = db.query(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>
+  const existing = new Set(rows.map(r => r.name))
+  return DESIRED_NODE_COLUMNS.filter(col => existing.has(col))
+}
+
+// ============================================================
 // GraphStore
 // ============================================================
 
@@ -78,6 +121,7 @@ export class GraphStore {
   public readonly nodeMeta = new Map<string, NodeMetadata>()
 
   private loaded = false
+  private loadingPromise: Promise<GraphData> | null = null
 
   private constructor(private readonly projectRoot: string) {}
 
@@ -95,12 +139,29 @@ export class GraphStore {
 
   /**
    * 加载数据源（惰性，首次调用时执行）
+   * Concurrent lock: multiple calls share the same loading promise.
    */
   async load(): Promise<GraphData> {
     if (this.loaded) {
       return { adjacency: this.adjacency, reverse: this.reverse, nodeMeta: this.nodeMeta }
     }
 
+    if (this.loadingPromise) {
+      return this.loadingPromise
+    }
+
+    this.loadingPromise = this.doLoad().catch(err => {
+      // Clear loading promise on any error so next call retries
+      this.loadingPromise = null
+      throw err
+    })
+    return this.loadingPromise
+  }
+
+  /**
+   * Actual loading logic (called once, shared via loadingPromise).
+   */
+  private async doLoad(): Promise<GraphData> {
     const codegraphDbPath = resolve(this.projectRoot, '.codegraph', 'codegraph.db')
     const grokJsonPath = resolve(this.projectRoot, '.understand-anything', 'knowledge-graph.json')
 
@@ -115,12 +176,15 @@ export class GraphStore {
       )
     }
 
+    // Phase 1b: fileKeyToId bridge — build during codegraph load, use in grok load
+    let fileKeyToId: Map<string, string> | null = null
+
     if (hasCodegraph) {
-      await this.loadCodegraph(codegraphDbPath)
+      fileKeyToId = await this.loadCodegraph(codegraphDbPath)
     }
 
     if (hasGrok) {
-      this.loadGrok(grokJsonPath)
+      this.loadGrok(grokJsonPath, fileKeyToId)
     }
 
     this.loaded = true
@@ -133,6 +197,7 @@ export class GraphStore {
   async reload(): Promise<GraphData> {
     this.clear()
     this.loaded = false
+    this.loadingPromise = null
     return this.load()
   }
 
@@ -141,6 +206,7 @@ export class GraphStore {
    */
   markDirty(): void {
     this.loaded = false
+    this.loadingPromise = null
   }
 
   private clear(): void {
@@ -150,10 +216,10 @@ export class GraphStore {
   }
 
   // ----------------------------------------------------------
-  // codegraph.db 加载 (bun:sqlite)
+  // codegraph.db 加载 (bun:sqlite) — Phase 1b: schema-aware
   // ----------------------------------------------------------
 
-  private async loadCodegraph(dbPath: string): Promise<void> {
+  private async loadCodegraph(dbPath: string): Promise<Map<string, string>> {
     let db: Database
     try {
       db = new Database(dbPath, { readonly: true })
@@ -176,29 +242,43 @@ export class GraphStore {
       }
     }
 
-    try {
-      // 加载 nodes
-      const nodes = db!.query('SELECT id, kind, name, qualified_name, file_path, start_line, signature FROM nodes').all() as Array<{
-        id: string
-        kind: string
-        name: string
-        qualified_name: string
-        file_path: string
-        start_line: number
-        signature: string | null
-      }>
+    // Phase 1b: fileKeyToId bridge
+    const fileKeyToId = new Map<string, string>()
 
-      for (const node of nodes) {
+    try {
+      // Phase 1b: Schema-aware column selection
+      const columns = getExistingColumns(db!, 'nodes')
+      const selectClause = columns.map(c => c === 'start_line' ? 'start_line' : c).join(', ')
+
+      const nodes = db!.query(`SELECT ${selectClause} FROM nodes`).all() as Array<Record<string, unknown>>
+
+      for (const row of nodes) {
+        const id = row.id as string
         const meta: NodeMetadata = {
-          id: node.id,
-          name: node.name,
-          kind: node.kind,
-          file: node.file_path,
-          line: node.start_line,
-          signature: node.signature ?? undefined,
-          qualified_name: node.qualified_name,
+          id,
+          name: row.name as string,
+          kind: row.kind as string,
+          file: (row.file_path ?? '') as string,
+          line: (row.start_line ?? 0) as number,
+          signature: (row.signature as string) ?? undefined,
+          qualified_name: (row.qualified_name as string) ?? undefined,
         }
-        this.nodeMeta.set(node.id, meta)
+
+        // Phase 1b: Extended fields (only set if column exists)
+        if (row.end_line != null) meta.end_line = row.end_line as number
+        if (row.docstring != null) meta.docstring = row.docstring as string
+        if (row.language != null) meta.language = row.language as string
+        if (row.visibility != null) meta.visibility = row.visibility as string
+        if (row.is_exported != null) meta.is_exported = !!row.is_exported
+        if (row.is_async != null) meta.is_async = !!row.is_async
+        if (row.is_static != null) meta.is_static = !!row.is_static
+        if (row.is_abstract != null) meta.is_abstract = !!row.is_abstract
+
+        this.nodeMeta.set(id, meta)
+
+        // Build file:name → codegraph id index
+        const fileKey = `${meta.file}:${meta.name}`
+        fileKeyToId.set(fileKey, id)
       }
 
       // 加载 edges
@@ -215,13 +295,15 @@ export class GraphStore {
     } finally {
       db!.close()
     }
+
+    return fileKeyToId
   }
 
   // ----------------------------------------------------------
-  // knowledge-graph.json 加载
+  // knowledge-graph.json 加载 — Phase 1b: fileKeyToId merge
   // ----------------------------------------------------------
 
-  private loadGrok(jsonPath: string): void {
+  private loadGrok(jsonPath: string, fileKeyToId: Map<string, string> | null): void {
     let raw: string
     try {
       raw = readFileSync(jsonPath, 'utf-8')
@@ -246,19 +328,22 @@ export class GraphStore {
       return
     }
 
-    // 加载 Grok nodes（合并到已有 nodeMeta）
+    // Phase 1b: Merge Grok nodes with codegraph nodes using fileKeyToId bridge
     for (const node of data.nodes) {
-      const key = `${node.file}:${node.name}`
-      const existing = this.nodeMeta.get(key)
+      const fileKey = `${node.file}:${node.name}`
+      const codegraphId = fileKeyToId?.get(fileKey)
 
-      if (existing) {
-        // 合并：语义字段以 Grok 为准
-        existing.layer = node.layer || existing.layer
-        existing.domain = node.domain || existing.domain
+      if (codegraphId) {
+        // Merge: add semantic fields to existing codegraph node
+        const existing = this.nodeMeta.get(codegraphId)
+        if (existing) {
+          existing.layer = node.layer || existing.layer
+          existing.domain = node.domain || existing.domain
+        }
       } else {
-        // Grok 独有节点
-        this.nodeMeta.set(key, {
-          id: key,
+        // Grok-only node: store with file:name key
+        this.nodeMeta.set(fileKey, {
+          id: fileKey,
           name: node.name,
           kind: node.kind,
           file: node.file,
@@ -273,7 +358,10 @@ export class GraphStore {
     // 加载 Grok edges（合并到已有 adjacency）
     for (const edge of data.edges) {
       const edgeType = mapGrokEdgeType(edge.type)
-      this.addEdge(edge.from, edge.to, edgeType, 1)
+      // Resolve edge endpoints: try fileKeyToId for codegraph merge
+      const fromId = fileKeyToId?.get(edge.from) ?? edge.from
+      const toId = fileKeyToId?.get(edge.to) ?? edge.to
+      this.addEdge(fromId, toId, edgeType, 1)
     }
   }
 
@@ -383,6 +471,79 @@ export class GraphStore {
       }
     }
     return result
+  }
+
+  // ----------------------------------------------------------
+  // Phase 1b: New public API methods
+  // ----------------------------------------------------------
+
+  /**
+   * Get unique outgoing neighbor IDs for a node.
+   */
+  getOutNeighborIds(nodeId: string): string[] {
+    const outMap = this.adjacency.get(nodeId)
+    if (!outMap) return []
+    return [...outMap.keys()]
+  }
+
+  /**
+   * Get unique incoming neighbor IDs for a node.
+   */
+  getInNeighborIds(nodeId: string): string[] {
+    const inMap = this.reverse.get(nodeId)
+    if (!inMap) return []
+    return [...inMap.keys()]
+  }
+
+  /**
+   * Get all edges between two nodes (in either direction combined, but typically from→to).
+   */
+  getEdgeBetween(from: string, to: string): EdgeMeta[] {
+    return this.adjacency.get(from)?.get(to) ?? []
+  }
+
+  /**
+   * Get out-degree (number of unique outgoing edges).
+   */
+  getOutDegree(nodeId: string): number {
+    const outMap = this.adjacency.get(nodeId)
+    if (!outMap) return 0
+    let count = 0
+    for (const edges of outMap.values()) {
+      count += edges.length
+    }
+    return count
+  }
+
+  /**
+   * Get in-degree (number of unique incoming edges).
+   */
+  getInDegree(nodeId: string): number {
+    const inMap = this.reverse.get(nodeId)
+    if (!inMap) return 0
+    let count = 0
+    for (const edges of inMap.values()) {
+      count += edges.length
+    }
+    return count
+  }
+
+  /**
+   * Get weighted out-degree (sum of weights of outgoing edges).
+   * Optionally exclude specific edge types.
+   */
+  getWeightedOutDegree(nodeId: string, excludeTypes?: string[]): number {
+    const outMap = this.adjacency.get(nodeId)
+    if (!outMap) return 0
+    let total = 0
+    for (const edges of outMap.values()) {
+      for (const edge of edges) {
+        if (!excludeTypes || !excludeTypes.includes(edge.type)) {
+          total += edge.weight
+        }
+      }
+    }
+    return total
   }
 
   /**
