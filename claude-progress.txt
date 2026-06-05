@@ -96,3 +96,38 @@
 - **Tests**: 14 tests passing (5 StructuralFingerprint + 9 ChangeClassifier)
 - **Commit**: 6e687760
 - **Files**: StructuralFingerprint.ts, ChangeClassifier.ts, + 2 test files
+
+### Non-code File Parsers (Phase 4) — 2026-06-06 - DONE
+- **Parser types**: ParsedNode, ParsedEdge, ParserResult, FileParser 接口
+- **ParserRegistry**: 扩展名 + 文件名模式双重索引，parseAll() 扫描项目目录
+- **P0 parsers**:
+  - DockerfileParser: 多阶段构建、EXPOSE 端口、ENTRYPOINT/CMD、RUN install
+  - CIParser: GitHub Actions workflows、jobs、steps、actions、needs 依赖
+  - YAMLParser: docker-compose services/ports/depends_on、k8s manifests、通用 YAML
+  - JSONParser: package.json (scripts/deps/entry/workspaces)、tsconfig (extends/references)、通用 JSON ($ref)
+- **P1 parsers**:
+  - TerraformParser: resources/variables/outputs/modules/data_sources、var./module. 引用
+  - OpenAPIParser: paths/operations/schemas、request/response schema 引用
+  - GraphQLParser: types/queries/mutations/enums/interfaces、字段类型引用
+  - ProtobufParser: messages/services/enums/RPCs、字段类型引用、request/response
+  - SQLParser: tables/columns/indexes、FOREIGN KEY/REFERENCES 引用
+- **GraphStore integration**: loadParsers() 在 doLoad() 中调用，mapParserEdgeType() 映射 15 种边类型
+- **Tests**: 32 tests all passing
+- **Commit**: 1f58952f
+- **Files**: 14 files (parsers/ + index.ts + types.ts + ParserRegistry + 9 parsers + parsers.test.ts + GraphStore.ts 修改)
+- **Zero external deps**: 纯正则/字符串解析，无 yaml/json AST 库
+
+### OperationRouter + UnderstandChat (F-110) — 2026-06-06 - DONE
+- **OperationRouter** (`src/tools/CodegraphTool/OperationRouter.ts`):
+  - 智能路由 CLI vs GraphEngine vs Hybrid
+  - 8 个 CLI 操作、9 个 Engine 操作、2 个 Hybrid 操作
+  - `codegraph_impact` 深度依赖路由（depth>2 → engine，else → cli）
+  - `getAvailable()` 根据数据源可用性返回推荐操作列表
+- **UnderstandChat** (`src/tools/GrokTool/UnderstandChat.ts`):
+  - 代码库 Q&A 系统，基于 GraphStore + GraphEngine
+  - `extractTerms()`: stop word 过滤 + camelCase 拆分 + dotted identifier 提取
+  - `findContext()`: 节点搜索 + PageRank 排序 + 图事实生成
+  - `buildPrompt()`: 结构化 LLM prompt（符号、关系、layer/domain、指令）
+- **Tests**: 80 tests (56 OperationRouter + 24 UnderstandChat) all passing
+- **Commit**: 1fc89aa1
+- **Files**: 4 new files
