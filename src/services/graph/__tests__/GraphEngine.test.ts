@@ -1116,3 +1116,279 @@ describe('integration: real codegraph.db', () => {
     expect(sccs.length).toBeGreaterThan(0)
   }, 30000)
 })
+
+// ============================================================
+// 17. F-66: classifyRoles with is_exported/visibility
+// ============================================================
+
+describe('classifyRoles — F-66 exported/visibility', () => {
+  test('exported symbol with fanIn=0 gets entry role', () => {
+    const store = createStoreFromAdjacency({
+      A: ['B'],
+      B: [],
+    }, 'exported-entry-test')
+
+    // Mark A as exported
+    store.nodeMeta.get('A')!.is_exported = true
+
+    const engine = new GraphEngine(store)
+    const roles = engine.classifyRoles()
+
+    expect(roles.get('A')).toBe('entry')
+  })
+
+  test('exported symbol with high fan-in becomes adaptor', () => {
+    // Build graph with many nodes calling into X
+    const adj: Record<string, string[] | Array<{ to: string; type: string }>> = {
+      entry1: ['X'],
+      entry2: ['X'],
+      entry3: ['X'],
+      entry4: ['X'],
+      entry5: ['X'],
+      entry6: ['X'],
+      X: ['internal'],
+      internal: [],
+    }
+    const store = createStoreFromAdjacency(adj, 'exported-adaptor-test')
+
+    // Mark X as exported with high fan-in
+    store.nodeMeta.get('X')!.is_exported = true
+    store.nodeMeta.get('X')!.kind = 'function'
+
+    const engine = new GraphEngine(store)
+    const roles = engine.classifyRoles()
+
+    // X should be adaptor (exported + high fan-in)
+    expect(roles.get('X')).toBe('adaptor')
+  })
+
+  test('private visibility demotes from core to utility', () => {
+    // Build a chain where the middle node would normally be core
+    const store = createStoreFromAdjacency({
+      A: ['B', 'C'],
+      B: ['C', 'D'],
+      C: ['D'],
+      D: [],
+    }, 'private-demote-test')
+
+    // Mark C as private
+    store.nodeMeta.get('C')!.visibility = 'private'
+
+    const engine = new GraphEngine(store)
+    const roles = engine.classifyRoles()
+
+    // C should NOT be 'core' (private demotion)
+    // It should fall through to utility or leaf (D has fanOut=0, fanIn=1 → leaf)
+    // C has fanIn=2 (from A, B), fanOut=1 (to D)
+    expect(roles.get('C')).not.toBe('core')
+  })
+
+  test('non-exported non-private nodes use default classification', () => {
+    const { engine } = dag()
+    const roles = engine.classifyRoles()
+
+    // Standard dag classification should be unchanged
+    expect(roles.get('A')).toBe('entry')
+    expect(roles.get('C')).toBe('leaf')
+  })
+})
+
+// ============================================================
+// 18. F-67: backwardDataSlice with type_of/returns edges
+// ============================================================
+
+describe('backwardDataSlice — F-67 type_of/returns', () => {
+  test('follows type_of edges backward', () => {
+    const store = createStoreFromAdjacency({
+      TypeA: [{ to: 'VarX', type: 'type_of' }],
+      VarX: [],
+    }, 'type-of-slice-test')
+    const engine = new GraphEngine(store)
+
+    const result = engine.backwardDataSlice('VarX')
+
+    expect(result.symbols).toContain('VarX')
+    expect(result.symbols).toContain('TypeA')
+    expect(result.dataFlows).toContainEqual({ from: 'TypeA', to: 'VarX', via: 'type_of' })
+  })
+
+  test('follows returns edges backward', () => {
+    const store = createStoreFromAdjacency({
+      FuncA: [{ to: 'RetVal', type: 'returns' }],
+      RetVal: [],
+    }, 'returns-slice-test')
+    const engine = new GraphEngine(store)
+
+    const result = engine.backwardDataSlice('RetVal')
+
+    expect(result.symbols).toContain('RetVal')
+    expect(result.symbols).toContain('FuncA')
+    expect(result.dataFlows).toContainEqual({ from: 'FuncA', to: 'RetVal', via: 'returns' })
+  })
+
+  test('follows mixed data/type_of/returns edges', () => {
+    const store = createStoreFromAdjacency({
+      A: [{ to: 'Target', type: 'data' }],
+      B: [{ to: 'Target', type: 'type_of' }],
+      C: [{ to: 'Target', type: 'returns' }],
+      D: [{ to: 'Target', type: 'calls' }],  // should NOT be followed
+      Target: [],
+    }, 'mixed-data-slice-test')
+    const engine = new GraphEngine(store)
+
+    const result = engine.backwardDataSlice('Target')
+
+    expect(result.symbols).toContain('A')
+    expect(result.symbols).toContain('B')
+    expect(result.symbols).toContain('C')
+    expect(result.symbols).not.toContain('D') // calls not followed
+  })
+
+  test('backward traversal follows chains', () => {
+    const store = createStoreFromAdjacency({
+      Source: [{ to: 'Mid', type: 'type_of' }],
+      Mid: [{ to: 'Target', type: 'returns' }],
+      Target: [],
+    }, 'chain-data-slice-test')
+    const engine = new GraphEngine(store)
+
+    const result = engine.backwardDataSlice('Target')
+
+    expect(result.symbols).toContain('Source')
+    expect(result.symbols).toContain('Mid')
+    expect(result.symbols).toContain('Target')
+  })
+})
+
+// ============================================================
+// 19. F-68: Edge Participation Matrix
+// ============================================================
+
+describe('EDGE_PARTICIPATION — F-68', () => {
+  test('pageRank includes all semantic edge types', () => {
+    const { EDGE_PARTICIPATION } = require('../GraphEngine.js')
+    expect(EDGE_PARTICIPATION.pageRank).toContain('calls')
+    expect(EDGE_PARTICIPATION.pageRank).toContain('imports')
+    expect(EDGE_PARTICIPATION.pageRank).toContain('data')
+    expect(EDGE_PARTICIPATION.pageRank).toContain('cross_domain')
+    expect(EDGE_PARTICIPATION.pageRank).not.toContain('contains')
+  })
+
+  test('louvain includes all semantic edge types', () => {
+    const { EDGE_PARTICIPATION } = require('../GraphEngine.js')
+    expect(EDGE_PARTICIPATION.louvain).toContain('calls')
+    expect(EDGE_PARTICIPATION.louvain).toContain('cross_domain')
+    expect(EDGE_PARTICIPATION.louvain).not.toContain('contains')
+  })
+
+  test('dataSlice includes only data-relevant edges', () => {
+    const { EDGE_PARTICIPATION } = require('../GraphEngine.js')
+    expect(EDGE_PARTICIPATION.dataSlice).toContain('data')
+    expect(EDGE_PARTICIPATION.dataSlice).toContain('type_of')
+    expect(EDGE_PARTICIPATION.dataSlice).toContain('returns')
+    expect(EDGE_PARTICIPATION.dataSlice).toContain('reads')
+    expect(EDGE_PARTICIPATION.dataSlice).toContain('writes')
+    expect(EDGE_PARTICIPATION.dataSlice).toContain('transforms')
+    expect(EDGE_PARTICIPATION.dataSlice).not.toContain('calls')
+    expect(EDGE_PARTICIPATION.dataSlice).not.toContain('contains')
+  })
+
+  test('all includes all 40 edge types', () => {
+    const { EDGE_PARTICIPATION } = require('../GraphEngine.js')
+    // P0: 13 base types (minus 'contains')
+    expect(EDGE_PARTICIPATION.all).toContain('calls')
+    expect(EDGE_PARTICIPATION.all).toContain('data')
+    expect(EDGE_PARTICIPATION.all).toContain('exports')
+    // P1: 5 types
+    expect(EDGE_PARTICIPATION.all).toContain('subscribes')
+    expect(EDGE_PARTICIPATION.all).toContain('cross_domain')
+    // P2: 11 types
+    expect(EDGE_PARTICIPATION.all).toContain('reads')
+    expect(EDGE_PARTICIPATION.all).toContain('writes')
+    expect(EDGE_PARTICIPATION.all).toContain('tests')
+    expect(EDGE_PARTICIPATION.all).toContain('queues')
+    // P3: 11 types
+    expect(EDGE_PARTICIPATION.all).toContain('serializes')
+    expect(EDGE_PARTICIPATION.all).toContain('encrypts')
+    expect(EDGE_PARTICIPATION.all).toContain('authenticates')
+    expect(EDGE_PARTICIPATION.all).toContain('rate_limits')
+    // should NOT contain 'contains'
+    expect(EDGE_PARTICIPATION.all).not.toContain('contains')
+  })
+})
+
+// ============================================================
+// 20. F-97-P2: New EdgeType expansion (P2/P3)
+// ============================================================
+
+describe('EdgeType P2/P3 expansion — F-97', () => {
+  test('GraphStore accepts P2 edge types', async () => {
+    const { GraphStore: GS } = await import('../GraphStore.js')
+    // Just verify the type compiles — no runtime error
+    const store = createStoreFromAdjacency({
+      A: [
+        { to: 'B', type: 'reads' },
+        { to: 'C', type: 'writes' },
+        { to: 'D', type: 'tests' },
+      ],
+      B: [],
+      C: [],
+      D: [],
+    }, 'p2-edge-types-test')
+
+    // Verify edges are stored
+    const outEdges = store.getOutEdges('A')
+    expect(outEdges.has('B')).toBe(true)
+    expect(outEdges.has('C')).toBe(true)
+    expect(outEdges.has('D')).toBe(true)
+
+    const bEdges = outEdges.get('B')!
+    expect(bEdges[0].type).toBe('reads')
+
+    const cEdges = outEdges.get('C')!
+    expect(cEdges[0].type).toBe('writes')
+
+    const dEdges = outEdges.get('D')!
+    expect(dEdges[0].type).toBe('tests')
+  })
+
+  test('GraphStore accepts P3 edge types', async () => {
+    const store = createStoreFromAdjacency({
+      A: [
+        { to: 'B', type: 'serializes' },
+        { to: 'C', type: 'encrypts' },
+        { to: 'D', type: 'authenticates' },
+        { to: 'E', type: 'rate_limits' },
+      ],
+      B: [],
+      C: [],
+      D: [],
+      E: [],
+    }, 'p3-edge-types-test')
+
+    const outEdges = store.getOutEdges('A')
+    expect(outEdges.get('B')![0].type).toBe('serializes')
+    expect(outEdges.get('C')![0].type).toBe('encrypts')
+    expect(outEdges.get('D')![0].type).toBe('authenticates')
+    expect(outEdges.get('E')![0].type).toBe('rate_limits')
+  })
+
+  test('backwardDataSlice follows P2/P3 data edges', () => {
+    const store = createStoreFromAdjacency({
+      Serializer: [{ to: 'Data', type: 'serializes' }],
+      Encryptor: [{ to: 'Data', type: 'encrypts' }],
+      Logger: [{ to: 'Data', type: 'logs' }],
+      Data: [],
+    }, 'p2p3-slice-test')
+    const engine = new GraphEngine(store)
+
+    // 'serializes' and 'encrypts' are in DATA_SLICE_EDGE_TYPES
+    // but 'logs' is NOT
+    const result = engine.backwardDataSlice('Data')
+
+    expect(result.symbols).toContain('Serializer')
+    expect(result.symbols).toContain('Encryptor')
+    // logs is NOT in DATA_SLICE_EDGE_TYPES, so Logger should not be found
+    expect(result.symbols).not.toContain('Logger')
+  })
+})
