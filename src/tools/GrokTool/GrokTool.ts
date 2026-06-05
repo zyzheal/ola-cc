@@ -5,11 +5,18 @@
  * 与 CodeGraph 互补：CodeGraph 做实时查询，Grok 做深度语义分析。
  */
 
+import React from 'react'
 import { z } from 'zod/v4'
 import { buildTool } from '../../Tool.js'
+import { Box, Text } from '../../ink.js'
+import { ProgressBar } from '../../components/design-system/ProgressBar.js'
 import { getCwd } from '../../utils/cwd.js'
 import { logForDebugging } from '../../utils/debug.js'
-import { grokManager } from './GrokManager.js'
+import type { ProgressMessage, ToolProgressData } from '../../types/tools.js'
+import { grokManager, GrokError, ERROR_SUGGESTIONS } from './GrokManager.js'
+import { GraphStore } from '../../services/graph/GraphStore.js'
+import { GraphEngine } from '../../services/graph/GraphEngine.js'
+import { execSync } from 'child_process'
 
 // ============================================================
 // Schema
@@ -24,6 +31,8 @@ const operationEnum = z.enum([
   'grok_diff',
   'grok_status',
   'grok_dashboard',
+  'grok_architecture',
+  'grok_hotspots',
 ])
 
 const inputSchema = z.object({
@@ -37,9 +46,33 @@ const inputSchema = z.object({
   scope: z.string().max(500).optional().describe('子目录范围（用于 grok_generate）'),
   incremental: z.boolean().optional().describe('增量更新（用于 grok_generate）'),
   port: z.number().min(1024).max(65535).optional().describe('端口号（用于 grok_dashboard）'),
+  // Graph algorithm parameters
+  damping: z.number().min(0).max(1).optional().describe('PageRank 阻尼系数（默认 0.85，用于 grok_hotspots）'),
+  resolution: z.number().min(0.1).max(10).optional().describe('社区检测分辨率（默认 1.0，用于 grok_architecture）'),
+  since: z.string().optional().describe('时间窗口起点（如 "30 days"，用于 grok_hotspots）'),
+  maxNodes: z.number().min(1).max(100).optional().describe('最大返回节点数（默认 20）'),
 })
 
 type Input = z.infer<typeof inputSchema>
+
+type GrokProgressData = ToolProgressData & {
+  stage?: string;
+  progress?: number;
+  startTime?: number;
+};
+
+// 阶段中文标签
+const STAGE_LABELS: Record<string, string> = {
+  prepare: '准备中',
+  generate: '生成中',
+  scanner: '扫描文件',
+  analyzer: '分析代码',
+  architecture: '架构分析',
+  tour: '学习路径',
+  review: '质量审查',
+  assemble: '组装图谱',
+  done: '完成',
+};
 
 // ============================================================
 // Tool
@@ -47,10 +80,85 @@ type Input = z.infer<typeof inputSchema>
 
 export const grokTool = buildTool({
   name: 'grok',
-  searchHint: 'knowledge graph code understanding semantic analysis',
+  searchHint: 'knowledge graph code understanding semantic analysis architecture community hotspots',
   maxResultSizeChars: 50_000,
   inputSchema,
-  renderToolUseMessage() { return null },
+  renderToolUseMessage(input: Record<string, unknown>) {
+    const op = input?.operation as string
+    const labels: Record<string, string> = {
+      grok_generate: '生成知识图谱',
+      grok_chat: '问答查询',
+      grok_explain: '解释代码',
+      grok_domain: '业务域分析',
+      grok_tour: '学习路径',
+      grok_diff: '变更影响',
+      grok_status: '查看状态',
+      grok_dashboard: '启动面板',
+      grok_architecture: '架构分析',
+      grok_hotspots: '热点检测',
+    }
+    const label = labels[op] || op
+    const detail = input?.question || input?.target || input?.topic || ''
+    return detail ? `${label}: ${String(detail).slice(0, 40)}` : label
+  },
+  renderToolUseProgressMessage(
+    progressMessages: ProgressMessage<GrokProgressData>[],
+    options?: { verbose?: boolean },
+  ) {
+    const last = progressMessages.at(-1);
+    if (!last?.data) {
+      return React.createElement(Text, { dimColor: true }, 'Grok…');
+    }
+    const { stage, progress, startTime } = last.data;
+    const verbose = options?.verbose ?? false;
+
+    // 完成状态
+    if (stage === 'done') {
+      return React.createElement(Text, { dimColor: true }, 'Grok · Done');
+    }
+
+    const stageLabel = STAGE_LABELS[stage || ''] || (stage ? stage.charAt(0).toUpperCase() + stage.slice(1) : 'Grok');
+
+    // 有百分比时显示进度条（generate 操作）
+    if (progress != null && progress > 0) {
+      const ratio = Math.min(progress / 100, 1);
+
+      // Verbose 模式：显示步骤历史
+      if (verbose && progressMessages.length > 1) {
+        const steps = new Map<string, number>();
+        for (const msg of progressMessages) {
+          if (msg.data?.stage && msg.data?.progress != null) {
+            steps.set(msg.data.stage, msg.data.progress);
+          }
+        }
+        const stepLines = Object.entries(STAGE_LABELS)
+          .filter(([key]) => steps.has(key))
+          .map(([key, label]) => {
+            const pct = steps.get(key) || 0;
+            const marker = pct >= 100 ? '✓' : pct > 0 ? '▸' : '○';
+            return `${marker} ${label} ${pct}%`;
+          });
+
+        return React.createElement(Box, { flexDirection: 'column' },
+          React.createElement(Box, { flexDirection: 'row', gap: 1 },
+            React.createElement(Text, { dimColor: true }, `Grok · ${stageLabel}`),
+            React.createElement(ProgressBar, { ratio, width: 16 }),
+            React.createElement(Text, { dimColor: true }, `${progress}%`),
+          ),
+          ...stepLines.map(line =>
+            React.createElement(Text, { dimColor: true, key: line }, `  ${line}`)
+          ),
+        );
+      }
+
+      return React.createElement(Box, { flexDirection: 'row', gap: 1 },
+        React.createElement(Text, { dimColor: true }, `Grok · ${stageLabel}`),
+        React.createElement(ProgressBar, { ratio, width: 16 }),
+        React.createElement(Text, { dimColor: true }, `${progress}%`),
+      );
+    }
+    return React.createElement(Text, { dimColor: true }, `Grok · ${stageLabel}…`);
+  },
 
   async description() {
     return (
@@ -60,18 +168,27 @@ export const grokTool = buildTool({
   },
 
   async call(input: Input, _context, _canUseTool, _parentMessage, _onProgress) {
+    const sendProgress = (stage: string) => {
+      _onProgress?.({ toolUseID: '', data: { type: 'grok_progress', stage } })
+    }
+
     try {
+      sendProgress('prepare')
       await grokManager.ensureGrokSource()
 
       let result: unknown
 
       switch (input.operation) {
         case 'grok_generate': {
+          sendProgress('generate')
           const genResult = await grokManager.runAgentPipeline({
             path: input.path || getCwd(),
             language: input.language,
             scope: input.scope,
             incremental: input.incremental ?? true,
+            onProgress: (stage, progress) => {
+              _onProgress?.({ toolUseID: '', data: { type: 'grok_progress', stage, progress } })
+            },
           })
           result = genResult
           break
@@ -81,6 +198,7 @@ export const grokTool = buildTool({
           if (!input.question) {
             return { data: { error: true, message: 'grok_chat 需要 question 参数' } }
           }
+          sendProgress('chat')
           const chatResult = await grokManager.queryGraph(input.question)
           result = chatResult
           break
@@ -90,6 +208,7 @@ export const grokTool = buildTool({
           if (!input.target) {
             return { data: { error: true, message: 'grok_explain 需要 target 参数' } }
           }
+          sendProgress('explain')
           const explainResult = await grokManager.queryGraph(
             `Explain ${input.target}: what it does, its relationships, which layer and domain it belongs to`
           )
@@ -101,6 +220,7 @@ export const grokTool = buildTool({
         }
 
         case 'grok_domain': {
+          sendProgress('domain')
           const domainResult = await grokManager.queryGraph(
             'Analyze the business domains in this codebase. List each domain with its flows and files.'
           )
@@ -109,6 +229,7 @@ export const grokTool = buildTool({
         }
 
         case 'grok_tour': {
+          sendProgress('tour')
           const tourResult = await grokManager.queryGraph(
             input.topic
               ? `Create a guided learning tour for: ${input.topic}`
@@ -122,6 +243,7 @@ export const grokTool = buildTool({
           if (!input.files || input.files.length === 0) {
             return { data: { error: true, message: 'grok_diff 需要 files 参数' } }
           }
+          sendProgress('diff')
           const diffResult = await grokManager.queryGraph(
             `Analyze the impact of changes to these files: ${input.files.join(', ')}`
           )
@@ -130,14 +252,174 @@ export const grokTool = buildTool({
         }
 
         case 'grok_status': {
+          sendProgress('status')
           const status = await grokManager.getGraphStatus()
           result = status
           break
         }
 
         case 'grok_dashboard': {
+          sendProgress('dashboard')
           const dashResult = await grokManager.startDashboard(input.port)
           result = dashResult
+          break
+        }
+
+        case 'grok_architecture': {
+          sendProgress('architecture')
+          const projectRoot = getCwd()
+          const store = GraphStore.getInstance(projectRoot)
+          await store.load()
+          const engine = new GraphEngine(store)
+
+          // Run Louvain community detection + role classification
+          const community = engine.louvainCommunity({ resolution: input.resolution ?? 1.0 })
+          const roles = engine.classifyRoles()
+          const limit = input.maxNodes ?? 20
+
+          // Build role distribution summary
+          const roleDistribution: Record<string, number> = {}
+          for (const [, role] of roles) {
+            roleDistribution[role] = (roleDistribution[role] ?? 0) + 1
+          }
+
+          // Build community summary for LLM
+          const communitySummary = community.communities
+            .sort((a, b) => b.size - a.size)
+            .slice(0, 10)
+            .map(c => `Community ${c.id}: ${c.size} nodes (sample: ${c.nodes.slice(0, 3).join(', ')})`)
+            .join('\n')
+
+          const llmPrompt = [
+            'Analyze this code architecture based on community detection and role classification:',
+            '',
+            `## Communities (${community.communities.length} total, modularity=${community.modularity})`,
+            communitySummary,
+            '',
+            `## Role Distribution`,
+            ...Object.entries(roleDistribution).map(([r, count]) => `- ${r}: ${count}`),
+            '',
+            'Provide a concise architectural summary: what are the main modules, how they relate, and any structural concerns.',
+          ].join('\n')
+
+          let llmSummary = ''
+          try {
+            const chatResult = await grokManager.queryGraph(llmPrompt)
+            llmSummary = chatResult.answer
+          } catch {
+            // LLM enrichment is optional — graph data is still returned
+            llmSummary = '(LLM enrichment unavailable)'
+          }
+
+          result = {
+            communities: community.communities
+              .sort((a, b) => b.size - a.size)
+              .slice(0, limit)
+              .map(c => ({
+                id: c.id,
+                size: c.size,
+                sample: c.nodes.slice(0, 5),
+              })),
+            modularity: community.modularity,
+            resolution: community.resolution,
+            totalCommunities: community.communities.length,
+            roles: {
+              distribution: roleDistribution,
+              totalNodes: roles.size,
+            },
+            llmSummary,
+          }
+          break
+        }
+
+        case 'grok_hotspots': {
+          sendProgress('hotspots')
+          const projectRoot = getCwd()
+          const store = GraphStore.getInstance(projectRoot)
+          await store.load()
+          const engine = new GraphEngine(store)
+
+          // PageRank for hotspot detection
+          const pr = engine.pageRank(input.damping ?? 0.85)
+          const topN = input.maxNodes ?? 20
+          const hotspots = pr.scores.slice(0, topN).map(s => ({
+            node: s.node,
+            score: Math.round(s.score * 10000) / 10000,
+            meta: store.getNode(s.node),
+          }))
+
+          // Git-based temporal coupling (same pattern as codegraph_temporal)
+          let temporalPairs: Array<{ a: string; b: string; score: number; coChanges: number }> = []
+          let totalCommits = 0
+          try {
+            const sinceArg = input.since ? `--since="${input.since}"` : '--since="30 days"'
+            const gitLog = execSync(
+              `git log --name-only --pretty=format:"COMMIT:%H" ${sinceArg}`,
+              { cwd: projectRoot, encoding: 'utf-8', timeout: 30000 }
+            )
+            const commits = gitLog.split(/^COMMIT:/m).filter(Boolean)
+            totalCommits = commits.length
+            const coChangeMap = new Map<string, number>()
+            for (const commit of commits) {
+              const lines = commit.trim().split('\n').filter(l => l && !l.startsWith('COMMIT:'))
+              for (let i = 0; i < lines.length; i++) {
+                for (let j = i + 1; j < lines.length; j++) {
+                  const key = [lines[i], lines[j]].sort().join('↔')
+                  coChangeMap.set(key, (coChangeMap.get(key) ?? 0) + 1)
+                }
+              }
+            }
+            temporalPairs = [...coChangeMap.entries()]
+              .map(([key, count]) => {
+                const [a, b] = key.split('↔')
+                return { a, b, score: count, coChanges: count }
+              })
+              .sort((a, b) => b.coChanges - a.coChanges)
+              .slice(0, topN)
+          } catch {
+            // Git not available — skip temporal coupling
+          }
+
+          // Build LLM prompt
+          const hotspotSummary = hotspots
+            .slice(0, 10)
+            .map(h => `- ${h.node} (score: ${h.score})`)
+            .join('\n')
+          const temporalSummary = temporalPairs
+            .slice(0, 10)
+            .map(p => `- ${p.a} <-> ${p.b} (${p.coChanges} co-changes)`)
+            .join('\n')
+
+          const llmPrompt = [
+            'Analyze code hotspots and temporal coupling patterns:',
+            '',
+            `## Top Hotspots (by PageRank)`,
+            hotspotSummary || '(none)',
+            '',
+            `## Temporal Coupling (top co-changed pairs, last 30 days, ${totalCommits} commits)`,
+            temporalSummary || '(none)',
+            '',
+            'Identify: which files are architectural hotspots that need refactoring, which file pairs have high coupling risk, and any recommended actions.',
+          ].join('\n')
+
+          let llmSummary = ''
+          try {
+            const chatResult = await grokManager.queryGraph(llmPrompt)
+            llmSummary = chatResult.answer
+          } catch {
+            llmSummary = '(LLM enrichment unavailable)'
+          }
+
+          result = {
+            hotspots,
+            totalScored: pr.scores.length,
+            temporalCoupling: {
+              pairs: temporalPairs,
+              totalCommits,
+              window: { since: input.since ?? '30 days', until: 'now' },
+            },
+            llmSummary,
+          }
           break
         }
 
@@ -145,14 +427,42 @@ export const grokTool = buildTool({
           return { data: { error: true, message: `未知操作: ${input.operation}` } }
       }
 
+      // 所有操作完成时发送完成进度
+      sendProgress('done')
+
+      // 查询操作追加过期提示
+      const isQueryOp = ['grok_chat', 'grok_explain', 'grok_domain', 'grok_tour', 'grok_diff'].includes(input.operation)
+      if (isQueryOp) {
+        const status = await grokManager.getGraphStatus()
+        if (status.stale) {
+          const days = status.lastUpdated
+            ? Math.round((Date.now() - new Date(status.lastUpdated).getTime()) / (24 * 60 * 60 * 1000))
+            : '?'
+          return {
+            data: {
+              ok: true, operation: input.operation, result,
+              _freshnessNote: `知识图谱已 ${days} 天未更新，结果可能过时。执行 grok_generate 可刷新。`,
+            },
+          }
+        }
+      }
+
       return { data: { ok: true, operation: input.operation, result } }
     } catch (error) {
       logForDebugging(`[grok] error: ${error}`)
+      const isGrokError = error instanceof GrokError
+      const code = isGrokError ? error.code : 'UNKNOWN'
+      const suggestion = isGrokError
+        ? error.suggestion
+        : ERROR_SUGGESTIONS[code]
       return {
         data: {
           error: true,
           operation: input.operation,
+          code,
           message: error instanceof Error ? error.message : String(error),
+          recoverable: isGrokError ? error.recoverable : false,
+          ...(suggestion ? { suggestion } : {}),
         },
       }
     }
@@ -170,14 +480,18 @@ export const grokTool = buildTool({
     return true
   },
   isReadOnly(input) {
-    return input?.operation !== 'grok_generate'
+    const op = input?.operation
+    return op !== 'grok_generate' && op !== 'grok_dashboard'
   },
   mapToolResultToToolResultBlockParam(output, toolUseID) {
     const text = JSON.stringify(output, null, 2)
+    const isError = (output as Record<string, unknown>)?.data &&
+      ((output as Record<string, unknown>).data as Record<string, unknown>)?.error === true
     return {
       tool_use_id: toolUseID,
       type: 'tool_result',
       content: text,
+      ...(isError && { is_error: true }),
     }
   },
 })
