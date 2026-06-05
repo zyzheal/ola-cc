@@ -678,13 +678,16 @@ export class GraphEngine {
       symbols.push(current)
 
       const inEdges = this.store.getInEdges(current)
-      for (const [source, edge] of inEdges) {
-        if (edge.type === 'data') {
-          hasDataEdges = true
-          dataFlows.push({ from: source, to: current, via: edge.type })
-          if (!visited.has(source)) {
-            visited.add(source)
-            queue.push(source)
+      for (const [source, edges] of inEdges) {
+        for (const edge of edges) {
+          if (edge.type === 'data') {
+            hasDataEdges = true
+            dataFlows.push({ from: source, to: current, via: edge.type })
+            if (!visited.has(source)) {
+              visited.add(source)
+              queue.push(source)
+            }
+            break // 找到一个 data 边就够了
           }
         }
       }
@@ -910,21 +913,27 @@ export class GraphEngine {
     const community = new Map<string, number>()
     nodes.forEach((node, i) => community.set(node, i))
 
-    // 计算总边数 (2m)
+    // 计算总边数 (2m) — 仅出边权重
     let totalWeight = 0
     for (const [, outMap] of this.store.adjacency) {
-      for (const [, edge] of outMap) {
-        totalWeight += edge.weight
+      for (const [, edges] of outMap) {
+        for (const edge of edges) {
+          totalWeight += edge.weight
+        }
       }
     }
     if (totalWeight === 0) totalWeight = 1
 
-    // 节点度数
+    // 节点度数（出边 + 入边，与 totalWeight = 2m 一致）
     const degree = new Map<string, number>()
     for (const node of nodes) {
       let deg = 0
-      for (const [, edge] of this.store.getOutEdges(node)) deg += edge.weight
-      for (const [, edge] of this.store.getInEdges(node)) deg += edge.weight
+      for (const [, edges] of this.store.getOutEdges(node)) {
+        for (const edge of edges) deg += edge.weight
+      }
+      for (const [, edges] of this.store.getInEdges(node)) {
+        for (const edge of edges) deg += edge.weight
+      }
       degree.set(node, deg)
     }
 
@@ -943,17 +952,26 @@ export class GraphEngine {
         const currentCommunity = community.get(node)!
         const nodeDeg = degree.get(node) ?? 0
 
-        // 计算邻居社区
+        // 计算邻居社区（出边 + 入边，与 degree 定义一致）
         const neighborCommunities = new Map<number, number>()
-        const allEdges = [
-          ...this.store.getOutEdges(node),
-          ...this.store.getInEdges(node),
-        ]
+        const outEdges = this.store.getOutEdges(node)
+        const inEdges = this.store.getInEdges(node)
 
-        for (const [neighbor, edge] of allEdges) {
+        for (const [neighbor, edges] of outEdges) {
           const nc = community.get(neighbor)
           if (nc !== undefined) {
-            neighborCommunities.set(nc, (neighborCommunities.get(nc) ?? 0) + edge.weight)
+            for (const edge of edges) {
+              neighborCommunities.set(nc, (neighborCommunities.get(nc) ?? 0) + edge.weight)
+            }
+          }
+        }
+
+        for (const [neighbor, edges] of inEdges) {
+          const nc = community.get(neighbor)
+          if (nc !== undefined) {
+            for (const edge of edges) {
+              neighborCommunities.set(nc, (neighborCommunities.get(nc) ?? 0) + edge.weight)
+            }
           }
         }
 
@@ -964,10 +982,12 @@ export class GraphEngine {
         for (const [candidateComm, edgeWeightToComm] of neighborCommunities) {
           if (candidateComm === currentCommunity) continue
 
-          // Modularity gain: ΔQ = resolution * (1/2m) * (k_i_in - k_i * Σ_tot / m)
+          // Modularity gain: ΔQ = resolution * (k_i_in/2m - k_i * Σ_tot / (2m)^2)
+          // degree = in+out, so 2m = 2 * totalWeight
           const sigmaIn = edgeWeightToComm
           const sigmaTot = communityDegreeSum.get(candidateComm) ?? 0
-          const gain = resolution * (sigmaIn - (nodeDeg * sigmaTot) / totalWeight)
+          const twoM = 2 * totalWeight
+          const gain = resolution * ((sigmaIn / twoM) - (nodeDeg * sigmaTot) / (twoM * twoM))
 
           if (gain > bestGain) {
             bestGain = gain
@@ -1007,13 +1027,17 @@ export class GraphEngine {
       let commDegree = 0
       for (const node of comm.nodes) {
         commDegree += degree.get(node) ?? 0
-        for (const [target, edge] of this.store.getOutEdges(node)) {
+        for (const [target, edges] of this.store.getOutEdges(node)) {
           if (community.get(target) === comm.id) {
-            internalWeight += edge.weight
+            for (const edge of edges) {
+              internalWeight += edge.weight
+            }
           }
         }
       }
-      Q += (internalWeight / totalWeight) - resolution * Math.pow(commDegree / totalWeight, 2)
+      // degree = in+out, so 2m = 2 * totalWeight
+      const twoM = 2 * totalWeight
+      Q += (internalWeight / twoM) - resolution * Math.pow(commDegree / twoM, 2)
     }
 
     return { communities, modularity: Math.round(Q * 1000) / 1000, resolution }
@@ -1037,7 +1061,7 @@ export class GraphEngine {
 
   private getOutNeighborIds(nodeId: string): string[] {
     const outEdges = this.store.getOutEdges(nodeId)
-    return [...outEdges.keys()].filter(k => !k.includes('::'))
+    return [...outEdges.keys()]
   }
 
   private intersectDominators(a: string, b: string, dominated: Map<string, string | null>): string | null {
@@ -1089,9 +1113,11 @@ export class GraphEngine {
   private snapshotToEdgeSet(snapshot: GraphSnapshot): Map<string, { from: string; to: string; type: string }> {
     const edges = new Map<string, { from: string; to: string; type: string }>()
     for (const [from, outMap] of snapshot.adjacency) {
-      for (const [to, edge] of outMap) {
-        const key = `${from}→${to}:${edge.type}`
-        edges.set(key, { from, to, type: edge.type })
+      for (const [to, edgeArray] of outMap) {
+        for (const edge of edgeArray) {
+          const key = `${from}→${to}:${edge.type}`
+          edges.set(key, { from, to, type: edge.type })
+        }
       }
     }
     return edges
@@ -1109,11 +1135,21 @@ export class GraphEngine {
 
   private getMethodFields(methodId: string): string[] {
     const fields: string[] = []
-    for (const [target, edge] of this.store.getOutEdges(methodId)) {
-      if (edge.type === 'data') fields.push(target)
+    for (const [target, edges] of this.store.getOutEdges(methodId)) {
+      for (const edge of edges) {
+        if (edge.type === 'data') {
+          fields.push(target)
+          break
+        }
+      }
     }
-    for (const [source, edge] of this.store.getInEdges(methodId)) {
-      if (edge.type === 'data') fields.push(source)
+    for (const [source, edges] of this.store.getInEdges(methodId)) {
+      for (const edge of edges) {
+        if (edge.type === 'data') {
+          fields.push(source)
+          break
+        }
+      }
     }
     return fields
   }

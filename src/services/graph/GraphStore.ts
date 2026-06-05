@@ -34,8 +34,8 @@ export interface NodeMetadata {
 }
 
 export interface GraphData {
-  adjacency: Map<string, Map<string, EdgeMeta>>
-  reverse: Map<string, Map<string, EdgeMeta>>
+  adjacency: Map<string, Map<string, EdgeMeta[]>>
+  reverse: Map<string, Map<string, EdgeMeta[]>>
   nodeMeta: Map<string, NodeMetadata>
 }
 
@@ -73,8 +73,8 @@ function mapGrokEdgeType(type: string): EdgeMeta['type'] {
 export class GraphStore {
   private static instances = new Map<string, GraphStore>()
 
-  public readonly adjacency = new Map<string, Map<string, EdgeMeta>>()
-  public readonly reverse = new Map<string, Map<string, EdgeMeta>>()
+  public readonly adjacency = new Map<string, Map<string, EdgeMeta[]>>()
+  public readonly reverse = new Map<string, Map<string, EdgeMeta[]>>()
   public readonly nodeMeta = new Map<string, NodeMetadata>()
 
   private loaded = false
@@ -282,6 +282,8 @@ export class GraphStore {
   // ----------------------------------------------------------
 
   private addEdge(from: string, to: string, type: EdgeMeta['type'], weight: number): void {
+    const edgeMeta: EdgeMeta = { type, weight }
+
     // 正向
     let fromMap = this.adjacency.get(from)
     if (!fromMap) {
@@ -290,15 +292,17 @@ export class GraphStore {
     }
     const existing = fromMap.get(to)
     if (!existing) {
-      fromMap.set(to, { type, weight })
-    } else if (existing.type === type) {
-      // 同类型边去重，保留最高权重
-      existing.weight = Math.max(existing.weight, weight)
+      fromMap.set(to, [edgeMeta])
     } else {
-      // 不同类型边保留（如 calls + data 同时存在）
-      // 用合并 key 避免覆盖
-      const mergedKey = `${to}::${type}`
-      fromMap.set(mergedKey, { type, weight })
+      // 检查是否已有同类型边
+      const sameType = existing.find(e => e.type === type)
+      if (sameType) {
+        // 同类型边去重，保留最高权重
+        sameType.weight = Math.max(sameType.weight, weight)
+      } else {
+        // 不同类型边追加到数组
+        existing.push(edgeMeta)
+      }
     }
 
     // 反向
@@ -309,26 +313,28 @@ export class GraphStore {
     }
     const existingRev = toReverse.get(from)
     if (!existingRev) {
-      toReverse.set(from, { type, weight })
-    } else if (existingRev.type === type) {
-      existingRev.weight = Math.max(existingRev.weight, weight)
+      toReverse.set(from, [edgeMeta])
     } else {
-      const mergedKey = `${from}::${type}`
-      toReverse.set(mergedKey, { type, weight })
+      const sameTypeRev = existingRev.find(e => e.type === type)
+      if (sameTypeRev) {
+        sameTypeRev.weight = Math.max(sameTypeRev.weight, weight)
+      } else {
+        existingRev.push(edgeMeta)
+      }
     }
   }
 
   /**
-   * 获取节点的出边（忽略合并 key 后缀）
+   * 获取节点的出边
    */
-  getOutEdges(nodeId: string): Map<string, EdgeMeta> {
+  getOutEdges(nodeId: string): Map<string, EdgeMeta[]> {
     return this.adjacency.get(nodeId) ?? new Map()
   }
 
   /**
    * 获取节点的入边
    */
-  getInEdges(nodeId: string): Map<string, EdgeMeta> {
+  getInEdges(nodeId: string): Map<string, EdgeMeta[]> {
     return this.reverse.get(nodeId) ?? new Map()
   }
 
@@ -340,12 +346,54 @@ export class GraphStore {
   }
 
   /**
+   * 兼容性辅助：获取单个边类型（返回第一个匹配的边）
+   */
+  getEdge(from: string, to: string, type?: string): EdgeMeta | undefined {
+    const edges = this.adjacency.get(from)?.get(to)
+    if (!edges) return undefined
+    if (type) return edges.find(e => e.type === type)
+    return edges[0]
+  }
+
+  /**
+   * 兼容性辅助：获取所有边（展平数组）
+   */
+  getAllOutEdges(nodeId: string): Array<{ target: string; edge: EdgeMeta }> {
+    const result: Array<{ target: string; edge: EdgeMeta }> = []
+    const outMap = this.adjacency.get(nodeId)
+    if (!outMap) return result
+    for (const [target, edges] of outMap) {
+      for (const edge of edges) {
+        result.push({ target, edge })
+      }
+    }
+    return result
+  }
+
+  /**
+   * 兼容性辅助：获取所有入边（展平数组）
+   */
+  getAllInEdges(nodeId: string): Array<{ source: string; edge: EdgeMeta }> {
+    const result: Array<{ source: string; edge: EdgeMeta }> = []
+    const inMap = this.reverse.get(nodeId)
+    if (!inMap) return result
+    for (const [source, edges] of inMap) {
+      for (const edge of edges) {
+        result.push({ source, edge })
+      }
+    }
+    return result
+  }
+
+  /**
    * 图规模
    */
   get size(): { nodes: number; edges: number } {
     let edgeCount = 0
     for (const map of this.adjacency.values()) {
-      edgeCount += map.size
+      for (const edges of map.values()) {
+        edgeCount += edges.length
+      }
     }
     return { nodes: this.nodeMeta.size, edges: edgeCount }
   }

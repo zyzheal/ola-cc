@@ -69,7 +69,7 @@ export function createStoreFromAdjacency(
         fromMap = new Map()
         store.adjacency.set(from, fromMap)
       }
-      fromMap.set(to, { type, weight })
+      fromMap.set(to, [{ type, weight }])
 
       // 反向边
       let toReverse = store.reverse.get(to)
@@ -77,7 +77,7 @@ export function createStoreFromAdjacency(
         toReverse = new Map()
         store.reverse.set(to, toReverse)
       }
-      toReverse.set(from, { type, weight })
+      toReverse.set(from, [{ type, weight }])
     }
   }
 

@@ -54,8 +54,10 @@ describe('GraphStore', () => {
       const edgeTypes = new Set<EdgeMeta['type']>()
 
       for (const [, outMap] of store.adjacency) {
-        for (const [, edge] of outMap) {
-          edgeTypes.add(edge.type)
+        for (const [, edges] of outMap) {
+          for (const edge of edges) {
+            edgeTypes.add(edge.type)
+          }
         }
       }
 
@@ -73,7 +75,6 @@ describe('GraphStore', () => {
       for (const [from, outMap] of store.adjacency) {
         if (outMap.size === 0) continue
         const firstTarget = [...outMap.keys()][0]
-        if (firstTarget.includes('::')) continue // 跳过合并 key
 
         const reverseMap = store.getInEdges(firstTarget)
         expect(reverseMap.has(from)).toBe(true)
@@ -94,11 +95,13 @@ describe('GraphStore', () => {
       await store.load()
       // 找一条 calls 边验证
       for (const [, outMap] of store.adjacency) {
-        for (const [, edge] of outMap) {
-          if (edge.type === 'calls') {
-            expect(edge.type).toBe('calls')
-            expect(edge.weight).toBe(1)
-            return
+        for (const [, edges] of outMap) {
+          for (const edge of edges) {
+            if (edge.type === 'calls') {
+              expect(edge.type).toBe('calls')
+              expect(edge.weight).toBe(1)
+              return
+            }
           }
         }
       }
@@ -107,10 +110,12 @@ describe('GraphStore', () => {
     test('contains kind maps to contains type', async () => {
       await store.load()
       for (const [, outMap] of store.adjacency) {
-        for (const [, edge] of outMap) {
-          if (edge.type === 'contains') {
-            expect(edge.type).toBe('contains')
-            return
+        for (const [, edges] of outMap) {
+          for (const edge of edges) {
+            if (edge.type === 'contains') {
+              expect(edge.type).toBe('contains')
+              return
+            }
           }
         }
       }
@@ -137,6 +142,54 @@ describe('GraphStore', () => {
       const nodes = [...store.nodeMeta.values()]
       const withQN = nodes.filter(n => n.qualified_name)
       expect(withQN.length).toBeGreaterThan(0)
+    })
+  })
+
+  describe('EdgeMeta[] array storage', () => {
+    test('adjacency values should be EdgeMeta[] arrays, not single EdgeMeta', async () => {
+      // 加载后，adjacency.get(from).get(to) 应该返回 EdgeMeta[] 数组
+      await store.load()
+
+      // 找一个有出边的节点
+      for (const [from, outMap] of store.adjacency) {
+        if (outMap.size === 0) continue
+        for (const [to, value] of outMap) {
+          // 关键断言：value 应该是数组 (EdgeMeta[])，不是对象 (EdgeMeta)
+          expect(Array.isArray(value)).toBe(true)
+          if (Array.isArray(value)) {
+            expect(value.length).toBeGreaterThan(0)
+            // 每个元素应该有 type 和 weight
+            for (const edge of value) {
+              expect(edge).toHaveProperty('type')
+              expect(edge).toHaveProperty('weight')
+            }
+          }
+          return // 只检查第一条边
+        }
+      }
+    })
+
+    test('no merged keys with :: separator in adjacency', async () => {
+      // 新设计不应该有 `${to}::${type}` 这样的合并 key
+      await store.load()
+
+      for (const [from, outMap] of store.adjacency) {
+        for (const [key] of outMap) {
+          expect(key).not.toContain('::')
+        }
+      }
+    })
+
+    test('reverse edges should also be EdgeMeta[] arrays', async () => {
+      await store.load()
+
+      for (const [to, inMap] of store.reverse) {
+        if (inMap.size === 0) continue
+        for (const [from, value] of inMap) {
+          expect(Array.isArray(value)).toBe(true)
+          return
+        }
+      }
     })
   })
 
