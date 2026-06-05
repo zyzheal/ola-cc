@@ -20,8 +20,10 @@ describe('GraphStore', () => {
   let store: GraphStore
 
   beforeEach(() => {
-    // 每次测试获取新实例（通过不同 key 避免缓存）
-    store = GraphStore.getInstance(PROJECT_ROOT + '::test-' + Date.now())
+    // 使用 PROJECT_ROOT 作为 key（GraphStore 用它解析 .codegraph/ 路径）
+    // markDirty() 强制重新加载避免缓存污染
+    store = GraphStore.getInstance(PROJECT_ROOT)
+    store.markDirty()
   })
 
   describe('load()', () => {
