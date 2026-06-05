@@ -7,7 +7,8 @@
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test'
 import { mkdirSync, writeFileSync, rmSync, existsSync, readFileSync } from 'fs'
 import { resolve } from 'path'
-import { GrokAssembler, computeFileFingerprint } from '../GrokAssembler.js'
+import { GrokAssembler, computeFileFingerprint, normalizeKind, validateGraphNode, validateGraphEdge, validateGraphData } from '../GrokAssembler.js'
+import type { ReviewResult } from '../GrokAssembler.js'
 import type { GraphNode, GraphEdge, GraphData } from '../GrokManager.js'
 import { GrokError } from '../GrokManager.js'
 
@@ -429,5 +430,278 @@ describe('saveGraph', () => {
     const saved = JSON.parse(readFileSync(filePath, 'utf-8'))
     expect(saved.nodes).toEqual([])
     expect(saved.edges).toEqual([])
+  })
+})
+
+// ============================================
+// normalizeKind — LLM kind 变体映射
+// ============================================
+
+describe('normalizeKind', () => {
+  it('should map fn → function', () => {
+    expect(normalizeKind('fn')).toBe('function')
+  })
+
+  it('should map proc → procedure', () => {
+    expect(normalizeKind('proc')).toBe('procedure')
+  })
+
+  it('should map const → constant', () => {
+    expect(normalizeKind('const')).toBe('constant')
+  })
+
+  it('should map class_method → method', () => {
+    expect(normalizeKind('class_method')).toBe('method')
+  })
+
+  it('should map iface → interface', () => {
+    expect(normalizeKind('iface')).toBe('interface')
+  })
+
+  it('should map enum_type → enum', () => {
+    expect(normalizeKind('enum_type')).toBe('enum')
+  })
+
+  it('should pass through canonical kinds unchanged', () => {
+    expect(normalizeKind('function')).toBe('function')
+    expect(normalizeKind('class')).toBe('class')
+    expect(normalizeKind('interface')).toBe('interface')
+    expect(normalizeKind('enum')).toBe('enum')
+  })
+
+  it('should be case-insensitive', () => {
+    expect(normalizeKind('FN')).toBe('function')
+    expect(normalizeKind('Class_Method')).toBe('method')
+  })
+
+  it('should return original string for unknown kinds', () => {
+    expect(normalizeKind('widget')).toBe('widget')
+    expect(normalizeKind('')).toBe('symbol')
+  })
+})
+
+// ============================================
+// Zod Validation — validateGraphNode / validateGraphEdge / validateGraphData
+// ============================================
+
+describe('Zod validation', () => {
+  describe('validateGraphNode', () => {
+    it('should accept a valid node', () => {
+      const node = { id: 'a.ts:foo', name: 'foo', kind: 'function', file: 'a.ts', line: 1, signature: 'fn()', summary: 'test', layer: '', domain: '' }
+      const result = validateGraphNode(node)
+      expect(result.success).toBe(true)
+      expect(result.data!.kind).toBe('function')
+    })
+
+    it('should normalize kind on valid node', () => {
+      const node = { id: 'a.ts:foo', name: 'foo', kind: 'fn', file: 'a.ts', line: 1, signature: '', summary: '', layer: '', domain: '' }
+      const result = validateGraphNode(node)
+      expect(result.success).toBe(true)
+      expect(result.data!.kind).toBe('function')
+    })
+
+    it('should reject node with missing required fields', () => {
+      const node = { name: 'foo', kind: 'function' }
+      const result = validateGraphNode(node)
+      expect(result.success).toBe(false)
+      expect(result.error).toBeDefined()
+    })
+
+    it('should reject node with wrong types', () => {
+      const node = { id: 123, name: 'foo', kind: 'function', file: 'a.ts', line: 'not-a-number', signature: '', summary: '', layer: '', domain: '' }
+      const result = validateGraphNode(node)
+      expect(result.success).toBe(false)
+    })
+  })
+
+  describe('validateGraphEdge', () => {
+    it('should accept a valid edge', () => {
+      const edge = { from: 'a.ts:foo', to: 'b.ts:bar', type: 'calls' }
+      const result = validateGraphEdge(edge)
+      expect(result.success).toBe(true)
+    })
+
+    it('should reject edge with missing fields', () => {
+      const edge = { from: 'a.ts:foo' }
+      const result = validateGraphEdge(edge)
+      expect(result.success).toBe(false)
+    })
+
+    it('should reject edge with wrong types', () => {
+      const edge = { from: 123, to: 'b.ts:bar', type: 'calls' }
+      const result = validateGraphEdge(edge)
+      expect(result.success).toBe(false)
+    })
+  })
+
+  describe('validateGraphData', () => {
+    it('should accept valid graph data', () => {
+      const data = {
+        nodes: [
+          { id: 'a.ts:foo', name: 'foo', kind: 'function', file: 'a.ts', line: 1, signature: '', summary: '', layer: '', domain: '' },
+        ],
+        edges: [
+          { from: 'a.ts:foo', to: 'a.ts:foo', type: 'calls' },
+        ],
+      }
+      const result = validateGraphData(data)
+      expect(result.success).toBe(true)
+      expect(result.validNodes).toBe(1)
+      expect(result.validEdges).toBe(1)
+      expect(result.invalidNodes).toBe(0)
+      expect(result.invalidEdges).toBe(0)
+    })
+
+    it('should skip invalid nodes and keep valid ones', () => {
+      const data = {
+        nodes: [
+          { id: 'a.ts:foo', name: 'foo', kind: 'function', file: 'a.ts', line: 1, signature: '', summary: '', layer: '', domain: '' },
+          { name: 'bad' }, // missing required fields
+        ],
+        edges: [],
+      }
+      const result = validateGraphData(data)
+      expect(result.success).toBe(true)
+      expect(result.validNodes).toBe(1)
+      expect(result.invalidNodes).toBe(1)
+      expect(result.errors.length).toBeGreaterThan(0)
+    })
+
+    it('should skip invalid edges and keep valid ones', () => {
+      const data = {
+        nodes: [
+          { id: 'a.ts:foo', name: 'foo', kind: 'fn', file: 'a.ts', line: 1, signature: '', summary: '', layer: '', domain: '' },
+        ],
+        edges: [
+          { from: 'a.ts:foo', to: 'a.ts:foo', type: 'calls' },
+          { from: 'a.ts:foo' }, // missing 'to' and 'type'
+        ],
+      }
+      const result = validateGraphData(data)
+      expect(result.validEdges).toBe(1)
+      expect(result.invalidEdges).toBe(1)
+    })
+
+    it('should report low pass rate warning', () => {
+      const data = {
+        nodes: [
+          { id: 'a', name: 'a', kind: 'fn', file: 'a.ts', line: 1, signature: '', summary: '', layer: '', domain: '' },
+          { name: 'bad1' },
+          { name: 'bad2' },
+          { name: 'bad3' },
+          { name: 'bad4' },
+        ],
+        edges: [],
+      }
+      const result = validateGraphData(data)
+      expect(result.passRate).toBeLessThan(0.8)
+      expect(result.warnings.length).toBeGreaterThan(0)
+    })
+  })
+})
+
+// ============================================
+// assembleReview — ID 规范化 + 去重 + 边完整性
+// ============================================
+
+describe('assembleReview', () => {
+  let assembler: GrokAssembler
+
+  beforeEach(() => {
+    assembler = new GrokAssembler(TEST_DIR)
+  })
+
+  it('should normalize IDs by stripping #counter suffixes', () => {
+    const nodes: GraphNode[] = [
+      { id: 'a.ts:foo#1', name: 'foo', kind: 'function', file: 'a.ts', line: 1, signature: '', summary: '', layer: '', domain: '' },
+      { id: 'b.ts:bar#2', name: 'bar', kind: 'function', file: 'b.ts', line: 2, signature: '', summary: '', layer: '', domain: '' },
+    ]
+    const edges: GraphEdge[] = []
+
+    const { nodes: result, review } = assembler.assembleReview(nodes, edges)
+
+    expect(result[0].id).toBe('a.ts:foo')
+    expect(result[1].id).toBe('b.ts:bar')
+    expect(review.normalizedIds).toBe(2)
+  })
+
+  it('should remove duplicate nodes by {file, name} keeping latest', () => {
+    const nodes: GraphNode[] = [
+      { id: 'a.ts:foo', name: 'foo', kind: 'function', file: 'a.ts', line: 1, signature: 'old', summary: 'old', layer: '', domain: '' },
+      { id: 'a.ts:foo', name: 'foo', kind: 'method', file: 'a.ts', line: 10, signature: 'new', summary: 'new', layer: '', domain: '' },
+    ]
+    const edges: GraphEdge[] = []
+
+    const { nodes: result, review } = assembler.assembleReview(nodes, edges)
+
+    expect(result.length).toBe(1)
+    expect(result[0].signature).toBe('new')
+    expect(review.duplicatesRemoved).toBe(1)
+    expect(review.beforeNodes).toBe(2)
+    expect(review.afterNodes).toBe(1)
+  })
+
+  it('should remove dangling edges referencing non-existent nodes', () => {
+    const nodes: GraphNode[] = [
+      { id: 'a.ts:foo', name: 'foo', kind: 'function', file: 'a.ts', line: 1, signature: '', summary: '', layer: '', domain: '' },
+    ]
+    const edges: GraphEdge[] = [
+      { from: 'a.ts:foo', to: 'b.ts:missing', type: 'calls' },
+      { from: 'c.ts:gone', to: 'a.ts:foo', type: 'imports' },
+    ]
+
+    const { edges: result, review } = assembler.assembleReview(nodes, edges)
+
+    expect(result.length).toBe(0)
+    expect(review.danglingEdgesRemoved).toBe(2)
+  })
+
+  it('should keep valid edges', () => {
+    const nodes: GraphNode[] = [
+      { id: 'a.ts:foo', name: 'foo', kind: 'function', file: 'a.ts', line: 1, signature: '', summary: '', layer: '', domain: '' },
+      { id: 'b.ts:bar', name: 'bar', kind: 'function', file: 'b.ts', line: 2, signature: '', summary: '', layer: '', domain: '' },
+    ]
+    const edges: GraphEdge[] = [
+      { from: 'a.ts:foo', to: 'b.ts:bar', type: 'calls' },
+    ]
+
+    const { edges: result, review } = assembler.assembleReview(nodes, edges)
+
+    expect(result.length).toBe(1)
+    expect(review.danglingEdgesRemoved).toBe(0)
+  })
+
+  it('should report correct before/after counts', () => {
+    const nodes: GraphNode[] = [
+      { id: 'a.ts:foo#1', name: 'foo', kind: 'fn', file: 'a.ts', line: 1, signature: '', summary: '', layer: '', domain: '' },
+      { id: 'a.ts:foo#2', name: 'foo', kind: 'fn', file: 'a.ts', line: 5, signature: 'dup', summary: '', layer: '', domain: '' },
+      { id: 'b.ts:bar', name: 'bar', kind: 'fn', file: 'b.ts', line: 1, signature: '', summary: '', layer: '', domain: '' },
+    ]
+    const edges: GraphEdge[] = [
+      { from: 'a.ts:foo', to: 'b.ts:bar', type: 'calls' },
+      { from: 'a.ts:foo', to: 'c.ts:missing', type: 'uses' },
+    ]
+
+    const { nodes: resultNodes, edges: resultEdges, review } = assembler.assembleReview(nodes, edges)
+
+    expect(review.beforeNodes).toBe(3)
+    expect(review.afterNodes).toBe(resultNodes.length)
+    expect(review.beforeEdges).toBe(2)
+    expect(review.afterEdges).toBe(resultEdges.length)
+    expect(review.normalizedIds).toBeGreaterThanOrEqual(2)
+    expect(review.duplicatesRemoved).toBeGreaterThanOrEqual(1)
+    expect(review.danglingEdgesRemoved).toBe(1)
+  })
+
+  it('should handle empty inputs', () => {
+    const { nodes, edges, review } = assembler.assembleReview([], [])
+
+    expect(nodes).toEqual([])
+    expect(edges).toEqual([])
+    expect(review.beforeNodes).toBe(0)
+    expect(review.afterNodes).toBe(0)
+    expect(review.duplicatesRemoved).toBe(0)
+    expect(review.danglingEdgesRemoved).toBe(0)
+    expect(review.normalizedIds).toBe(0)
   })
 })
