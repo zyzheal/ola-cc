@@ -1,7 +1,7 @@
 # CodeGraph + Grok 图算法增强设计
 
 > 日期: 2026-06-05
-> 状态: Draft (v5 — 第四轮评审修复版)
+> 状态: Draft (v6 — 架构师第四轮评审修复版)
 > 范围: GraphEngine 图算法引擎 + 双引擎增强
 > 评审: 架构师(3P0/5P1/5P2) + 算法专家(5P0/5P1/5P2) + 领域架构师(2P0/3P1/3P2)
 
@@ -115,7 +115,8 @@ src/tools/GrokTool/
 当两个数据源同时存在时，GraphStore.load() 按以下规则合并：
 
 1. **符号身份匹配**: codegraph 使用 `qualified_name`（如 `src/auth.ts:AuthService.login`），Grok 使用 `file:name`（如 `src/auth.ts:login`）。匹配规则：以 `file + name` 做二级索引，Grok 的 `file:name` 解析为 `{file, name}` 后与 codegraph 的 `{file_path, name}` 比较。
-   **消歧规则**: 当 Grok 的 `file:name` 匹配到多个 codegraph 符号时：(a) 优先选择 kind 相同的；(b) 仍有多候选时，选择 name 最短的（精确匹配）。具体匹配策略取决于 Phase 0 验证 codegraph symbols 表的 `name` 列格式。
+   **消歧规则**: 当 Grok 的 `file:name` 匹配到多个 codegraph 符号时：(a) 优先选择 kind 相同的；(b) 仍有多候选时，选择 name 最短的（精确匹配）。
+   **名称提取**: codegraph 的 `qualified_name` 可能包含类前缀（如 `AuthService.login`），匹配时取最后一个 `.` 之后的部分作为短名。具体策略取决于 Phase 0 验证 codegraph symbols 表的 `name` 列格式——若 `name` 列已是短名则直接使用，否则需解析。
 2. **属性合并优先级**: codegraph.db 提供精确的 AST 级数据（signature、line），Grok JSON 提供语义层数据（layer、domain、summary）。合并时：AST 字段以 codegraph 为准，语义字段以 Grok 为准。
 3. **边去重**: 同一对节点的同类型边去重（以 `{from, to, type}` 三元组为 key）。不同类型边保留（如 codegraph 的 `calls` + Grok 的 `depends` 同时存在）。
 4. **单一数据源**: 当仅一个数据源存在时，直接加载，不做合并。
@@ -127,12 +128,13 @@ src/tools/GrokTool/
 ```typescript
 // 评审修复：邻接表扩展为加权+类型化，兼容所有算法
 interface EdgeMeta {
-  type: 'calls' | 'imports' | 'data' | 'control' | 'inherits' | 'implements' | 'relates' | 'depends'
+  type: 'calls' | 'imports' | 'data' | 'control' | 'inherits' | 'implements'
   weight: number  // 调用频率/依赖强度，默认 1
 }
 
-// 适配器映射规则：Grok 的 'depends'→'imports', 'relates'→'control'
-// codegraph 的 'call'→'calls', 'import'→'imports', 'data_flow'→'data'
+// 适配器映射规则（load() 时统一转换，运行时只有上述 6 种类型）:
+// codegraph: 'call'→'calls', 'import'→'imports', 'data_flow'→'data', 'inherit'→'inherits', 'implement'→'implements'
+// grok:      'depends'→'imports', 'relates'→'control'
 // 未知类型默认映射为 'control'
 
 interface NodeMetadata {
@@ -321,7 +323,9 @@ function tarjanSCC():
 
   for each node v:
     if v.index exists: continue
-    callStack.push({v, neighbors(v), 0, index, true})
+    stack.push(v)             // 首次访问：压入 SCC 栈
+    v.onStack = true
+    callStack.push({v, neighbors(v), 0, index})
     v.index = index++
 
     while callStack not empty:
@@ -330,7 +334,9 @@ function tarjanSCC():
       if frame.neighborIdx < frame.neighbors.length:
         w = frame.neighbors[frame.neighborIdx++]
         if w.index not exists:
-          callStack.push({w, neighbors(w), 0, index, true})
+          stack.push(w)         // 新发现：压入 SCC 栈
+          w.onStack = true
+          callStack.push({w, neighbors(w), 0, index})
           w.index = index++
         else if w.onStack:
           frame.lowlink = min(frame.lowlink, w.index)
@@ -376,7 +382,7 @@ function tarjanSCC():
 | `codegraph_toposort` | 拓扑排序：依赖加载顺序，有环返回 SCC | TopologicalSort | 3a |
 | `codegraph_delta` | 差分图：两次索引之间的结构变化 | DeltaGraph | 3a |
 | `codegraph_pagerank` | PageRank 中心性：找出核心节点 | PageRank | 3a |
-| `codegraph_impact_deep` | 深度影响分析：基于支配树 + 数据切片 | DominatorTree + DataSlice | 3a |
+| `codegraph_impact_deep` | 深度影响分析：基于支配树 + 数据切片 | DominatorTree + DataSlice | 3b |
 | `codegraph_roles` | 角色分类：entry/core/utility/adaptor/dead/leaf | Degree + Reachability | 3b |
 | `codegraph_slice` | 数据依赖切片：追踪影响某变量的所有数据流 | BackwardDataSlice | 3b |
 | `codegraph_coupling` | 耦合度量：扇入扇出、不稳定度、LCOM | CouplingMetrics | 3b |
@@ -518,7 +524,7 @@ const grokHotspotsSchema = z.object({
   data: {
     order: ["Logger", "Config", "DBPool", "SCC:AuthModule", "APIRouter"],
     cycles: [
-      { nodes: ["AuthService", "TokenManager", "SessionStore"] }
+      { id: 0, nodes: ["AuthService", "TokenManager", "SessionStore"], size: 3, isTrivial: false }
     ]
   },
   metadata: { nodeCount: 45, truncated: false }
@@ -655,13 +661,14 @@ const GRAPH_AUTO_TRIGGERS = {
 - [ ] `deltaGraph()` — 结构差分（比较两快照的节点/边增删，生成 DeltaResult）
 - [ ] `pageRank()` — 幂迭代，O(k·E)
 - [ ] `backwardReachability()` — 反向 BFS
-- [ ] CodeGraph 5 个新 operation + Zod schema + 测试
+- [ ] `dominatorTree()` — Lengauer-Tarjan 算法 O(V·α(V)+E)
+- [ ] CodeGraph 4 个新 operation (scc/toposort/delta/pagerank) + Zod schema + 测试
 
 ### Phase 3b: 中复杂度核心场景 (1.5 天)
 - [ ] `classifyRoles()` — 度 + 可达性分类
 - [ ] `backwardDataSlice()` — 数据依赖切片（DDG 遍历）
 - [ ] `couplingMetrics()` — 扇入扇出 + Henderson-Sellers LCOM
-- [ ] CodeGraph 3 个新 operation + 测试
+- [ ] CodeGraph 4 个新 operation (impact_deep/roles/slice/coupling) + 测试
 
 ### Phase 3c: 高复杂度增值 (2 天)
 - [ ] `louvainCommunity()` — Louvain 社区检测（后续可升级 Leiden）
