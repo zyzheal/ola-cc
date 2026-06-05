@@ -188,6 +188,9 @@ export class GraphStore {
       this.loadGrok(grokJsonPath, fileKeyToId)
     }
 
+    // Re-export chain tracking: derive 'exports' edges from imports + export metadata
+    this.extractReExports()
+
     this.loaded = true
     this.needsReloadFlag = false
     return { adjacency: this.adjacency, reverse: this.reverse, nodeMeta: this.nodeMeta }
@@ -382,6 +385,49 @@ export class GraphStore {
       const fromId = fileKeyToId?.get(edge.from) ?? edge.from
       const toId = fileKeyToId?.get(edge.to) ?? edge.to
       this.addEdge(fromId, toId, edgeType, 1)
+    }
+  }
+
+  // ----------------------------------------------------------
+  // Re-export chain tracking
+  // ----------------------------------------------------------
+
+  /**
+   * 从 imports 边 + 节点导出元数据推导 exports 边。
+   *
+   * 规则: 若节点 A 有 imports 边指向 B，且 B 的 is_exported=true 或 kind 包含 'export'，
+   *       则创建 exports 边 A→B（A re-export 了 B 的符号）。
+   *
+   * 在 doLoad() 的两个数据源加载完毕后调用。
+   */
+  extractReExports(): void {
+    let reExportCount = 0
+
+    for (const [from, outMap] of this.adjacency) {
+      for (const [to, edges] of outMap) {
+        const hasImports = edges.some(e => e.type === 'imports')
+        if (!hasImports) continue
+
+        const targetMeta = this.nodeMeta.get(to)
+        if (!targetMeta) continue
+
+        // 检查目标节点是否是导出的符号
+        const isExported = targetMeta.is_exported === true
+          || targetMeta.kind.includes('export')
+
+        if (isExported) {
+          // 创建 exports 边（如果尚不存在）
+          const existingExports = edges.find(e => e.type === 'exports')
+          if (!existingExports) {
+            this.addEdge(from, to, 'exports', 1)
+            reExportCount++
+          }
+        }
+      }
+    }
+
+    if (reExportCount > 0) {
+      logForDebugging(`[GraphStore] extractReExports: derived ${reExportCount} exports edge(s)`)
     }
   }
 

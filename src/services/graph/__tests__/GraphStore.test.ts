@@ -771,3 +771,132 @@ describe('Phase 2: GraphStoreError messages', () => {
     expect(err.suggestion).toBeUndefined()
   })
 })
+
+// ============================================================
+// Phase 2: extractReExports — re-export chain tracking
+// ============================================================
+
+describe('Phase 2: extractReExports', () => {
+  const TEST_DIR = resolve('/tmp', 'graphstore-reexport-test-' + Date.now())
+
+  afterEach(() => {
+    rmSync(TEST_DIR, { recursive: true, force: true })
+  })
+
+  test('should derive exports edge when imports target is is_exported', async () => {
+    // A imports B, B has is_exported=1 => exports edge A→B should be created
+    const store = await createStoreWithDb(
+      TEST_DIR + '/reexport1',
+      `CREATE TABLE nodes (id TEXT PRIMARY KEY, kind TEXT, name TEXT, file_path TEXT, start_line INTEGER, is_exported INTEGER)`,
+      `CREATE TABLE edges (source TEXT, target TEXT, kind TEXT)`,
+      [
+        `INSERT INTO nodes VALUES ('n:a', 'module', 'modA', 'src/a.ts', 1, 0)`,
+        `INSERT INTO nodes VALUES ('n:b', 'function', 'helperB', 'src/b.ts', 10, 1)`,  // is_exported=1
+      ],
+      [
+        `INSERT INTO edges VALUES ('n:a', 'n:b', 'imports')`,
+      ],
+    )
+
+    // extractReExports is called during load(), so exports edge should exist
+    const edges = store.getEdgeBetween('n:a', 'n:b')
+    const hasExports = edges.some(e => e.type === 'exports')
+    expect(hasExports).toBe(true)
+
+    // Also verify imports edge is still there
+    const hasImports = edges.some(e => e.type === 'imports')
+    expect(hasImports).toBe(true)
+  })
+
+  test('should derive exports edge when target kind contains "export"', async () => {
+    // A imports B, B kind="export_function" => exports edge A→B
+    const store = await createStoreWithDb(
+      TEST_DIR + '/reexport2',
+      `CREATE TABLE nodes (id TEXT PRIMARY KEY, kind TEXT, name TEXT, file_path TEXT, start_line INTEGER)`,
+      `CREATE TABLE edges (source TEXT, target TEXT, kind TEXT)`,
+      [
+        `INSERT INTO nodes VALUES ('n:a', 'module', 'modA', 'src/a.ts', 1)`,
+        `INSERT INTO nodes VALUES ('n:b', 'export_function', 'utilB', 'src/b.ts', 5)`,
+      ],
+      [
+        `INSERT INTO edges VALUES ('n:a', 'n:b', 'imports')`,
+      ],
+    )
+
+    const edges = store.getEdgeBetween('n:a', 'n:b')
+    const hasExports = edges.some(e => e.type === 'exports')
+    expect(hasExports).toBe(true)
+  })
+
+  test('should NOT derive exports edge when target is not exported', async () => {
+    // A imports B, B is NOT exported => no exports edge
+    const store = await createStoreWithDb(
+      TEST_DIR + '/reexport3',
+      `CREATE TABLE nodes (id TEXT PRIMARY KEY, kind TEXT, name TEXT, file_path TEXT, start_line INTEGER)`,
+      `CREATE TABLE edges (source TEXT, target TEXT, kind TEXT)`,
+      [
+        `INSERT INTO nodes VALUES ('n:a', 'module', 'modA', 'src/a.ts', 1)`,
+        `INSERT INTO nodes VALUES ('n:b', 'function', 'internalB', 'src/b.ts', 10)`,  // not exported
+      ],
+      [
+        `INSERT INTO edges VALUES ('n:a', 'n:b', 'imports')`,
+      ],
+    )
+
+    const edges = store.getEdgeBetween('n:a', 'n:b')
+    const hasExports = edges.some(e => e.type === 'exports')
+    expect(hasExports).toBe(false)
+
+    // imports edge should still be there
+    const hasImports = edges.some(e => e.type === 'imports')
+    expect(hasImports).toBe(true)
+  })
+
+  test('should NOT create duplicate exports edge if already exists', async () => {
+    // A imports B AND already has exports→B, B is exported => should not duplicate
+    const store = await createStoreWithDb(
+      TEST_DIR + '/reexport4',
+      `CREATE TABLE nodes (id TEXT PRIMARY KEY, kind TEXT, name TEXT, file_path TEXT, start_line INTEGER, is_exported INTEGER)`,
+      `CREATE TABLE edges (source TEXT, target TEXT, kind TEXT)`,
+      [
+        `INSERT INTO nodes VALUES ('n:a', 'module', 'modA', 'src/a.ts', 1, 0)`,
+        `INSERT INTO nodes VALUES ('n:b', 'function', 'helperB', 'src/b.ts', 10, 1)`,
+      ],
+      [
+        `INSERT INTO edges VALUES ('n:a', 'n:b', 'imports')`,
+        `INSERT INTO edges VALUES ('n:a', 'n:b', 'exports')`,  // already exists
+      ],
+    )
+
+    const edges = store.getEdgeBetween('n:a', 'n:b')
+    const exportsEdges = edges.filter(e => e.type === 'exports')
+    // Should have exactly one exports edge (not duplicated)
+    expect(exportsEdges.length).toBe(1)
+  })
+
+  test('should handle multiple imports targets independently', async () => {
+    // A imports B (exported) and C (not exported) => exports only for B
+    const store = await createStoreWithDb(
+      TEST_DIR + '/reexport5',
+      `CREATE TABLE nodes (id TEXT PRIMARY KEY, kind TEXT, name TEXT, file_path TEXT, start_line INTEGER, is_exported INTEGER)`,
+      `CREATE TABLE edges (source TEXT, target TEXT, kind TEXT)`,
+      [
+        `INSERT INTO nodes VALUES ('n:a', 'module', 'modA', 'src/a.ts', 1, 0)`,
+        `INSERT INTO nodes VALUES ('n:b', 'function', 'exportedB', 'src/b.ts', 10, 1)`,
+        `INSERT INTO nodes VALUES ('n:c', 'function', 'internalC', 'src/c.ts', 20, 0)`,
+      ],
+      [
+        `INSERT INTO edges VALUES ('n:a', 'n:b', 'imports')`,
+        `INSERT INTO edges VALUES ('n:a', 'n:c', 'imports')`,
+      ],
+    )
+
+    // B should have exports edge
+    const edgesAB = store.getEdgeBetween('n:a', 'n:b')
+    expect(edgesAB.some(e => e.type === 'exports')).toBe(true)
+
+    // C should NOT have exports edge
+    const edgesAC = store.getEdgeBetween('n:a', 'n:c')
+    expect(edgesAC.some(e => e.type === 'exports')).toBe(false)
+  })
+})
