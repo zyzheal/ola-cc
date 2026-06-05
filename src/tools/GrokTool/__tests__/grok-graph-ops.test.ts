@@ -101,15 +101,35 @@ mock.module('../GrokManager.js', () => ({
   },
   GrokError: class GrokError extends Error {
     code: string
+    stage: string
     recoverable: boolean
     suggestion?: string
-    constructor(code: string, msg?: string) {
-      super(msg)
+    constructor(code: string, stage: string, message: string, recoverable: boolean, suggestion?: string) {
+      super(message)
       this.code = code
-      this.recoverable = false
+      this.stage = stage
+      this.recoverable = recoverable
+      this.suggestion = suggestion
+      this.name = 'GrokError'
     }
   },
-  ERROR_SUGGESTIONS: {},
+  ERROR_SUGGESTIONS: {
+    PARSE_TIMEOUT: '文件过大',
+    LLM_RATE_LIMIT: 'API 限流',
+    LLM_TIMEOUT: 'LLM 超时',
+    LLM_TOKEN_BUDGET: 'Token 预算耗尽',
+    GRAPH_INVALID: '图谱数据损坏',
+    GRAPH_NOT_FOUND: '知识图谱未生成',
+    SOURCE_UPDATE_FAILED: '源码更新失败',
+    NO_FILES: '未找到源文件',
+    INVALID_SCOPE: '范围路径无效',
+    NO_AVAILABLE_PORT: '无可用端口',
+    SCANNER_FAILED: '文件扫描失败',
+    ANALYZER_FAILED: '文件分析失败',
+    ARCHITECTURE_FAILED: '架构分析失败',
+    TOUR_FAILED: '学习路径生成失败',
+    REVIEW_FAILED: '图谱审查失败',
+  },
 }))
 
 mock.module('../../../utils/cwd.js', () => ({
