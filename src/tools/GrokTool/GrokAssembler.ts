@@ -4,8 +4,189 @@
 import { createHash } from 'crypto'
 import { existsSync, mkdirSync, copyFileSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'fs'
 import { resolve } from 'path'
+import { z } from 'zod/v4'
 import { logForDebugging } from '../../utils/debug.js'
-import type { GraphNode, GraphEdge, GraphData, GrokGenerateResult, GrokError } from './GrokTypes.js'
+import type { GraphNode, GraphEdge, GraphData, GrokGenerateResult } from './GrokTypes.js'
+import { GrokError } from './GrokTypes.js'
+
+// ============================================================
+// Kind normalization: map LLM variants to canonical forms
+// ============================================================
+
+const KIND_ALIASES: Record<string, string> = {
+  // function variants
+  'fn': 'function',
+  'func': 'function',
+  'function_def': 'function',
+  'def': 'function',
+  // procedure variants
+  'proc': 'procedure',
+  'procedure_def': 'procedure',
+  // constant variants
+  'const': 'constant',
+  'constant_val': 'constant',
+  'constexpr': 'constant',
+  // method variants
+  'class_method': 'method',
+  'classmethod': 'method',
+  'instance_method': 'method',
+  'member_method': 'method',
+  'mem_fn': 'method',
+  // struct → class
+  'struct': 'class',
+  'struct_def': 'class',
+  // interface variants
+  'iface': 'interface',
+  'interface_def': 'interface',
+  'trait': 'interface',
+  // enum variants
+  'enum_type': 'enum',
+  'enum_def': 'enum',
+  'enumeration': 'enum',
+  // type alias
+  'type_alias': 'type',
+  'typedef': 'type',
+  'typealias': 'type',
+  // variable variants
+  'var': 'variable',
+  'let': 'variable',
+  'variable_def': 'variable',
+  // module/namespace
+  'mod': 'module',
+  'namespace': 'module',
+  'ns': 'module',
+}
+
+/**
+ * 将 LLM 输出的 kind 变体映射为规范形式
+ * 未知 kind 返回原始字符串，空字符串返回 'symbol'
+ */
+export function normalizeKind(kind: string): string {
+  if (!kind || kind.trim() === '') return 'symbol'
+  const lower = kind.toLowerCase().trim()
+  return KIND_ALIASES[lower] || lower
+}
+
+// ============================================================
+// Zod Schemas for knowledge-graph.json validation
+// ============================================================
+
+export const GraphNodeSchema = z.object({
+  id: z.string().min(1),
+  name: z.string().min(1),
+  kind: z.string().min(1),
+  file: z.string(),
+  line: z.number().int().nonnegative(),
+  signature: z.string(),
+  summary: z.string(),
+  layer: z.string(),
+  domain: z.string(),
+})
+
+export const GraphEdgeSchema = z.object({
+  from: z.string().min(1),
+  to: z.string().min(1),
+  type: z.string().min(1),
+})
+
+export interface ValidationResult {
+  success: boolean
+  validNodes: number
+  invalidNodes: number
+  validEdges: number
+  invalidEdges: number
+  errors: string[]
+  passRate: number
+  warnings: string[]
+  data?: { nodes: GraphNode[]; edges: GraphEdge[] }
+}
+
+/**
+ * 验证单个节点，成功时返回规范化后的节点
+ */
+export function validateGraphNode(raw: unknown): { success: boolean; data?: GraphNode; error?: string } {
+  const result = GraphNodeSchema.safeParse(raw)
+  if (result.success) {
+    const node = result.data as GraphNode
+    node.kind = normalizeKind(node.kind)
+    return { success: true, data: node }
+  }
+  return { success: false, error: result.error.issues.map(i => `${i.path.join('.')}: ${i.message}`).join('; ') }
+}
+
+/**
+ * 验证单个边
+ */
+export function validateGraphEdge(raw: unknown): { success: boolean; data?: GraphEdge; error?: string } {
+  const result = GraphEdgeSchema.safeParse(raw)
+  if (result.success) {
+    return { success: true, data: result.data as GraphEdge }
+  }
+  return { success: false, error: result.error.issues.map(i => `${i.path.join('.')}: ${i.message}`).join('; ') }
+}
+
+/**
+ * 验证完整图数据（节点 + 边），跳过无效项
+ * 当通过率 < 80% 时发出警告
+ */
+export function validateGraphData(raw: { nodes: unknown[]; edges: unknown[] }): ValidationResult {
+  const errors: string[] = []
+  const warnings: string[] = []
+  const validNodes: GraphNode[] = []
+  const validEdges: GraphEdge[] = []
+
+  for (const node of raw.nodes || []) {
+    const r = validateGraphNode(node)
+    if (r.success && r.data) {
+      validNodes.push(r.data)
+    } else {
+      errors.push(`node: ${r.error}`)
+    }
+  }
+
+  for (const edge of raw.edges || []) {
+    const r = validateGraphEdge(edge)
+    if (r.success && r.data) {
+      validEdges.push(r.data)
+    } else {
+      errors.push(`edge: ${r.error}`)
+    }
+  }
+
+  const totalItems = (raw.nodes?.length || 0) + (raw.edges?.length || 0)
+  const validItems = validNodes.length + validEdges.length
+  const passRate = totalItems > 0 ? validItems / totalItems : 1
+
+  if (passRate < 0.8) {
+    warnings.push(`Low validation pass rate: ${(passRate * 100).toFixed(1)}% — LLM output quality may be degraded`)
+  }
+
+  return {
+    success: true,
+    validNodes: validNodes.length,
+    invalidNodes: (raw.nodes?.length || 0) - validNodes.length,
+    validEdges: validEdges.length,
+    invalidEdges: (raw.edges?.length || 0) - validEdges.length,
+    errors,
+    passRate,
+    warnings,
+    data: { nodes: validNodes, edges: validEdges },
+  }
+}
+
+// ============================================================
+// ReviewResult for assembleReview
+// ============================================================
+
+export interface ReviewResult {
+  beforeNodes: number
+  afterNodes: number
+  beforeEdges: number
+  afterEdges: number
+  duplicatesRemoved: number
+  danglingEdgesRemoved: number
+  normalizedIds: number
+}
 
 // ============================================================
 // Shared utility: file fingerprinting
@@ -86,7 +267,7 @@ export class GrokAssembler {
         newNodes.push({
           id: finalId,
           name: String(sym.name || 'unknown'),
-          kind: String(sym.kind || 'symbol'),
+          kind: normalizeKind(String(sym.kind || 'symbol')),
           file: String(sym.file || ''),
           line: Number(sym.line || 0),
           signature: String(sym.signature || ''),
@@ -225,10 +406,32 @@ export class GrokAssembler {
     const coveredFiles = new Set(nodes.map((n: GraphNode) => n.file).filter(Boolean))
     const uncovered = files.filter(f => !coveredFiles.has(f))
 
-    // Step 7: 组装并保存
+    // Step 7: Zod 验证（跳过无效节点/边，不阻断流水线）
+    const validation = validateGraphData({ nodes, edges: uniqueEdges })
+    if (validation.warnings.length > 0) {
+      for (const w of validation.warnings) {
+        logForDebugging(`[grok] WARNING: ${w}`)
+      }
+    }
+    if (validation.invalidNodes > 0 || validation.invalidEdges > 0) {
+      logForDebugging(`[grok] Validation: ${validation.invalidNodes} invalid nodes, ${validation.invalidEdges} invalid edges skipped`)
+      errors.push(...validation.errors.map(msg =>
+        new GrokError('VALIDATION_SKIP', 'assembler', msg, true)
+      ))
+    }
+    const validatedNodes = validation.data?.nodes || nodes
+    const validatedEdges = validation.data?.edges || uniqueEdges
+
+    // Step 8: assembleReview — ID 规范化 + 去重 + 边完整性
+    const { nodes: reviewedNodes, edges: reviewedEdges, review } = this.assembleReview(validatedNodes, validatedEdges)
+    if (review.duplicatesRemoved > 0 || review.danglingEdgesRemoved > 0 || review.normalizedIds > 0) {
+      logForDebugging(`[grok] Review: ${review.duplicatesRemoved} dup nodes, ${review.danglingEdgesRemoved} dangling edges removed, ${review.normalizedIds} IDs normalized`)
+    }
+
+    // Step 9: 组装并保存
     const graphData: GraphData = {
-      nodes,
-      edges: uniqueEdges,
+      nodes: reviewedNodes,
+      edges: reviewedEdges,
       metadata: {
         lastUpdated: new Date().toISOString(),
         fileCount: files.length,
@@ -237,7 +440,7 @@ export class GrokAssembler {
         layers: layers.map((l: Record<string, unknown>) => String(l.name || '')),
         uncovered: uncovered.length,
         tour: (tourResult.tours as unknown[]) || [],
-        review: reviewResult.valid !== undefined ? reviewResult : { valid: true, issues: [], suggestions: [] },
+        review: { ...(reviewResult.valid !== undefined ? reviewResult : { valid: true, issues: [], suggestions: [] }), ...review },
         language,
         errors: errors.map(e => ({ code: e.code, stage: e.stage, message: e.message })),
         fingerprints,
@@ -245,15 +448,64 @@ export class GrokAssembler {
     }
 
     const filePath = this.saveGraph(graphData)
-    logForDebugging(`[grok] Graph saved: ${nodes.length} nodes, ${uniqueEdges.length} edges → ${filePath}`)
+    logForDebugging(`[grok] Graph saved: ${reviewedNodes.length} nodes, ${reviewedEdges.length} edges → ${filePath}`)
 
     return {
       status: errors.length > 0 ? 'partial' : 'success',
-      nodeCount: nodes.length,
-      edgeCount: uniqueEdges.length,
+      nodeCount: reviewedNodes.length,
+      edgeCount: reviewedEdges.length,
       domainCount: domains.size,
       filePath,
       errors: errors.length > 0 ? errors : undefined,
+    }
+  }
+
+  /**
+   * 组装后审查：ID 规范化 + 去重 + 边完整性
+   */
+  assembleReview(
+    nodes: GraphNode[],
+    edges: GraphEdge[]
+  ): { nodes: GraphNode[]; edges: GraphEdge[]; review: ReviewResult } {
+    const beforeNodes = nodes.length
+    const beforeEdges = edges.length
+    let normalizedIds = 0
+
+    // Step 1: ID 规范化 — 去掉 #counter 后缀
+    const normalizedNodes = nodes.map(n => {
+      if (n.id.includes('#')) {
+        normalizedIds++
+        return { ...n, id: n.id.replace(/#\d+$/, '') }
+      }
+      return n
+    })
+
+    // Step 2: 去重 — 按 {file, name} 去重，保留最后一个
+    const dedupMap = new Map<string, GraphNode>()
+    for (const node of normalizedNodes) {
+      const key = `${node.file}:${node.name}`
+      dedupMap.set(key, node) // 后来的覆盖前面的
+    }
+    const dedupedNodes = Array.from(dedupMap.values())
+    const duplicatesRemoved = normalizedNodes.length - dedupedNodes.length
+
+    // Step 3: 边完整性 — 移除引用不存在节点的边
+    const nodeIdSet = new Set(dedupedNodes.map(n => n.id))
+    const validEdges = edges.filter(e => nodeIdSet.has(e.from) && nodeIdSet.has(e.to))
+    const danglingEdgesRemoved = edges.length - validEdges.length
+
+    return {
+      nodes: dedupedNodes,
+      edges: validEdges,
+      review: {
+        beforeNodes,
+        afterNodes: dedupedNodes.length,
+        beforeEdges,
+        afterEdges: validEdges.length,
+        duplicatesRemoved,
+        danglingEdgesRemoved,
+        normalizedIds,
+      },
     }
   }
 }
