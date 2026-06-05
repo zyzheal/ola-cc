@@ -17,7 +17,11 @@ import * as CodegraphManager from './CodegraphManager.js';
 import { GraphStore } from '../../services/graph/GraphStore.js';
 import { GraphEngine } from '../../services/graph/GraphEngine.js';
 import type { GraphSnapshot } from '../../services/graph/GraphEngine.js';
+import { FtsSearch } from '../../services/graph/FtsSearch.js';
+import { RrfSearch } from '../../services/graph/RrfSearch.js';
+import { UnresolvedRefManager } from '../../services/graph/UnresolvedRefManager.js';
 import { execSync } from 'child_process';
+import { resolve } from 'path';
 
 // ============================================================
 // Schema
@@ -45,6 +49,8 @@ const operationEnum = z.enum([
   'codegraph_community',
   'codegraph_centrality',
   'codegraph_temporal',
+  // Phase Z4 operations
+  'codegraph_unresolved',
 ]);
 
 const inputSchema = z.object({
@@ -138,6 +144,7 @@ export const codegraphTool = buildTool({
       codegraph_community: '社区检测',
       codegraph_centrality: '中心性分析',
       codegraph_temporal: '时间耦合',
+      codegraph_unresolved: '未解析引用',
     }
     const label = labels[op] || op
     const detail = input?.query || input?.symbol || ''
@@ -267,10 +274,29 @@ export const codegraphTool = buildTool({
         case 'codegraph_search': {
           if (!input.query) return { data: { error: true, message: 'codegraph_search 需要 query 参数' } };
           sendProgress('search', `Searching: ${input.query.slice(0, 60)}…`)
-          const r = await CodegraphManager.searchNodes(projectRoot, input.query, {
-            limit: input.maxNodes ?? 20,
-          });
-          result = parseJsonOrError(r);
+          try {
+            // F-63: Use FTS5 + RRF fusion for search
+            const store = GraphStore.getInstance(projectRoot);
+            await store.load();
+            const ftsDbPath = resolve(projectRoot, '.codegraph', 'fts-search.db');
+            const fts = new FtsSearch(ftsDbPath);
+            try {
+              // Index nodes if FTS table is empty
+              fts.createIndex();
+              fts.indexNodes(store);
+              const rrf = new RrfSearch(fts, store);
+              const results = rrf.search(input.query, input.maxNodes ?? 20);
+              result = { results, total: results.length };
+            } finally {
+              fts.close();
+            }
+          } catch {
+            // Fallback to CLI if FTS5 fails
+            const r = await CodegraphManager.searchNodes(projectRoot, input.query, {
+              limit: input.maxNodes ?? 20,
+            });
+            result = parseJsonOrError(r);
+          }
           break;
         }
 
@@ -416,11 +442,11 @@ export const codegraphTool = buildTool({
 
         case 'codegraph_files': {
           sendProgress('files', 'Listing indexed files…')
-          const r = await CodegraphManager.getFiles(projectRoot, {
-            maxDepth: input.depth ?? 3,
-            format: 'json',
-          });
-          result = parseJsonOrError(r);
+          // F-64: Use FileRecord from GraphStore
+          const store = GraphStore.getInstance(projectRoot);
+          await store.load();
+          const files = [...store.fileRecords.values()];
+          result = { files, total: files.length };
           break;
         }
 
@@ -675,6 +701,24 @@ export const codegraphTool = buildTool({
           break;
         }
 
+        // ── Phase Z4 operations ──
+
+        case 'codegraph_unresolved': {
+          sendProgress('unresolved', 'Scanning for unresolved references…')
+          const store = GraphStore.getInstance(projectRoot);
+          await store.load();
+          const manager = new UnresolvedRefManager(store);
+          manager.loadFromEdges();
+          const unresolved = manager.getUnresolved();
+          const resolvedCount = manager.resolve();
+          result = {
+            unresolved: unresolved.slice(0, input.maxNodes ?? 30),
+            total: unresolved.length,
+            resolved: resolvedCount,
+          };
+          break;
+        }
+
         default:
           return { data: { error: true, message: `未知操作: ${input.operation}` } };
       }
@@ -687,7 +731,7 @@ export const codegraphTool = buildTool({
         'codegraph_callees', 'codegraph_impact', 'codegraph_trace',
         'codegraph_scc', 'codegraph_toposort', 'codegraph_pagerank',
         'codegraph_roles', 'codegraph_slice', 'codegraph_coupling', 'codegraph_community',
-        'codegraph_centrality', 'codegraph_temporal'].includes(input.operation);
+        'codegraph_centrality', 'codegraph_temporal', 'codegraph_unresolved'].includes(input.operation);
       if (isQueryOp) {
         const age = CodegraphManager.getLastSyncAge(projectRoot);
         if (age != null && age > CodegraphManager.FRESH_THRESHOLD_MS) {
@@ -778,6 +822,7 @@ export const OPERATION_TIERS = {
     'codegraph_slice',
     'codegraph_coupling',
     'codegraph_temporal',
+    'codegraph_unresolved',
   ],
 } as const;
 
@@ -859,6 +904,9 @@ const OPERATION_DESCRIPTIONS: Record<string, { core: string; analysis: string; a
   },
   codegraph_temporal: {
     advanced: 'Temporal coupling via git log analysis. Finds files that are frequently changed together. Use to discover hidden dependencies not visible in the call graph.',
+  },
+  codegraph_unresolved: {
+    advanced: 'Scan for unresolved references — dangling imports, calls, and type uses that point to symbols not in the graph. Use to find missing dependencies or indexing gaps.',
   },
 };
 

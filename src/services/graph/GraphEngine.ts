@@ -119,6 +119,41 @@ function mulberry32(seed: number): () => number {
 // GraphEngine
 // ============================================================
 
+// ============================================================
+// Edge Participation Matrix (F-68)
+// ============================================================
+
+/**
+ * Which edge types participate in each algorithm.
+ * Excludes 'contains' (structural, not semantic) for most algorithms.
+ * 'cross_domain' excluded from PageRank/Louvain to avoid noise from cross-module bridges.
+ */
+export const EDGE_PARTICIPATION = {
+  pageRank: ['calls', 'imports', 'inherits', 'implements', 'data', 'exports',
+    'type_of', 'returns', 'instantiates', 'overrides', 'subscribes', 'middleware',
+    'flow_step', 'cross_domain'],
+  louvain: ['calls', 'imports', 'inherits', 'implements', 'data', 'exports',
+    'type_of', 'returns', 'instantiates', 'overrides', 'subscribes', 'middleware',
+    'flow_step', 'cross_domain'],
+  katz: ['calls', 'imports', 'inherits', 'implements', 'data', 'exports',
+    'type_of', 'returns', 'instantiates', 'overrides', 'subscribes', 'middleware',
+    'flow_step', 'cross_domain'],
+  betweenness: ['calls', 'imports', 'inherits', 'implements', 'data', 'exports',
+    'type_of', 'returns', 'instantiates', 'overrides', 'subscribes', 'middleware',
+    'flow_step', 'cross_domain'],
+  // Data flow algorithms: only data-relevant edges
+  dataSlice: ['data', 'type_of', 'returns', 'reads', 'writes', 'transforms',
+    'serializes', 'deserializes', 'encrypts', 'decrypts', 'compresses'],
+  // All semantic edges (excludes 'contains')
+  all: ['calls', 'imports', 'inherits', 'implements', 'data', 'exports',
+    'type_of', 'returns', 'instantiates', 'overrides', 'decorates',
+    'subscribes', 'publishes', 'middleware', 'flow_step', 'cross_domain',
+    'reads', 'writes', 'tests', 'configures', 'deploys', 'monitors',
+    'validates', 'transforms', 'caches', 'queues', 'notifies',
+    'serializes', 'deserializes', 'encrypts', 'decrypts', 'compresses',
+    'logs', 'metrics', 'traces', 'authenticates', 'authorizes', 'rate_limits'],
+} as const
+
 export class GraphEngine {
   constructor(private store: GraphStore) {}
 
@@ -626,6 +661,9 @@ export class GraphEngine {
       const fo = fanOut.get(node) ?? 0
       const cmr = crossModuleRatio.get(node) ?? 0
       const prScore = prMap.get(node) ?? 0
+      const meta = this.store.getNode(node)
+      const isExported = meta?.is_exported === true
+      const isPrivate = meta?.visibility === 'private'
 
       // 1. dead
       if (!reachableFromEntries.has(node) && entries.length > 0) {
@@ -633,8 +671,12 @@ export class GraphEngine {
         continue
       }
 
-      // 2. entry
+      // 2. entry — F-66: exported symbols with fanIn=0 get boosted to entry
       if (fi === 0 && fo > 0) {
+        roles.set(node, 'entry')
+        continue
+      }
+      if (isExported && fi === 0) {
         roles.set(node, 'entry')
         continue
       }
@@ -645,14 +687,23 @@ export class GraphEngine {
         continue
       }
 
-      // 4. adaptor
+      // 4. adaptor — F-66: exported symbols with high fan-in → API boundary adaptor
+      if (isExported && fi > fanInMedian) {
+        roles.set(node, 'adaptor')
+        continue
+      }
       if (cmr > adaptorCrossModuleRatio) {
         roles.set(node, 'adaptor')
         continue
       }
 
-      // 5. core
+      // 5. core — F-66: private visibility demotes from core
       if (prScore >= prThreshold && fi > fanInMedian) {
+        if (isPrivate) {
+          // Demote private nodes from core to utility
+          roles.set(node, 'utility')
+          continue
+        }
         roles.set(node, 'core')
         continue
       }
@@ -682,6 +733,13 @@ export class GraphEngine {
     const queue = [nodeId]
     visited.add(nodeId)
 
+    // F-67: Follow data, type_of, returns, and P2/P3 data-flow edges
+    const DATA_SLICE_EDGE_TYPES = new Set([
+      'data', 'type_of', 'returns',
+      'reads', 'writes', 'transforms',
+      'serializes', 'deserializes', 'encrypts', 'decrypts', 'compresses',
+    ])
+
     let hasDataEdges = false
 
     while (queue.length > 0) {
@@ -691,14 +749,14 @@ export class GraphEngine {
       const inEdges = this.store.getInEdges(current)
       for (const [source, edges] of inEdges) {
         for (const edge of edges) {
-          if (edge.type === 'data') {
+          if (DATA_SLICE_EDGE_TYPES.has(edge.type)) {
             hasDataEdges = true
             dataFlows.push({ from: source, to: current, via: edge.type })
             if (!visited.has(source)) {
               visited.add(source)
               queue.push(source)
             }
-            break // 找到一个 data 边就够了
+            break // 找到一个 data/type_of/returns 边就够了
           }
         }
       }

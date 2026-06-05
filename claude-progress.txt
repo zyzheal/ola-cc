@@ -164,3 +164,25 @@
 - **EdgeMeta enhancements**: Added `confidence?: EdgeConfidence` and `metadata?: Record<string, unknown>` fields
 - **Tests**: 19 new tests all passing (51 total non-integration pass)
 - **Files**: 4 files (1 new DataSourceAdapter.ts + 2 modified source + 1 modified test)
+
+### Query Optimization + SemanticModel + Scope Resolution + Batch LLM (Phase Z2) — 2026-06-06 - DONE
+- **F-56 QueryCache** (`src/services/graph/QueryCache.ts`): Prepared statement cache for bun:sqlite, lazy prepare + LRU cache, chunked WHERE IN (500/batch), getNodesByFile, getEdgesBySource/Target
+- **F-57 LRUCache** (`src/services/graph/LRUCache.ts`): Generic LRU cache with Map-based implementation, hit rate stats, maxSize eviction, auto-refresh on access. Integrated into GraphStore.getNode()
+- **F-58 GraphStore.getNodesByIds()**: Batch node lookup delegating to LRU cache for O(1) per-node access
+- **F-98 SemanticModel** (`src/services/graph/SemanticModel.ts`): Three-layer symbol registry (type/method/field), kind classification (7 type-like, 5 method-like, 5 field-like), qualified name index, name/file search, buildFromStore/buildFromNodes
+- **F-99 ScopeResolver** (`src/services/graph/ScopeResolver.ts`): 4-stage resolution pipeline — Stage 1: buildImportMap, Stage 2: resolveInFile, Stage 3: resolveCrossFile, Stage 4: global fallback with confidence scoring (1.0→0.9→0.7→0.3→0)
+- **F-105 BatchOrchestrator** (`src/tools/GrokTool/BatchOrchestrator.ts`): Batch LLM orchestration with semaphore-based concurrency control, exponential backoff retry, checkpoint save/load for fault tolerance, progress callbacks
+- **Tests**: 74 new tests across 5 files, all passing
+- **Files**: 6 new source + 5 new test + 1 modified (GraphStore.ts)
+- **Commit**: 0354bbd9
+
+### Operations Integration + GraphEngine Enhancements + EdgeType P2/P3 (Phase Z4) — 2026-06-06 - DONE
+- **F-63 codegraph_search**: FTS5 + RRF fusion search (FtsSearch + RrfSearch), fallback to CLI on error
+- **F-64 codegraph_files**: Uses GraphStore.fileRecords instead of CLI
+- **F-65 codegraph_unresolved**: New operation using UnresolvedRefManager to find dangling references
+- **F-66 classifyRoles enhancement**: is_exported=true → boost to entry; exported + high fan-in → adaptor; visibility=private → demote from core
+- **F-67 backwardDataSlice enhancement**: Follows type_of and returns edges in addition to data edges, plus P2/P3 data-flow edges (reads/writes/transforms/serializes/deserializes/encrypts/decrypts/compresses)
+- **F-68 EDGE_PARTICIPATION**: Algorithm-to-edge-type matrix (pageRank/louvain/katz/betweenness/dataSlice/all)
+- **F-97-P2/P3 EdgeType expansion**: 18 → 40 total edge types — P2 (reads/writes/tests/configures/deploys/monitors/validates/transforms/caches/queues/notifies), P3 (serializes/deserializes/encrypts/decrypts/compresses/logs/metrics/traces/authenticates/authorizes/rate_limits)
+- **Tests**: 15 new tests (F-66: 4, F-67: 4, F-68: 4, F-97: 3), 4 new CodegraphTool tests
+- **Total**: 97 GraphEngine + 18 CodegraphTool = 115 unit tests passing (3 integration failures pre-existing)

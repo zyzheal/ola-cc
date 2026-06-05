@@ -33,13 +33,14 @@ describe('CodegraphTool — Operation Schema', () => {
       expect(schema.shape.depth).toBeDefined()
     })
 
-    it('should have exactly 20 operations after merge (was 22, -2 deleted/merged)', () => {
+    it('should have exactly 21 operations (20 after merge + codegraph_unresolved)', () => {
       const schema = codegraphTool.inputSchema
       const enumValues = schema.shape.operation.options
       // Original: 22 ops
       // Removed: codegraph_explore, codegraph_impact_deep
-      // Result: 20 ops
-      expect(enumValues.length).toBe(20)
+      // Added: codegraph_unresolved
+      // Result: 21 ops
+      expect(enumValues.length).toBe(21)
     })
   })
 
@@ -68,8 +69,8 @@ describe('CodegraphTool — Operation Schema', () => {
       expect(OPERATION_TIERS.analysis.length).toBe(4)
     })
 
-    it('should classify remaining 11 operations as advanced', () => {
-      expect(OPERATION_TIERS.advanced.length).toBe(11)
+    it('should classify remaining 12 operations as advanced', () => {
+      expect(OPERATION_TIERS.advanced.length).toBe(12)
       expect(OPERATION_TIERS.advanced).toContain('codegraph_context')
       expect(OPERATION_TIERS.advanced).toContain('codegraph_callers')
       expect(OPERATION_TIERS.advanced).toContain('codegraph_callees')
@@ -134,6 +135,30 @@ describe('CodegraphTool — Operation Schema', () => {
       )
       // Should not throw
       expect(result).toBeDefined()
+    })
+  })
+
+  describe('Phase Z4 — new operations', () => {
+    it('should include codegraph_unresolved in operation enum', () => {
+      const schema = codegraphTool.inputSchema
+      const enumValues = schema.shape.operation.options
+      expect(enumValues).toContain('codegraph_unresolved')
+    })
+
+    it('should have 21 operations after adding codegraph_unresolved', () => {
+      const schema = codegraphTool.inputSchema
+      const enumValues = schema.shape.operation.options
+      expect(enumValues.length).toBe(21)
+    })
+
+    it('should classify codegraph_unresolved as advanced', () => {
+      expect(OPERATION_TIERS.advanced).toContain('codegraph_unresolved')
+    })
+
+    it('should have description for codegraph_unresolved', () => {
+      const desc = getOperationDescription('codegraph_unresolved', 'advanced')
+      expect(desc.length).toBeGreaterThan(0)
+      expect(desc).toContain('unresolved')
     })
   })
 })

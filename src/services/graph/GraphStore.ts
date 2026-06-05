@@ -33,6 +33,12 @@ export type EdgeType =
   | 'decorates'
   // P1 edge types (F-53)
   | 'subscribes' | 'publishes' | 'middleware' | 'flow_step' | 'cross_domain'
+  // P2 edge types (F-97-P2)
+  | 'reads' | 'writes' | 'tests' | 'configures' | 'deploys' | 'monitors'
+  | 'validates' | 'transforms' | 'caches' | 'queues' | 'notifies'
+  // P3 edge types (F-97-P2)
+  | 'serializes' | 'deserializes' | 'encrypts' | 'decrypts' | 'compresses'
+  | 'logs' | 'metrics' | 'traces' | 'authenticates' | 'authorizes' | 'rate_limits'
 
 export type EdgeConfidence = 'EXTRACTED' | 'INFERRED' | 'AMBIGUOUS'
 
@@ -111,6 +117,30 @@ const CODEGRAPH_EDGE_MAP: Record<string, EdgeType> = {
   middleware: 'middleware',
   flow_step: 'flow_step',
   cross_domain: 'cross_domain',
+  // P2 edge types (F-97-P2)
+  reads: 'reads',
+  writes: 'writes',
+  tests: 'tests',
+  configures: 'configures',
+  deploys: 'deploys',
+  monitors: 'monitors',
+  validates: 'validates',
+  transforms: 'transforms',
+  caches: 'caches',
+  queues: 'queues',
+  notifies: 'notifies',
+  // P3 edge types (F-97-P2)
+  serializes: 'serializes',
+  deserializes: 'deserializes',
+  encrypts: 'encrypts',
+  decrypts: 'decrypts',
+  compresses: 'compresses',
+  logs: 'logs',
+  metrics: 'metrics',
+  traces_edge: 'traces',    // 'traces' reserved for verb form
+  authenticates: 'authenticates',
+  authorizes: 'authorizes',
+  rate_limits: 'rate_limits',
 }
 
 const GROK_EDGE_MAP: Record<string, EdgeType> = {
@@ -557,6 +587,30 @@ export class GraphStore {
       case 'has_rpc': return 'contains'
       case 'accepts': return 'data'
       case 'returns': return 'data'
+      // P2 mappings from parsers
+      case 'reads': return 'reads'
+      case 'writes': return 'writes'
+      case 'tests': return 'tests'
+      case 'configures': return 'configures'
+      case 'deploys': return 'deploys'
+      case 'monitors': return 'monitors'
+      case 'validates': return 'validates'
+      case 'transforms': return 'transforms'
+      case 'caches': return 'caches'
+      case 'queues': return 'queues'
+      case 'notifies': return 'notifies'
+      // P3 mappings from parsers
+      case 'serializes': return 'serializes'
+      case 'deserializes': return 'deserializes'
+      case 'encrypts': return 'encrypts'
+      case 'decrypts': return 'decrypts'
+      case 'compresses': return 'compresses'
+      case 'logs': return 'logs'
+      case 'metrics': return 'metrics'
+      case 'traces_edge': return 'traces'
+      case 'authenticates': return 'authenticates'
+      case 'authorizes': return 'authorizes'
+      case 'rate_limits': return 'rate_limits'
       default: return 'control'
     }
   }
