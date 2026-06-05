@@ -472,13 +472,13 @@ export class GraphEngine {
     dominated.set(root, null)
 
     // 迭代收敛：对每个可达节点，找其所有前驱的支配者的交集
-    const changed = true
+    let changed = true
     let iterations = 0
     const maxIterations = reachable.nodes.length * 2
 
     while (changed && iterations < maxIterations) {
       iterations++
-      let anyChanged = false
+      changed = false
 
       for (const node of reachable.nodes) {
         if (node === root) continue
@@ -503,11 +503,9 @@ export class GraphEngine {
 
         if (idom !== null && dominated.get(node) !== idom) {
           dominated.set(node, idom)
-          anyChanged = true
+          changed = true
         }
       }
-
-      if (!anyChanged) break
     }
 
     return dominated
