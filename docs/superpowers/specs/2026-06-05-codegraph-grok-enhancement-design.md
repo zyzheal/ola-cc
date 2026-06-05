@@ -1,9 +1,9 @@
 # CodeGraph + Grok 图算法增强设计
 
 > 日期: 2026-06-05
-> 状态: Draft (v6 — 架构师第四轮评审修复版)
+> 状态: Draft (v8 — codegraph.db schema 对齐修复版)
 > 范围: GraphEngine 图算法引擎 + 双引擎增强
-> 评审: 架构师(3P0/5P1/5P2) + 算法专家(5P0/5P1/5P2) + 领域架构师(2P0/3P1/3P2)
+> 评审: 架构师(3P0/5P1/5P2) + 算法专家(5P0/5P1/5P2) + 领域架构师(2P0/3P1/3P2) + design-doc-reviewer R1(4P0/5P1/4P2) + R2(3P0/3P1)
 
 ## 1. 背景与目标
 
@@ -14,7 +14,20 @@ CodeGraph（实时 AST 查询）和 Grok（离线知识图谱）已实现基础�
 - 跨文件影响传播分析
 - 架构级洞察（模块边界、耦合度量）
 
-### 1.2 目标
+### 1.2 用户故事
+
+| # | 角色 | 场景 | 价值 | 前置条件 |
+|---|------|------|------|---------|
+| US-1 | 开发者 | 重构 `AuthService.login()` 前，想知道哪些模块会受影响 | 避免遗漏修改点，减少回归 bug | codegraph 索引已初始化 |
+| US-2 | 架构师 | 项目接手后，需要快速理解模块边界和核心节点 | 缩短架构理解时间，识别技术债 | codegraph + grok 至少一个已初始化 |
+| US-3 | 新人 | 刚加入团队，想通过交互式探索理解代码结构 | 降低上手门槛，减少"问同事"次数 | codegraph 索引已初始化 |
+
+**验收标准**（每个用户故事）:
+- US-1: 执行 `codegraph_impact_deep` 后返回受影响节点列表 + 数据流路径，<2s 响应
+- US-2: 执行 `codegraph_community` + `codegraph_roles` 后返回模块边界和核心/死代码分类，<10s
+- US-3: 执行 `codegraph_explore` + `codegraph_pagerank` 后返回代码入口和核心节点，<5s
+
+### 1.3 目标
 
 构建 TS 内置图算法引擎 `GraphEngine`，零外部依赖，对标 2024-2026 业界最优方案：
 
@@ -91,24 +104,37 @@ src/tools/GrokTool/
 - `.codegraph/codegraph.db` — 通过 `bun:sqlite` 读取 codegraph CLI 的索引
 - `.understand-anything/knowledge-graph.json` — 直接解析 JSON
 
-**字段映射规则**:
+**字段映射规则**（v8 修正：对齐实际 codegraph.db schema）:
 
 | 内部字段 | codegraph.db (SQLite) | knowledge-graph.json |
 |---------|----------------------|---------------------|
-| `nodeMeta.id` | `symbols.qualified_name` | `nodes[].id` |
-| `nodeMeta.name` | `symbols.name` | `nodes[].name` |
-| `nodeMeta.kind` | `symbols.kind` (function/class/variable/module) | `nodes[].kind` |
-| `nodeMeta.file` | `symbols.file_path` | `nodes[].file` |
-| `nodeMeta.line` | `symbols.start_line` | `nodes[].line` |
-| `nodeMeta.signature` | `symbols.signature` | `nodes[].signature` |
+| `nodeMeta.id` | `nodes.id`（主键，TEXT） | `nodes[].id` |
+| `nodeMeta.name` | `nodes.name` | `nodes[].name` |
+| `nodeMeta.kind` | `nodes.kind` (function/class/variable/interface/method/property/...) | `nodes[].kind` |
+| `nodeMeta.file` | `nodes.file_path` | `nodes[].file` |
+| `nodeMeta.line` | `nodes.start_line` | `nodes[].line` |
+| `nodeMeta.signature` | `nodes.signature` | `nodes[].signature` |
+| `nodeMeta.qualified_name` | `nodes.qualified_name`（用于消歧，非主键） | — (无) |
 | `nodeMeta.layer` | — (无) | `nodes[].layer`（顶层字段，非 metadata 嵌套） |
 | `nodeMeta.domain` | — (无) | `nodes[].domain`（顶层字段，非 metadata 嵌套） |
-| `edge.type` | `edges.kind` (call/import/data_flow) | `edges[].type` |
-| `edge.weight` | `edges.weight` (默认 1) | — (无 weight 字段，默认 1) |
+| `edge.type` | `edges.kind` (7 种，见下方映射) | `edges[].type` |
+| `edge.weight` | — (无 weight 列，默认 1) | — (无 weight 字段，默认 1) |
 | `adjacency[from][to]` | 从 `edges` 表构建 | 从 `edges[]` 数组构建 |
 | `reverse[to][from]` | 同上，反向索引 | 同上，反向索引 |
 
-**类型映射**: codegraph.db 的 `call`→`calls`, `import`→`imports`, `data_flow`→`data`, `inherit`→`inherits`, `implement`→`implements`。Grok 的 `depends`→`imports`, `relates`→`control`。未知类型映射为 `control`。
+**v8 代码验证说明**: 实际 codegraph.db 使用 `nodes` 表（非 `symbols`），edges 表无 `weight` 列，实际边类型 7 种。以下映射规则基于 `sqlite3 .codegraph/codegraph.db` 实际 schema 验证。
+
+**类型映射**（v8 修正：基于实际 edges.kind 值分布）:
+- codegraph.db 实际边类型 (7 种):
+  - `calls` → `calls`（47788 条）
+  - `imports` → `imports`（17505 条）
+  - `contains` → `contains`（51097 条，文件包含关系）
+  - `references` → `data`（19975 条，符号引用 → 数据依赖近似）
+  - `extends` → `inherits`（137 条）
+  - `implements` → `implements`（16 条）
+  - `instantiates` → `calls`（819 条，实例化 ≈ 调用构造函数）
+- Grok JSON 边类型: `depends`→`imports`, `relates`→`control`
+- 未知类型默认映射为 `control`
 
 **双数据源合并策略**:
 
@@ -116,7 +142,7 @@ src/tools/GrokTool/
 
 1. **符号身份匹配**: codegraph 使用 `qualified_name`（如 `src/auth.ts:AuthService.login`），Grok 使用 `file:name`（如 `src/auth.ts:login`）。匹配规则：以 `file + name` 做二级索引，Grok 的 `file:name` 解析为 `{file, name}` 后与 codegraph 的 `{file_path, name}` 比较。
    **消歧规则**: 当 Grok 的 `file:name` 匹配到多个 codegraph 符号时：(a) 优先选择 kind 相同的；(b) 仍有多候选时，选择 name 最短的（精确匹配）。
-   **名称提取**: codegraph 的 `qualified_name` 可能包含类前缀（如 `AuthService.login`），匹配时取最后一个 `.` 之后的部分作为短名。具体策略取决于 Phase 0 验证 codegraph symbols 表的 `name` 列格式——若 `name` 列已是短名则直接使用，否则需解析。
+   **名称提取**: codegraph 的 `qualified_name` 可能包含类前缀（如 `AuthService.login`），匹配时取最后一个 `.` 之后的部分作为短名。Phase 0 已验证：`nodes.name` 列为短名（如 `login`），`nodes.qualified_name` 为全限定名（如 `AuthService.login`），匹配时直接使用 `name` 列。
 2. **属性合并优先级**: codegraph.db 提供精确的 AST 级数据（signature、line），Grok JSON 提供语义层数据（layer、domain、summary）。合并时：AST 字段以 codegraph 为准，语义字段以 Grok 为准。
 3. **边去重**: 同一对节点的同类型边去重（以 `{from, to, type}` 三元组为 key）。不同类型边保留（如 codegraph 的 `calls` + Grok 的 `depends` 同时存在）。
 4. **单一数据源**: 当仅一个数据源存在时，直接加载，不做合并。
@@ -128,12 +154,15 @@ src/tools/GrokTool/
 ```typescript
 // 评审修复：邻接表扩展为加权+类型化，兼容所有算法
 interface EdgeMeta {
-  type: 'calls' | 'imports' | 'data' | 'control' | 'inherits' | 'implements'
+  type: 'calls' | 'imports' | 'data' | 'control' | 'inherits' | 'implements' | 'contains'
   weight: number  // 调用频率/依赖强度，默认 1
 }
 
-// 适配器映射规则（load() 时统一转换，运行时只有上述 6 种类型）:
-// codegraph: 'call'→'calls', 'import'→'imports', 'data_flow'→'data', 'inherit'→'inherits', 'implement'→'implements'
+// 适配器映射规则（load() 时统一转换，运行时只有上述 7 种类型）:
+// codegraph.db (基于实际 schema 验证):
+//   'calls'→'calls', 'imports'→'imports', 'contains'→'contains',
+//   'references'→'data', 'extends'→'inherits', 'implements'→'implements',
+//   'instantiates'→'calls'
 // grok:      'depends'→'imports', 'relates'→'control'
 // 未知类型默认映射为 'control'
 
@@ -406,9 +435,16 @@ function tarjanSCC():
 **GraphStore 初始化契约**:
 - GraphStore 为 per-projectRoot 单例，惰性初始化
 - 首次调用 `GraphStore.getInstance(projectRoot)` 时加载数据源
-- codegraph.db 访问路径: 若 Phase 0 验证 bun:sqlite 直连可行则直接读取，否则通过 CodegraphManager 新增 `exportGraphJSON()` 方法导出
+- codegraph.db 访问路径: 若 Phase 0 验证 bun:sqlite 直连可行则直接读取（读取 `nodes` + `edges` 表），否则通过 `sqlite3` CLI 命令导出 JSON（`sqlite3 -json .codegraph/codegraph.db "SELECT * FROM nodes"`）
 - 缓存失效: `IncrementalSync` 检测到 dirty 时标记，下次 load() 重新加载
 - 线程安全: 同一 projectRoot 的并发调用返回同一实例
+
+**SQLite 并发访问策略**:
+- **打开模式**: `SQLITE_OPEN_READONLY` — GraphEngine 只读分析，不修改 codegraph.db
+- **WAL 模式**: codegraph CLI 写入时使用 WAL，GraphStore 读取时自动跟随 WAL 模式（bun:sqlite 默认行为）
+- **锁冲突处理**: 若读取时遇到 `SQLITE_BUSY`（CLI 正在写入），重试 3 次，间隔 100ms/200ms/400ms（指数退避）
+- **降级路径**: 若 3 次重试仍失败，降级为 CodegraphManager CLI 查询（`codegraph_search` 等），返回提示"索引正在更新，请稍后重试"
+- **WAL 检查点**: 读取前不主动触发 `PRAGMA wal_checkpoint`，避免与 CLI 写入冲突
 
 ### 3.3 输入 Schema 示例
 
@@ -637,12 +673,12 @@ const GRAPH_AUTO_TRIGGERS = {
 ## 6. 实施计划（修正版）
 
 ### Phase 0: 数据源验证 (1 天)
-- [ ] `sqlite3 .codegraph/codegraph.db ".schema"` — 验证实际表结构（symbols/edges 表列名）
+- [x] `sqlite3 .codegraph/codegraph.db ".schema"` — 实际表名为 `nodes`（非 `symbols`），edges 无 `weight` 列，边类型 7 种（v8 已修正映射）
 - [ ] `bun:sqlite` compile 模式兼容性测试 + WAL 锁并发读写测试
-- [ ] codegraph CLI 是否提供 `--dump-json` / `export` 子命令（避免直连 SQLite）
+- [ ] codegraph CLI 是否提供 `--dump-json` / `export` 子命令（备选：`sqlite3 -json` CLI 导出）
 - [ ] `knowledge-graph.json` 结构确认: 验证 domain 字段是否有实际值（GrokManager 当前硬编码 `domain: ''`）
-- [ ] 验证 codegraph symbols 表的 `name` 列格式（短名 vs qualified_name，影响合并匹配）
-- [ ] 若 schema 不可控或有 WAL 锁冲突，改用 CLI `--dump-json` 导出方案
+- [x] 验证 codegraph nodes 表的 `name` 列格式: `name` 列为短名（如 `login`），`qualified_name` 为全限定名（如 `AuthService.login`），匹配时用 `name` 短名
+- [ ] 若 bun:sqlite 不可用，降级为 `sqlite3 -json` CLI 导出方案
 
 ### Phase 1: GraphEngine 核心 (5 天)
 - [ ] `src/services/graph/GraphEngine.ts` — 加权邻接表 + 基础遍历
@@ -692,13 +728,38 @@ const GRAPH_AUTO_TRIGGERS = {
 
 **总计: 14 天**（含 Phase 0 验证 1 天 + Phase 1 扩展至 5 天）
 
+### 6.1 功能拆分表
+
+| # | 功能点 | Phase | 输入 | 预期输出 | 验收条件 | 依赖 |
+|---|--------|-------|------|---------|---------|------|
+| F-01 | GraphStore 双数据源加载 | 1 | codegraph.db + knowledge-graph.json | 统一 adjacency + nodeMeta | 加载后 nodeMeta.size > 0，边类型映射正确 | Phase 0 |
+| F-02 | GraphEngine BFS/DFS | 1 | start nodeId, maxDepth | TraversalResult | 空图返回空结果，小图遍历顺序正确 | F-01 |
+| F-03 | Tarjan SCC | 3a | adjacency | SCCResult[] | 含环图返回正确 SCC，无环图每节点独立 SCC | F-01 |
+| F-04 | 拓扑排序 | 3a | adjacency | TopoResult | DAG 返回正确序，有环时返回 SCC | F-03 |
+| F-05 | PageRank | 3a | adjacency, damping | CentralityResult | 收敛后 score 之和 ≈ 1.0，悬挂节点处理正确 | F-01 |
+| F-06 | 反向可达性 | 3a | nodeId | ReachabilityResult | 可达集大小 ≤ 总节点数 | F-01 |
+| F-07 | 支配树 | 3a | root nodeId | Map<string, string\|null> | root 的 dominator 为 null | F-01 |
+| F-08 | 差分图 | 3a | old snapshot, new snapshot | DeltaResult | 增删节点/边数量正确 | F-01 |
+| F-09 | 角色分类 | 3b | adjacency, nodeMeta, RoleOpts | Map<string, RoleType> | dead 节点确实从 entry 不可达 | F-05, F-06 |
+| F-10 | 数据依赖切片 | 3b | nodeId | SliceResult | DDG 可用时走 DDG，不可用时降级 | F-06 |
+| F-11 | 耦合度量 | 3b | adjacency, nodeMeta | MetricsResult | LCOM ∈ [0, 2]，instability ∈ [0, 1] | F-01 |
+| F-12 | Louvain 社区 | 3c | adjacency, LouvainOpts | CommunityResult | modularity ∈ [-0.5, 1]，每个节点恰好属于一个社区 | F-01 |
+| F-13 | Katz 中心性 | 3c | adjacency, KatzOpts | CentralityResult | 收敛后归一化 0-1 | F-01 |
+| F-14 | Betweenness 近似 | 3c | adjacency, sampleSize | CentralityResult | 采样数 ≤ 总节点数 | F-01 |
+| F-15 | 时间耦合 | 3c | git log, TemporalOpts | CouplingResult | coChanges ≥ minCoChanges | Phase 0 git 验证 |
+| F-16 | CodeGraph 11 新 operation | 3a-3c | Zod schema | JSON + _summary + _nextSteps | Schema 验证通过，返回格式符合 GraphOperationResult | F-01~F-15 |
+| F-17 | Grok 2 新 operation | 3c | 调用 GraphEngine + LLM | LLM 摘要 | grok_architecture 返回社区+角色，grok_hotspots 返回热点 | F-12, F-05, F-15 |
+| F-18 | Goal L3 自动触发 | 4 | per-operation debounce | 自动调用对应 operation | debounce 生效，不重复触发 | F-16 |
+| F-19 | 增量同步 | 2 | dirty files | 局部更新 adjacency | 单文件更新 <500ms | F-01 |
+| F-20 | 性能基准 | 5 | 100K 节点测试数据 | 各类操作耗时 | 查询 <10ms，分析 <2s，深度 <10s | F-01~F-18 |
+
 ## 7. 风险与缓解
 
 | 风险 | 影响 | 缓解 |
 |------|------|------|
 | Louvain 实现复杂 | Phase 3c 延期 | 参考 graphology-communities-louvain，300-400 行 |
 | Betweenness 采样精度不足 | 排名偏差 | 默认 sampleSize=200，可配置，精度取决于图拓扑 |
-| bun:sqlite 兼容性 | 构建失败 | 优先验证 bun:sqlite 在 compile 模式下的行为 |
+| bun:sqlite 兼容性 | Node.js 环境不可用 | 优先验证 bun:sqlite 在 compile 模式下的行为；降级为 `sqlite3 -json` CLI 导出（已确认 sqlite3 可用） |
 | git log 解析慢 | temporal 超时 | 滑动时间窗口 + 增量缓存 + 30s 超时 |
 | 递归栈溢出 (Tarjan) | 大图崩溃 | 所有 DFS 算法使用显式栈迭代 |
 | Grok→GraphEngine 调用开销 | 两次加载 | GraphStore 单例 + 内存缓存 |
@@ -748,6 +809,31 @@ _onProgress?.({
   }
 })
 ```
+
+### 9.4 操作验证与排错指南
+
+每个新操作的验证方法和常见故障排查：
+
+| 操作 | 验证命令 | 预期结果 | 常见故障 | 排错步骤 |
+|------|---------|---------|---------|---------|
+| `codegraph_scc` | `codegraph_scc` (无参) | 返回 SCC 列表，`metadata.nodeCount > 0` | 返回空列表但图非空 | ① 检查 codegraph.db 是否有 edges 表 ② 执行 `codegraph_status` 确认索引状态 |
+| `codegraph_toposort` | `codegraph_toposort` | 返回拓扑序，有环时附带 cycles | 超时 | ① 检查图规模（`codegraph_status`） ② 缩小 `maxNodes` 参数 |
+| `codegraph_pagerank` | `codegraph_pagerank` | 返回 scores 数组，score 之和 ≈ 1.0 | 所有 score 为 0 | ① 检查图是否有边（孤立节点 PageRank=0） ② 检查 damping 参数 |
+| `codegraph_delta` | `codegraph_delta` + 两个 commit hash | 返回 added/removed 列表 | "快照不存在" | ① 确认 codegraph CLI 支持历史索引 ② 若不支持，改用 IncrementalSync 增量 diff |
+| `codegraph_impact_deep` | `codegraph_impact_deep(symbol: "已知符号")` | 返回受影响节点 + 数据流 | "未找到符号" | ① 先 `codegraph_search` 确认符号存在 ② 检查符号名是否包含类前缀 |
+| `codegraph_roles` | `codegraph_roles` | 返回 6 种角色分类 | 所有节点都是 utility | ① 检查 entry 点识别（fanIn=0 的节点是否存在） ② 调整 `corePercentile` 参数 |
+| `codegraph_slice` | `codegraph_slice(symbol: "已知变量")` | 返回数据流路径 | 无 dataFlow 结果 | ① 检查 codegraph.db 是否有 data_flow 边 ② 降级为 backwardReachability |
+| `codegraph_coupling` | `codegraph_coupling` | 返回 highCoupling + lcom 数组 | LCOM 全为 0 | ① 检查 nodeMeta.kind 是否包含 'class' 类型 ② 确认 methods/fields 数据可用 |
+| `codegraph_community` | `codegraph_community` | 返回 communities + modularity | modularity < 0.1 | ① 图可能无明显社区结构 ② 尝试调整 resolution 参数（>1.0 更细粒度） |
+| `codegraph_centrality` | `codegraph_centrality(method: "katz")` | 返回 scores 降序排列 | 收敛失败警告 | ① 检查 alpha 参数（>1/最大特征值会发散） ② 降低 alpha 至 0.05 |
+| `codegraph_temporal` | `codegraph_temporal` | 返回耦合对 + 时间窗口 | git log 解析超时 | ① 缩短 since 时间窗口 ② 减小 maxCommits ③ 检查 .codegraph/temporal-cache.json 是否存在 |
+
+**通用排错流程**:
+1. 执行 `codegraph_status` 确认索引状态（已初始化 / 最后更新时间）
+2. 执行 `grok_status` 确认 Grok 知识图谱状态
+3. 检查 `.codegraph/codegraph.db` 文件是否存在且非空
+4. 若报 "图为空"：确认 `GraphStore.load()` 成功加载了节点（`nodeMeta.size > 0`）
+5. 若报超时：检查图规模，100K 节点的深度分析应 <10s，超出说明需要缩小范围
 
 ## 10. 参考工具
 
