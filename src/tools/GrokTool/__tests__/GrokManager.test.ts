@@ -52,9 +52,24 @@ describe('ERROR_SUGGESTIONS', () => {
   it('should have all expected error codes', () => {
     expect(ERROR_SUGGESTIONS['PARSE_TIMEOUT']).toBeDefined()
     expect(ERROR_SUGGESTIONS['LLM_RATE_LIMIT']).toBeDefined()
+    expect(ERROR_SUGGESTIONS['LLM_TIMEOUT']).toBeDefined()
     expect(ERROR_SUGGESTIONS['LLM_TOKEN_BUDGET']).toBeDefined()
     expect(ERROR_SUGGESTIONS['GRAPH_INVALID']).toBeDefined()
-    expect(ERROR_SUGGESTIONS['SOURCE_CLONE_FAILED']).toBeDefined()
+    expect(ERROR_SUGGESTIONS['GRAPH_NOT_FOUND']).toBeDefined()
+    expect(ERROR_SUGGESTIONS['SOURCE_UPDATE_FAILED']).toBeDefined()
+    expect(ERROR_SUGGESTIONS['NO_FILES']).toBeDefined()
+    expect(ERROR_SUGGESTIONS['INVALID_SCOPE']).toBeDefined()
+    expect(ERROR_SUGGESTIONS['NO_AVAILABLE_PORT']).toBeDefined()
+    // Pipeline step failure codes
+    expect(ERROR_SUGGESTIONS['SCANNER_FAILED']).toBeDefined()
+    expect(ERROR_SUGGESTIONS['ANALYZER_FAILED']).toBeDefined()
+    expect(ERROR_SUGGESTIONS['ARCHITECTURE_FAILED']).toBeDefined()
+    expect(ERROR_SUGGESTIONS['TOUR_FAILED']).toBeDefined()
+    expect(ERROR_SUGGESTIONS['REVIEW_FAILED']).toBeDefined()
+  })
+
+  it('should not contain removed dead code SOURCE_CLONE_FAILED', () => {
+    expect(ERROR_SUGGESTIONS['SOURCE_CLONE_FAILED']).toBeUndefined()
   })
 })
 
@@ -177,5 +192,63 @@ describe('stub methods', () => {
     expect(result.status).toBe('failed')
     expect(result.errors).toBeDefined()
     expect(result.errors![0].code).toBe('NO_FILES')
+  })
+})
+
+// ============================================
+// buildFileAnalyzerPrompt
+// ============================================
+
+describe('buildFileAnalyzerPrompt', () => {
+  it('should include actual file contents in prompt', () => {
+    const testFile = resolve(TEST_DIR, 'sample.ts')
+    writeFileSync(testFile, 'export function hello() { return "world" }')
+
+    const manager = new GrokManager(TEST_DIR)
+    const prompt = (manager as any).buildFileAnalyzerPrompt([testFile]) as string
+
+    expect(prompt).toContain('export function hello()')
+    expect(prompt).toContain('sample.ts')
+    // Should NOT just be a path reference
+    expect(prompt).not.toContain('(Unable to read file)')
+  })
+
+  it('should truncate large files at 50KB', () => {
+    const testFile = resolve(TEST_DIR, 'large.ts')
+    const bigContent = 'x'.repeat(60_000)
+    writeFileSync(testFile, bigContent)
+
+    const manager = new GrokManager(TEST_DIR)
+    const prompt = (manager as any).buildFileAnalyzerPrompt([testFile]) as string
+
+    expect(prompt).toContain('truncated')
+    // Should not contain the full 60KB
+    expect(prompt.length).toBeLessThan(60_000 + 500)
+  })
+
+  it('should handle unreadable files gracefully', () => {
+    const missingFile = resolve(TEST_DIR, 'nonexistent.ts')
+
+    const manager = new GrokManager(TEST_DIR)
+    const prompt = (manager as any).buildFileAnalyzerPrompt([missingFile]) as string
+
+    expect(prompt).toContain('Unable to read file')
+    expect(prompt).toContain('nonexistent.ts')
+  })
+
+  it('should limit total content size to 200KB', () => {
+    // Create many files that exceed 200KB total
+    const files: string[] = []
+    for (let i = 0; i < 10; i++) {
+      const f = resolve(TEST_DIR, `file${i}.ts`)
+      writeFileSync(f, 'y'.repeat(25_000)) // 25KB each = 250KB total
+      files.push(f)
+    }
+
+    const manager = new GrokManager(TEST_DIR)
+    const prompt = (manager as any).buildFileAnalyzerPrompt(files) as string
+
+    // Some files should be skipped
+    expect(prompt).toContain('Skipped: total content size limit reached')
   })
 })
