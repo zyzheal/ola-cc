@@ -30,7 +30,6 @@ const operationEnum = z.enum([
   'codegraph_callees',
   'codegraph_impact',
   'codegraph_trace',
-  'codegraph_explore',
   'codegraph_status',
   'codegraph_init',
   'codegraph_files',
@@ -40,7 +39,6 @@ const operationEnum = z.enum([
   'codegraph_toposort',
   'codegraph_delta',
   'codegraph_pagerank',
-  'codegraph_impact_deep',
   'codegraph_roles',
   'codegraph_slice',
   'codegraph_coupling',
@@ -126,7 +124,6 @@ export const codegraphTool = buildTool({
       codegraph_callees: '查找被调用者',
       codegraph_impact: '影响分析',
       codegraph_trace: '调用链追踪',
-      codegraph_explore: '探索代码',
       codegraph_status: '查看状态',
       codegraph_init: '初始化索引',
       codegraph_files: '列出文件',
@@ -135,7 +132,6 @@ export const codegraphTool = buildTool({
       codegraph_toposort: '拓扑排序',
       codegraph_delta: '差分图',
       codegraph_pagerank: 'PageRank',
-      codegraph_impact_deep: '深度影响分析',
       codegraph_roles: '角色分类',
       codegraph_slice: '数据切片',
       codegraph_coupling: '耦合度量',
@@ -300,9 +296,40 @@ export const codegraphTool = buildTool({
 
         case 'codegraph_impact': {
           if (!input.symbol) return { data: { error: true, message: 'codegraph_impact 需要 symbol 参数' } };
-          sendProgress('impact', `Analyzing impact of ${input.symbol}…`)
-          const r = await CodegraphManager.getImpact(projectRoot, input.symbol, input.depth ?? 2);
-          result = parseJsonOrError(r);
+          const impactDepth = input.depth ?? 2;
+          if (impactDepth > 2) {
+            // Deep impact analysis using GraphEngine (BFS + backward reachability + role classification)
+            sendProgress('impact', `Deep impact analysis of ${input.symbol}…`)
+            const store = GraphStore.getInstance(projectRoot);
+            await store.load();
+            const engine = new GraphEngine(store);
+            const forward = engine.bfs(input.symbol, impactDepth);
+            const backward = engine.backwardReachability(input.symbol);
+            const roles = engine.classifyRoles();
+            const impacted = forward.nodes.map(n => ({
+              node: n,
+              depth: forward.depth.get(n) ?? 0,
+              role: roles.get(n) ?? 'utility',
+              meta: store.getNode(n),
+            }));
+            const dependents = backward.reachable.map(n => ({
+              node: n,
+              role: roles.get(n) ?? 'utility',
+              meta: store.getNode(n),
+            }));
+            result = {
+              symbol: input.symbol,
+              forwardImpact: impacted.slice(0, input.maxNodes ?? 30),
+              backwardDependents: dependents.slice(0, input.maxNodes ?? 30),
+              forwardCount: forward.nodes.length,
+              backwardCount: backward.reachable.length,
+            };
+          } else {
+            // Basic impact analysis using CLI
+            sendProgress('impact', `Analyzing impact of ${input.symbol}…`)
+            const r = await CodegraphManager.getImpact(projectRoot, input.symbol, impactDepth);
+            result = parseJsonOrError(r);
+          }
           break;
         }
 
@@ -377,28 +404,6 @@ export const codegraphTool = buildTool({
               const missingSymbol = !fromName ? parts[0] : parts[1];
               return { data: { error: true, message: `未找到符号: ${missingSymbol}` } };
             }
-          }
-          break;
-        }
-
-        case 'codegraph_explore': {
-          if (!input.query) return { data: { error: true, message: 'codegraph_explore 需要 query 参数' } };
-          sendProgress('explore', `Exploring: ${input.query.slice(0, 60)}…`)
-          const r = await CodegraphManager.searchNodes(projectRoot, input.query, {
-            limit: input.maxNodes ?? 5,
-          });
-          const nodes = parseJsonOrError(r);
-          // 对每个节点获取上下文
-          const exploreLimit = Math.min(input.maxNodes ?? 5, 20);
-          if (Array.isArray(nodes) && nodes.length > 0) {
-            result = nodes.slice(0, exploreLimit).map((n: Record<string, unknown>) => ({
-              name: n.name,
-              kind: n.kind,
-              file: n.file,
-              line: n.line,
-            }));
-          } else {
-            result = nodes;
           }
           break;
         }
@@ -517,37 +522,6 @@ export const codegraphTool = buildTool({
               meta: store.getNode(s.node),
             })),
             totalScored: pr.scores.length,
-          };
-          break;
-        }
-
-        case 'codegraph_impact_deep': {
-          if (!input.symbol) return { data: { error: true, message: 'codegraph_impact_deep 需要 symbol 参数' } };
-          sendProgress('impact_deep', `Deep impact analysis of ${input.symbol}…`)
-          const store = GraphStore.getInstance(projectRoot);
-          await store.load();
-          const engine = new GraphEngine(store);
-          // Combine BFS traversal + backward reachability + role classification
-          const forward = engine.bfs(input.symbol, input.depth ?? 3);
-          const backward = engine.backwardReachability(input.symbol);
-          const roles = engine.classifyRoles();
-          const impacted = forward.nodes.map(n => ({
-            node: n,
-            depth: forward.depth.get(n) ?? 0,
-            role: roles.get(n) ?? 'utility',
-            meta: store.getNode(n),
-          }));
-          const dependents = backward.reachable.map(n => ({
-            node: n,
-            role: roles.get(n) ?? 'utility',
-            meta: store.getNode(n),
-          }));
-          result = {
-            symbol: input.symbol,
-            forwardImpact: impacted.slice(0, input.maxNodes ?? 30),
-            backwardDependents: dependents.slice(0, input.maxNodes ?? 30),
-            forwardCount: forward.nodes.length,
-            backwardCount: backward.reachable.length,
           };
           break;
         }
@@ -710,8 +684,8 @@ export const codegraphTool = buildTool({
 
       // 查询操作追加新鲜度提示
       const isQueryOp = ['codegraph_context', 'codegraph_search', 'codegraph_callers',
-        'codegraph_callees', 'codegraph_impact', 'codegraph_trace', 'codegraph_explore',
-        'codegraph_scc', 'codegraph_toposort', 'codegraph_pagerank', 'codegraph_impact_deep',
+        'codegraph_callees', 'codegraph_impact', 'codegraph_trace',
+        'codegraph_scc', 'codegraph_toposort', 'codegraph_pagerank',
         'codegraph_roles', 'codegraph_slice', 'codegraph_coupling', 'codegraph_community',
         'codegraph_centrality', 'codegraph_temporal'].includes(input.operation);
       if (isQueryOp) {
@@ -767,6 +741,141 @@ export const codegraphTool = buildTool({
     };
   },
 });
+
+// ============================================================
+// Three-Layer Description System
+// ============================================================
+
+/**
+ * Operation tier classification for progressive disclosure.
+ * - Core (5): Always visible, short descriptions
+ * - Analysis (4): Visible after core, medium descriptions
+ * - Advanced (11): Deferred via ToolSearch, detailed descriptions
+ */
+export const OPERATION_TIERS = {
+  core: [
+    'codegraph_scc',
+    'codegraph_toposort',
+    'codegraph_pagerank',
+    'codegraph_search',
+    'codegraph_status',
+  ],
+  analysis: [
+    'codegraph_community',
+    'codegraph_roles',
+    'codegraph_impact',
+    'codegraph_centrality',
+  ],
+  advanced: [
+    'codegraph_context',
+    'codegraph_callers',
+    'codegraph_callees',
+    'codegraph_trace',
+    'codegraph_init',
+    'codegraph_files',
+    'codegraph_sync',
+    'codegraph_delta',
+    'codegraph_slice',
+    'codegraph_coupling',
+    'codegraph_temporal',
+  ],
+} as const;
+
+/** Advanced operations that should be deferred via ToolSearch */
+export const DEFERRED_OPERATIONS: readonly string[] = OPERATION_TIERS.advanced;
+
+/** Per-operation descriptions at three detail levels */
+const OPERATION_DESCRIPTIONS: Record<string, { core: string; analysis: string; advanced: string }> = {
+  codegraph_scc: {
+    core: 'Strongly connected components — find circular dependencies',
+    analysis: 'Tarjan SCC algorithm to detect circular dependency clusters in the call graph',
+    advanced: 'Tarjan SCC: identifies strongly connected components (cycles) in the code graph. Returns trivial and non-trivial components. Use to find circular dependency clusters that need refactoring.',
+  },
+  codegraph_toposort: {
+    core: 'Topological sort — determine build/init order',
+    analysis: 'Topological ordering of the dependency graph with cycle detection',
+    advanced: 'Topological sort of the dependency DAG. Returns ordered node list and detected cycles. Use to determine correct initialization order, build order, or migration sequence.',
+  },
+  codegraph_pagerank: {
+    core: 'PageRank — find most important nodes',
+    analysis: 'PageRank centrality to identify architecturally significant files',
+    advanced: 'PageRank algorithm with configurable damping factor. Scores nodes by architectural importance (incoming references weighted by source importance). Use to find the most critical files that need careful maintenance.',
+  },
+  codegraph_search: {
+    core: 'Search symbols by name/pattern',
+    analysis: 'Fuzzy symbol search with file and kind metadata',
+    advanced: 'Search for symbols by name or pattern across the indexed codebase. Returns name, kind, file, line for each match. Supports partial matches and wildcards.',
+  },
+  codegraph_status: {
+    core: 'Index status and freshness',
+    analysis: 'Check CodeGraph index status, node/edge counts, and sync age',
+    advanced: 'Check CodeGraph initialization status, index freshness (minutes since last sync), node and edge counts. Use before other operations to verify the index is ready and up-to-date.',
+  },
+  codegraph_community: {
+    analysis: 'Louvain community detection — find natural module boundaries',
+    advanced: 'Louvain modularity-based community detection with configurable resolution. Identifies natural clusters/modules in the code graph. Use to understand codebase structure and find refactoring boundaries.',
+  },
+  codegraph_roles: {
+    analysis: 'Node role classification (hub/bridge/leaf/utility)',
+    advanced: 'Classify nodes by structural role: hub (many connections), bridge (connects communities), leaf (terminal), utility (used by many). Use to understand architectural patterns and identify key files.',
+  },
+  codegraph_impact: {
+    analysis: 'Impact analysis — what breaks if X changes',
+    advanced: 'Forward and backward impact analysis. depth<=2: CLI-based direct callers/callees. depth>2: GraphEngine BFS + backward reachability + role classification. Use to assess change risk before modifying a symbol.',
+  },
+  codegraph_centrality: {
+    analysis: 'Katz/betweenness centrality — find bridge nodes',
+    advanced: 'Katz and/or betweenness centrality analysis. Katz measures global influence via path sums. Betweenness identifies nodes that bridge different parts of the graph. Use to find critical integration points.',
+  },
+  codegraph_context: {
+    advanced: 'Query code context by task description. Returns relevant symbols, files, and relationships for a given task or question.',
+  },
+  codegraph_callers: {
+    advanced: 'Find all callers of a symbol (who uses this function/class). Returns calling symbols with file and line metadata.',
+  },
+  codegraph_callees: {
+    advanced: 'Find all callees of a symbol (what does this function call). Returns called symbols with file and line metadata.',
+  },
+  codegraph_trace: {
+    advanced: 'Trace call path between two symbols. Format: "X to Y". Uses bidirectional impact analysis to find connecting nodes.',
+  },
+  codegraph_init: {
+    advanced: 'Initialize CodeGraph index for the current project. Downloads CLI (~45MB) on first use and creates the symbol database.',
+  },
+  codegraph_files: {
+    advanced: 'List indexed files with directory structure. Returns file tree up to specified depth.',
+  },
+  codegraph_sync: {
+    advanced: 'Sync CodeGraph index with current source code. Re-indexes changed files since last sync.',
+  },
+  codegraph_delta: {
+    advanced: 'Compute graph delta between two snapshots. Returns added/removed nodes and edges with summary.',
+  },
+  codegraph_slice: {
+    advanced: 'Backward data slice for a symbol. Identifies all symbols that influence the target symbol\'s value through data flow analysis.',
+  },
+  codegraph_coupling: {
+    advanced: 'Coupling metrics: high-coupling pairs and LCOM (Lack of Cohesion of Methods) scores. Use to identify code that should be refactored.',
+  },
+  codegraph_temporal: {
+    advanced: 'Temporal coupling via git log analysis. Finds files that are frequently changed together. Use to discover hidden dependencies not visible in the call graph.',
+  },
+};
+
+/**
+ * Get description for an operation at a specific tier level.
+ * Falls back to the most detailed available description.
+ */
+export function getOperationDescription(operation: string, tier: 'core' | 'analysis' | 'advanced' = 'advanced'): string {
+  const desc = OPERATION_DESCRIPTIONS[operation];
+  if (!desc) return operation;
+  return desc[tier] ?? desc.advanced ?? desc.analysis ?? desc.core ?? operation;
+}
+
+// Attach tier metadata to the tool for runtime access
+(codegraphTool as any).operationTiers = OPERATION_TIERS;
+(codegraphTool as any).deferredOperations = DEFERRED_OPERATIONS;
+(codegraphTool as any).getOperationDescription = getOperationDescription;
 
 // ============================================================
 // Helpers

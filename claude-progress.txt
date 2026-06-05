@@ -45,3 +45,16 @@
   Windows x64, falls back to ripgrep on any error; uses ripgrep
   directly on all other platforms
 - Build verification: bun build succeeded (386 modules bundled)
+
+### Tool Schema Refactoring — Phase 1a-3 (2026-06-05) - DONE
+- **Operation Merge**: `codegraph_impact` + `codegraph_impact_deep` → single `codegraph_impact` with optional `depth` parameter (depth>2 uses GraphEngine deep analysis)
+- **Operation Deletion**: Removed `codegraph_explore` (redundant with `codegraph_search`)
+- **Operation Count**: 22 → 20 operations
+- **Three-Layer Description System**:
+  - Core (5 ops): scc, toposort, pagerank, search, status — short descriptions, always visible
+  - Analysis (4 ops): community, roles, impact, centrality — medium descriptions
+  - Advanced (11 ops): context, callers, callees, trace, init, files, sync, delta, slice, coupling, temporal — detailed descriptions, deferred via ToolSearch
+- **ToolSearch Deferred Registration**: `DEFERRED_OPERATIONS` exported for advanced operations, `OPERATION_TIERS` for classification
+- **Exports**: `OPERATION_TIERS`, `DEFERRED_OPERATIONS`, `getOperationDescription()`
+- **Tests**: 14 tests passing (schema, tiers, descriptions, deferred operations)
+- **Backward Compatibility**: `codegraph_impact` with depth<=2 uses CLI, depth>2 uses GraphEngine
