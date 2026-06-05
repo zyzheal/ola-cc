@@ -20,6 +20,8 @@ import { readFileSync, existsSync } from 'fs'
 import { resolve } from 'path'
 import { logForDebugging } from '../../utils/debug.js'
 import { createDefaultRegistry } from './parsers/index.js'
+import { LRUCache } from './LRUCache.js'
+import { QueryCache } from './QueryCache.js'
 
 // ============================================================
 // Types (aligned with design doc §2.3)
@@ -159,6 +161,9 @@ export class GraphStore {
   public readonly nodeMeta = new Map<string, NodeMetadata>()
   public readonly fileRecords = new Map<string, FileRecord>()  // F-54
 
+  /** F-57: LRU 缓存用于高频节点访问 */
+  private nodeCache = new LRUCache<string, NodeMetadata>(1000)
+
   private loaded = false
   private needsReloadFlag = false
   private loadingPromise: Promise<GraphData> | null = null
@@ -279,6 +284,7 @@ export class GraphStore {
     this.reverse.clear()
     this.nodeMeta.clear()
     this.fileRecords.clear()
+    this.nodeCache.clear()
   }
 
   // ----------------------------------------------------------
@@ -617,10 +623,40 @@ export class GraphStore {
   }
 
   /**
-   * 获取节点元数据
+   * 获取节点元数据（F-57: LRU 缓存加速高频访问）
    */
   getNode(nodeId: string): NodeMetadata | undefined {
-    return this.nodeMeta.get(nodeId)
+    // 先查 LRU 缓存
+    const cached = this.nodeCache.get(nodeId)
+    if (cached) return cached
+
+    // 再查主存储
+    const node = this.nodeMeta.get(nodeId)
+    if (node) {
+      this.nodeCache.set(nodeId, node)
+    }
+    return node
+  }
+
+  /**
+   * F-58: 批量获取节点元数据（返回 Map 保持 O(1) 查找）
+   */
+  getNodesByIds(ids: string[]): Map<string, NodeMetadata> {
+    const result = new Map<string, NodeMetadata>()
+    for (const id of ids) {
+      const node = this.getNode(id)
+      if (node) {
+        result.set(id, node)
+      }
+    }
+    return result
+  }
+
+  /**
+   * F-57: 获取 LRU 缓存命中率（用于性能监控）
+   */
+  get nodeCacheStats(): { hits: number; misses: number; hitRate: number; size: number } {
+    return { ...this.nodeCache.stats, size: this.nodeCache.size }
   }
 
   /**
