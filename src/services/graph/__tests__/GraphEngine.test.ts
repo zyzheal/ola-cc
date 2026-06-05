@@ -483,7 +483,7 @@ describe('deltaGraph', () => {
     adj: Record<string, Array<{ to: string; type?: EdgeMeta['type'] }>>,
     nodeIds: string[],
   ): GraphSnapshot {
-    const adjacency = new Map<string, Map<string, EdgeMeta>>()
+    const adjacency = new Map<string, Map<string, EdgeMeta[]>>()
     const nodeMeta = new Map<string, NodeMetadata>()
 
     for (const id of nodeIds) {
@@ -491,9 +491,9 @@ describe('deltaGraph', () => {
     }
 
     for (const [from, edges] of Object.entries(adj)) {
-      const fromMap = new Map<string, EdgeMeta>()
+      const fromMap = new Map<string, EdgeMeta[]>()
       for (const edge of edges) {
-        fromMap.set(edge.to, { type: edge.type ?? 'calls', weight: 1 })
+        fromMap.set(edge.to, [{ type: edge.type ?? 'calls', weight: 1 }])
       }
       adjacency.set(from, fromMap)
     }
@@ -918,7 +918,165 @@ describe('betweennessCentrality', () => {
 })
 
 // ============================================================
-// 15. Integration: real codegraph.db
+// 15. Bug fixes (TDD RED phase)
+// ============================================================
+
+describe('bug: louvain normalization', () => {
+  test('modularity Q must be in [-0.5, 1.0] for simple graphs', () => {
+    // With the missing 1/(2m) normalization, Q can exceed 1.0
+    const { engine } = completeGraph(4)
+    const result = engine.louvainCommunity({ resolution: 1.0 })
+
+    // Standard modularity is bounded: -0.5 <= Q <= 1.0
+    expect(result.modularity).toBeLessThanOrEqual(1.0)
+    expect(result.modularity).toBeGreaterThanOrEqual(-0.5)
+  })
+
+  test('two-clique graph: modularity reflects true community structure', () => {
+    // Two disconnected cliques of 3 nodes each.
+    // Good partition (each clique = 1 community) should have Q > 0.3
+    const store = createStoreFromAdjacency({
+      // Clique 1: A, B, C (all connected)
+      A: ['B', 'C'],
+      B: ['A', 'C'],
+      C: ['A', 'B'],
+      // Clique 2: D, E, F (all connected)
+      D: ['E', 'F'],
+      E: ['D', 'F'],
+      F: ['D', 'E'],
+    }, 'louvain-norm-test')
+    const engine = new GraphEngine(store)
+    const result = engine.louvainCommunity()
+
+    // Two disconnected cliques → modularity should be clearly positive
+    expect(result.modularity).toBeGreaterThan(0.3)
+    // Should find 2 communities
+    expect(result.communities.length).toBe(2)
+  })
+})
+
+describe('bug: betweenness non-determinism', () => {
+  test('betweenness centrality is deterministic across calls', () => {
+    const { engine } = chain(8)
+
+    // Run betweenness twice with same sampleSize
+    const result1 = engine.betweennessCentrality(8)
+    const result2 = engine.betweennessCentrality(8)
+
+    // Scores must be identical (deterministic)
+    expect(result1.scores).toEqual(result2.scores)
+  })
+
+  test('betweenness with sampling is also deterministic', () => {
+    const { engine } = chain(12)
+
+    // sampleSize < N triggers the sampling path
+    const result1 = engine.betweennessCentrality(5)
+    const result2 = engine.betweennessCentrality(5)
+
+    expect(result1.scores).toEqual(result2.scores)
+  })
+})
+
+describe('bug: katz alpha convergence', () => {
+  test('default alpha adapts to graph: matches explicit 0.9/sqrt(maxDegree)', () => {
+    // Build a graph and compute what the auto-alpha should be
+    const store = createStoreFromAdjacency({
+      A: ['B', 'C', 'D'],
+      B: ['A', 'C'],
+      C: ['D'],
+      D: ['A'],
+    }, 'katz-auto-alpha-test')
+    const engine = new GraphEngine(store)
+
+    // Compute max in-degree
+    const nodes = engine.getAllNodeIds()
+    let maxInDeg = 0
+    for (const node of nodes) {
+      const inDeg = [...store.getInEdges(node).keys()].length
+      if (inDeg > maxInDeg) maxInDeg = inDeg
+    }
+    const expectedAlpha = 0.9 / Math.sqrt(maxInDeg)
+
+    // Default katz should use the auto-alpha, not hardcoded 0.1
+    const defaultResult = engine.katzCentrality()
+    const explicitAuto = engine.katzCentrality({ alpha: expectedAlpha })
+
+    // If the fix is applied, these should be equal
+    expect(defaultResult.scores).toEqual(explicitAuto.scores)
+  })
+
+  test('katz scores converge (stable across different maxIter) on hub graph', () => {
+    // Bidirectional hub: rho=sqrt(N), alpha must be < 1/sqrt(N)
+    // With N=120: auto-alpha=0.082 < 1/sqrt(120)=0.091 → converges
+    // With hardcoded 0.1: 0.1 > 0.091 → diverges (unstable scores)
+    const adj: Record<string, string[]> = {}
+    const N = 120
+    for (let i = 0; i < N; i++) {
+      adj[`s${i}`] = ['hub']
+    }
+    adj['hub'] = Array.from({length: N}, (_, i) => `s${i}`)
+    const store = createStoreFromAdjacency(adj, 'katz-converge-test')
+    const engine = new GraphEngine(store)
+
+    // With converged alpha, scores should be stable across maxIter
+    const r100 = engine.katzCentrality({ maxIter: 100 })
+    const r200 = engine.katzCentrality({ maxIter: 200 })
+
+    // Hub score ratio should be stable (not oscillating/growing)
+    const hubRatio100 = r100.scores.find(s => s.node === 'hub')!.score /
+      (r100.scores.find(s => s.node === 's0')!.score || 1e-30)
+    const hubRatio200 = r200.scores.find(s => s.node === 'hub')!.score /
+      (r200.scores.find(s => s.node === 's0')!.score || 1e-30)
+
+    // Converged iteration: ratios should match closely
+    expect(Math.abs(hubRatio100 - hubRatio200)).toBeLessThan(0.1)
+  })
+})
+
+describe('bug: dominatorTree const/let', () => {
+  test('dominator tree converges on diamond graph (fixed-point iteration)', () => {
+    // Diamond: A→B, A→C, B→D, C→D
+    // The dominator tree needs iterative convergence.
+    // With `const changed = true`, the while loop either runs forever
+    // (but iterations caps it) or uses incorrect convergence logic.
+    const store = createStoreFromAdjacency({
+      A: ['B', 'C'],
+      B: ['D'],
+      C: ['D'],
+    }, 'dom-const-let-test')
+    const engine = new GraphEngine(store)
+
+    const doms = engine.dominatorTree('A')
+
+    expect(doms.get('A')).toBeNull()
+    expect(doms.get('B')).toBe('A')
+    expect(doms.get('C')).toBe('A')
+    expect(doms.get('D')).toBe('A')
+  })
+
+  test('dominator tree correctly finds idom on multi-level diamond', () => {
+    // More complex: A→B, A→C, B→D, C→D, D→E
+    const store = createStoreFromAdjacency({
+      A: ['B', 'C'],
+      B: ['D'],
+      C: ['D'],
+      D: ['E'],
+    }, 'dom-const-let-test2')
+    const engine = new GraphEngine(store)
+
+    const doms = engine.dominatorTree('A')
+
+    expect(doms.get('A')).toBeNull()
+    expect(doms.get('B')).toBe('A')
+    expect(doms.get('C')).toBe('A')
+    expect(doms.get('D')).toBe('A')
+    expect(doms.get('E')).toBe('D')
+  })
+})
+
+// ============================================================
+// 16. Integration: real codegraph.db
 // ============================================================
 
 describe('integration: real codegraph.db', () => {
