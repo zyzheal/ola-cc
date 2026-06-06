@@ -166,6 +166,15 @@ Context compression lives in `src/services/compact/`:
 
 **Tool 层**: CodegraphTool 22 个操作（三层描述：core/analysis/advanced），GrokTool 2 个操作（grok_architecture/grok_hotspots），OperationRouter 智能路由 CLI/Engine/Hybrid
 
+**Extraction 系统** (`extraction/`)，零 CLI 依赖源码解析：
+- `tree-sitter.ts` — TreeSitterExtractor 核心类，14 种提取方法，AST→节点/边
+- `index.ts` — ExtractionOrchestrator 编排器（indexAll/indexFiles/sync，增量 SHA-256）
+- `grammars.ts` — WASM grammar 加载器（web-tree-sitter + tree-sitter-wasms）
+- `parse-worker.ts` — Worker 线程并行提取
+- `languages/` — 19 种语言提取器（P0: TS/JS/Python, P1: Go/Rust/Java/C/C++, P2: C#/PHP/Ruby/Swift/Kotlin, P3: Dart/Scala/Lua/Luau/Pascal/ObjC）
+- `extractors/` — 5 种专用提取器（Vue SFC, Svelte, Liquid, MyBatis XML, Delphi DFM）
+- 依赖：web-tree-sitter@0.25.3, tree-sitter-wasms@0.1.11
+
 ### Event System
 
 事件系统使用 NATS 作为可选的事件总线：
