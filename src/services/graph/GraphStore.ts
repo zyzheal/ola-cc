@@ -197,6 +197,7 @@ export class GraphStore {
   private loaded = false
   private needsReloadFlag = false
   private loadingPromise: Promise<GraphData> | null = null
+  private _loadedAt = 0
 
   private constructor(private readonly projectRoot: string) {}
 
@@ -210,6 +211,13 @@ export class GraphStore {
       GraphStore.instances.set(projectRoot, instance)
     }
     return instance
+  }
+
+  /**
+   * 删除 per-projectRoot 单例实例（测试清理用）
+   */
+  static deleteInstance(projectRoot: string): void {
+    GraphStore.instances.delete(projectRoot)
   }
 
   /**
@@ -270,6 +278,7 @@ export class GraphStore {
 
     this.loaded = true
     this.needsReloadFlag = false
+    this._loadedAt = Date.now()
     return { adjacency: this.adjacency, reverse: this.reverse, nodeMeta: this.nodeMeta }
   }
 
@@ -307,6 +316,40 @@ export class GraphStore {
   getStale(): GraphData | null {
     if (this.nodeMeta.size === 0) return null
     return { adjacency: this.adjacency, reverse: this.reverse, nodeMeta: this.nodeMeta }
+  }
+
+  /**
+   * Ensure the graph store is ready to use.
+   * If allowStaleDb is true, will use existing DB even if CLI is unavailable.
+   */
+  async ensureReady(options?: { allowStaleDb?: boolean }): Promise<{
+    ready: boolean
+    stale: boolean
+    lastSync?: number
+    message?: string
+  }> {
+    try {
+      if (this.isLoaded) return { ready: true, stale: false }
+      await this.load()
+      return { ready: true, stale: false }
+    } catch (error) {
+      if (options?.allowStaleDb && (this.adjacency.size > 0 || this.nodeMeta.size > 0)) {
+        return {
+          ready: true,
+          stale: true,
+          lastSync: this._loadedAt,
+          message: 'Using existing index. Some data may be outdated.',
+        }
+      }
+      return { ready: false, stale: false, message: String(error) }
+    }
+  }
+
+  /**
+   * Timestamp of last successful load (epoch ms).
+   */
+  get loadedAt(): number {
+    return this._loadedAt
   }
 
   private clear(): void {
