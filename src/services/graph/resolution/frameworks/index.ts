@@ -18,6 +18,16 @@ import { expoModulesResolver } from './expo-modules.js'
 import { nestjsResolver } from './nestjs.js'
 import { expressResolver } from './express.js'
 import { javaResolver } from './java.js'
+import { goResolver } from './go.js'
+import { rustResolver } from './rust.js'
+import { aspnetResolver } from './csharp.js'
+import { swiftUIResolver, uikitResolver, vaporResolver } from './swift.js'
+import { swiftObjcBridgeResolver } from './swift-objc.js'
+import { djangoResolver, flaskResolver, fastapiResolver } from './python.js'
+import { railsResolver } from './ruby.js'
+import { laravelResolver } from './laravel.js'
+import { drupalResolver } from './drupal.js'
+import { playResolver } from './play.js'
 
 /**
  * All registered framework resolvers
@@ -96,3 +106,21 @@ registerFrameworkResolver(expoModulesResolver)
 registerFrameworkResolver(nestjsResolver)
 registerFrameworkResolver(expressResolver)
 registerFrameworkResolver(javaResolver)
+
+// Phase 6c-3: Register Go + Rust + C# + Swift + Swift-ObjC framework resolvers
+registerFrameworkResolver(goResolver)
+registerFrameworkResolver(rustResolver)
+registerFrameworkResolver(aspnetResolver)
+registerFrameworkResolver(swiftUIResolver)
+registerFrameworkResolver(uikitResolver)
+registerFrameworkResolver(vaporResolver)
+registerFrameworkResolver(swiftObjcBridgeResolver)
+
+// Phase 6c-3: Register Python + Ruby + Laravel + Drupal + Play framework resolvers
+registerFrameworkResolver(djangoResolver)
+registerFrameworkResolver(flaskResolver)
+registerFrameworkResolver(fastapiResolver)
+registerFrameworkResolver(railsResolver)
+registerFrameworkResolver(laravelResolver)
+registerFrameworkResolver(drupalResolver)
+registerFrameworkResolver(playResolver)
