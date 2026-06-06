@@ -186,3 +186,35 @@
 - **F-97-P2/P3 EdgeType expansion**: 18 → 40 total edge types — P2 (reads/writes/tests/configures/deploys/monitors/validates/transforms/caches/queues/notifies), P3 (serializes/deserializes/encrypts/decrypts/compresses/logs/metrics/traces/authenticates/authorizes/rate_limits)
 - **Tests**: 15 new tests (F-66: 4, F-67: 4, F-68: 4, F-97: 3), 4 new CodegraphTool tests
 - **Total**: 97 GraphEngine + 18 CodegraphTool = 115 unit tests passing (3 integration failures pre-existing)
+
+### EdgeKind Mapping Verification + NodeKind Normalization (Phase 6a) — 2026-06-06 - DONE
+- **EdgeKind Mapping Verification**: All 12 codegraph native EdgeKind map 1:1 to canonical EdgeType (confirmed correct)
+  - calls→calls, imports→imports, contains→contains, references→data, extends→inherits, implements→implements
+  - exports→exports, type_of→type_of, returns→returns, instantiates→instantiates, overrides→overrides, decorates→decorates
+- **NodeKindNormalizer** (`src/services/graph/NodeKindNormalizer.ts`):
+  - 35 canonical kinds across 7 categories (type/method/field/module/decorator/infra/generic)
+  - 50+ LLM alias mappings: fn→function, cls→class, struct→class, trait→interface, proc→procedure, etc.
+  - normalizeKind(): alias lookup → canonical pass-through → prefix/suffix stripping → unknown fallback
+  - isValidKind(): checks against canonical set
+  - getKindAliases(): returns alias map for diagnostics
+  - Fix: Object.hasOwn() for KIND_ALIASES to avoid prototype collision on 'constructor'
+- **codegraph_kind_map diagnostic operation**: Returns edge mapping, node kind aliases, valid kinds, graph stats by kind/type
+- **Tests**: 106 new tests (NodeKindNormalizer) + 93 CodegraphTool tests updated/passing
+- **Commit**: 254842da
+- **Files**: 4 files (2 new + 2 modified)
+
+### Phase 6f: Extraction System Port — 2026-06-06 - DONE
+- **tree-sitter.ts** (3,210 lines): Core TreeSitterExtractor class, 14 extraction methods, AST→nodes/edges
+  - snake_case field naming (file, line, end_line, qualified_name, is_exported, from_node_id, etc.)
+  - 19 language extractors via EXTRACTORS map
+  - ExtractorContext for language-specific hooks
+- **index.ts** (636 lines): ExtractionOrchestrator + extractionResultToGraphStore adapter
+  - indexAll/indexFiles/indexFile/sync with incremental SHA-256
+  - GraphStore adapter: mapEdgeKind() maps extraction edge kinds to EdgeType
+  - scanDirectory/scanDirectoryAsync for file discovery
+- **parse-worker.ts** (87 lines): Worker thread for parallel parsing
+  - Emscripten stderr filtering, WASM memory error detection
+- **Tests**: 28 tests (16 tree-sitter + 12 orchestrator), all passing
+- **Dependencies**: web-tree-sitter@0.25.3, tree-sitter-wasms@0.1.11
+- **Key fixes**: fromNodeId→from_node_id in walkCsharpTypePosition/extractTypeRefsFromSubtree
+- **Files**: 5 core + 19 language extractors + 2 test files
