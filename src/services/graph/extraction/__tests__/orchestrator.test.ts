@@ -151,6 +151,11 @@ describe('ExtractionOrchestrator', () => {
   let store: GraphStore
   let tmpDir: string
 
+  beforeAll(async () => {
+    await init_grammars()
+    await load_grammars_for_languages(['typescript', 'python'])
+  })
+
   beforeEach(() => {
     store = createMockGraphStore()
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'orchestrator-test-'))

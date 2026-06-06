@@ -527,6 +527,8 @@ export class ExtractionOrchestrator {
       return { nodes: [], edges: [], unresolved_references: [], errors: [], duration_ms: 0 }
     }
 
+    await init_grammars()
+    await load_grammars_for_languages([language])
     const result = extractFromSource(relativePath, content, language)
 
     // Store in GraphStore
