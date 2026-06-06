@@ -9,6 +9,9 @@
  */
 
 import type { FrameworkResolver, ResolutionContext } from '../types.js'
+import { reactResolver } from './react.js'
+import { vueResolver } from './vue.js'
+import { svelteResolver } from './svelte.js'
 
 /**
  * All registered framework resolvers
@@ -72,3 +75,8 @@ export function registerFrameworkResolver(resolver: FrameworkResolver): void {
 export function resetFrameworkResolvers(): void {
   FRAMEWORK_RESOLVERS.length = 0
 }
+
+// Phase 6c-1: Register React + Vue + Svelte framework resolvers
+registerFrameworkResolver(reactResolver)
+registerFrameworkResolver(vueResolver)
+registerFrameworkResolver(svelteResolver)
