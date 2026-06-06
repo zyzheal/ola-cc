@@ -127,13 +127,44 @@ Context compression lives in `src/services/compact/`:
 
 ### GraphEngine
 
-图算法引擎 (`src/services/graph/`):
-- `GraphStore.ts` — 从 codegraph.db (bun:sqlite) + knowledge-graph.json (Grok) 加载，统一加权邻接表，7 种规范边类型映射
+图算法引擎 (`src/services/graph/`)，CodeGraph+Grok 统一方案完整实现 (115 功能点):
+
+**核心存储与算法**:
+- `GraphStore.ts` — 统一图存储层，40 种 EdgeType，EdgeMeta[] 数组存储，GraphSnapshot 接口，ensureReady stale DB 降级
 - `GraphEngine.ts` — 15 种图算法（BFS/DFS/Tarjan SCC/PageRank/Louvain 社区检测/Katz/Betweenness Centrality/Dominator Tree 等），零外部依赖
-- `IncrementalSync.ts` — 三级增量同步（git diff → mtime → hash）
+- `IncrementalSync.ts` — 三级增量同步（git diff → mtime → hash）+ markClean
 - 双数据源合并：codegraph.db 节点/边 + Grok JSON 语义字段（layer/domain），身份匹配按 file+name
-- 性能基线（54K 节点/114K 边）：GraphStore.load 863ms, PageRank 2.8s, Tarjan SCC 39ms, Louvain 10.4s
-- Tool 层：CodegraphTool 扩展 11 个图操作（scc/toposort/pagerank/roles/community 等），GrokTool 扩展 2 个操作（grok_architecture/grok_hotspots）
+- 性能基线（1000 节点）：PageRank 28.8ms, Tarjan 1.0ms, Louvain 95.7ms, BFS 0.6ms
+
+**回调合成** (`CallbackSynthesizer*.ts`):
+- 14 种回调模式边合成：field-backed observer, closure-collection, EventEmitter, React render, Flutter build, C++ override, interface override, Go gRPC stub, React JSX child, Vue template, RN event, Fabric native, MyBatis Java↔XML, Gin middleware
+- `GraphStoreAdapter` 桥接 codegraph QueryBuilder API 到 GraphStore
+- `CallbackSynthesizerTypes.ts` 共享正则、常量、工具函数
+
+**引用解析** (`resolution/`):
+- `Resolver.ts` — 多策略解析编排（qualified name → method call → exact match → fuzzy），内置符号过滤 7 语言族
+- `name-matcher.ts` — 6 种名称匹配策略
+- `strip-comments.ts` — 10 语言注释剥离
+- `path-aliases.ts` — tsconfig/jsconfig paths 解析
+- 20 个框架解析器 (`frameworks/`): React, Vue, Svelte, NestJS, Express, Java/Spring, RN, Fabric, Expo, Django, Flask, FastAPI, Rails, Laravel, Drupal, Play, Go, Rust, C#/ASP.NET, Swift
+
+**同步系统** (`sync/`):
+- `FileWatcher.ts` — macOS/Windows 递归 watch + Linux per-directory inotify，debounced sync
+- `gitHooks.ts` — post-commit/merge/checkout 同步钩子
+- `worktree.ts` — Git worktree 感知
+- `watchPolicy.ts` — WSL 检测 + watch 禁用策略
+
+**C++ 与导出**:
+- `cppIncludeDirs.ts` — compile_commands.json 解析 + 启发式 fallback
+- `reExportParser.ts` — re-export 模式解析（wildcard, named, aliasing）
+
+**查询优化**:
+- QueryCache prepared statements + LRUCache 1000
+- getNodesByIds 批量查询
+- FtsSearch (FTS5) + BM25 + RrfSearch 三路融合
+- SemanticSearchEngine (EmbeddingProvider + VectorStore)
+
+**Tool 层**: CodegraphTool 22 个操作（三层描述：core/analysis/advanced），GrokTool 2 个操作（grok_architecture/grok_hotspots），OperationRouter 智能路由 CLI/Engine/Hybrid
 
 ### Event System
 
@@ -283,8 +314,14 @@ Safety checks (`checkPathSafetyForAutoEdit` in `src/utils/permissions/filesystem
 | `src/services/singularity/EvolutionEngine.ts` | ASAEF 8阶段进化状态机 (P0→P8, Layer Promotion, Early Stopping) |
 | `src/services/singularity/storage.ts` | ExecutionRecord JSONL 持久化 + 防污染 train/test split |
 | `src/services/graph/GraphEngine.ts` | 核心图算法引擎（15 种算法：PageRank/Tarjan SCC/Louvain 等） |
-| `src/services/graph/GraphStore.ts` | 统一图存储层（codegraph.db + Grok JSON 双数据源适配器） |
-| `src/services/graph/IncrementalSync.ts` | 三级增量同步（git diff → mtime → hash） |
+| `src/services/graph/GraphStore.ts` | 统一图存储层（40 种 EdgeType，EdgeMeta[] 数组存储，GraphSnapshot） |
+| `src/services/graph/IncrementalSync.ts` | 三级增量同步（git diff → mtime → hash）+ markClean |
+| `src/services/graph/CallbackSynthesizer.ts` | 14 种回调模式边合成（Part1: 7 种基础模式） |
+| `src/services/graph/CallbackSynthesizerPart2.ts` | 7 种框架回调合成 + 主入口 synthesizeCallbackEdges() |
+| `src/services/graph/CallbackSynthesizerTypes.ts` | 共享类型/正则/GraphStoreAdapter 桥接层 |
+| `src/services/graph/resolution/Resolver.ts` | 多策略引用解析编排（20 框架解析器） |
+| `src/services/graph/resolution/frameworks/index.ts` | 框架注册表（20 个 resolver） |
+| `src/services/graph/sync/FileWatcher.ts` | 文件变更监听（macOS/Win 递归 + Linux inotify） |
 
 ## Documentation Update Policy
 
