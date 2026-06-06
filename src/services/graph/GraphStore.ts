@@ -17,11 +17,12 @@
 
 import { Database } from 'bun:sqlite'
 import { readFileSync, existsSync } from 'fs'
-import { resolve } from 'path'
+import { resolve, join } from 'path'
 import { logForDebugging } from '../../utils/debug.js'
 import { createDefaultRegistry } from './parsers/index.js'
 import { LRUCache } from './LRUCache.js'
 import { QueryCache } from './QueryCache.js'
+import { parseReExports } from './resolution/reExportParser.js'
 
 // ============================================================
 // Types (aligned with design doc §2.3)
@@ -535,6 +536,8 @@ export class GraphStore {
   extractReExports(): void {
     let reExportCount = 0
 
+    // Pass 1: adjacency-based derivation (original logic)
+    // If node A has imports edge to B and B is exported, create exports edge A→B
     for (const [from, outMap] of this.adjacency) {
       for (const [to, edges] of outMap) {
         const hasImports = edges.some(e => e.type === 'imports')
@@ -558,9 +561,123 @@ export class GraphStore {
       }
     }
 
+    // Pass 2: source-level re-export parsing (Phase 6e)
+    // Parse actual re-export statements from file content to create
+    // more accurate exports edges based on `export { ... } from '...'`
+    for (const [filePath, record] of this.fileRecords) {
+      const language = record.language
+      if (!language) continue
+
+      let content: string
+      try {
+        const absPath = join(this.projectRoot, filePath)
+        content = readFileSync(absPath, 'utf-8')
+      } catch {
+        continue
+      }
+
+      const reExports = parseReExports(content, language)
+      if (reExports.length === 0) continue
+
+      // Build a lookup of nodes in this file for the source module
+      for (const reExport of reExports) {
+        const sourceFile = this.resolveReExportSource(filePath, reExport.source)
+        if (!sourceFile) continue
+
+        if (reExport.kind === 'wildcard') {
+          // For wildcard re-exports, find all exported nodes in the source file
+          for (const [nodeId, meta] of this.nodeMeta) {
+            if (meta.file === sourceFile && (meta.is_exported === true || meta.kind.includes('export'))) {
+              const fromNodeId = this.findFileNodeId(filePath)
+              if (fromNodeId && !this.edgeExists(fromNodeId, nodeId, 'exports')) {
+                this.addEdge(fromNodeId, nodeId, 'exports', 1)
+                reExportCount++
+              }
+            }
+          }
+        } else if (reExport.kind === 'named') {
+          // For named re-exports, find the specific node by original name
+          for (const [nodeId, meta] of this.nodeMeta) {
+            if (meta.file === sourceFile && meta.name === reExport.originalName) {
+              const fromNodeId = this.findFileNodeId(filePath)
+              if (fromNodeId && !this.edgeExists(fromNodeId, nodeId, 'exports')) {
+                this.addEdge(fromNodeId, nodeId, 'exports', 1)
+                reExportCount++
+              }
+            }
+          }
+        }
+      }
+    }
+
     if (reExportCount > 0) {
       logForDebugging(`[GraphStore] extractReExports: derived ${reExportCount} exports edge(s)`)
     }
+  }
+
+  /**
+   * Resolve a re-export source path relative to the importing file.
+   * Returns the resolved file path if it exists in fileRecords.
+   */
+  private resolveReExportSource(fromFile: string, source: string): string | null {
+    // Try direct match with common extensions
+    const extensions = ['', '.ts', '.tsx', '.js', '.jsx', '/index.ts', '/index.tsx', '/index.js', '/index.jsx']
+    const dir = fromFile.includes('/') ? fromFile.substring(0, fromFile.lastIndexOf('/')) : ''
+
+    for (const ext of extensions) {
+      const candidate = source + ext
+      // Try as-is
+      if (this.fileRecords.has(candidate)) return candidate
+      // Try stripping leading ./
+      const stripped = candidate.startsWith('./') ? candidate.substring(2) : candidate
+      if (this.fileRecords.has(stripped)) return stripped
+      // Try relative to fromFile's directory (normalized)
+      if (dir) {
+        const joined = dir + '/' + stripped
+        // Normalize: resolve ./ and ../ segments
+        const normalized = this.normalizePath(joined)
+        if (this.fileRecords.has(normalized)) return normalized
+      }
+    }
+    return null
+  }
+
+  /**
+   * Normalize a relative path by resolving . and .. segments.
+   */
+  private normalizePath(p: string): string {
+    const parts = p.split('/')
+    const result: string[] = []
+    for (const part of parts) {
+      if (part === '.' || part === '') continue
+      if (part === '..') {
+        result.pop()
+      } else {
+        result.push(part)
+      }
+    }
+    return result.join('/')
+  }
+
+  /**
+   * Find the first node ID belonging to a file (used as proxy for the file itself).
+   */
+  private findFileNodeId(filePath: string): string | null {
+    for (const [, meta] of this.nodeMeta) {
+      if (meta.file === filePath) return meta.id
+    }
+    return null
+  }
+
+  /**
+   * Check if an edge of a given type already exists between two nodes.
+   */
+  private edgeExists(from: string, to: string, type: EdgeType): boolean {
+    const outMap = this.adjacency.get(from)
+    if (!outMap) return false
+    const edges = outMap.get(to)
+    if (!edges) return false
+    return edges.some(e => e.type === type)
   }
 
   // ----------------------------------------------------------
