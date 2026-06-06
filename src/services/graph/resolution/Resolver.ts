@@ -25,6 +25,7 @@
 import type { NodeMetadata, EdgeType } from '../GraphStore.js'
 import type { GraphStoreAdapter } from '../CallbackSynthesizerTypes.js'
 import { LRUCache } from '../LRUCache.js'
+import { loadCppIncludeDirs } from './cppIncludeDirs.js'
 
 // ============================================================
 // Local types (parallel creation with types.ts agent)
@@ -78,6 +79,8 @@ export interface LocalResolutionContext {
   getProjectRoot(): string
   getAllFiles(): string[]
   getNodesByLowerName(lowerName: string): NodeMetadata[]
+  /** C/C++ include search directories */
+  getCppIncludeDirs(): string[]
 }
 
 // ============================================================
@@ -337,6 +340,10 @@ export class ReferenceResolver {
         }
         this.lowerNameCache.set(lowerName, result)
         return result
+      },
+
+      getCppIncludeDirs: (): string[] => {
+        return loadCppIncludeDirs(this.projectRoot)
       },
     }
   }
