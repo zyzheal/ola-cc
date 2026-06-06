@@ -81,6 +81,21 @@ export class IncrementalSync {
     }
   }
 
+  /**
+   * Mark files as clean after CLI sync.
+   * Updates the cached hash/mtime so the next detect() doesn't re-trigger for these files.
+   */
+  markClean(_files?: string[]): void {
+    const dbPath = resolve(this.projectRoot, '.codegraph', 'codegraph.db')
+    try {
+      const stat = statSync(dbPath)
+      this.lastMtime = stat.mtimeMs
+      this.lastHash = this.computeHash(dbPath)
+    } catch {
+      // db file may not exist
+    }
+  }
+
   // ── Private detection methods ──
 
   private detectGitDiff(): DetectResult {
