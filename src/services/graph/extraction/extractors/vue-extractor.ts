@@ -1,0 +1,206 @@
+/**
+ * Vue SFC extractor — parses Single-File Component files.
+ *
+ * Extracts:
+ * - Component node for the .vue file itself
+ * - Script block delegation to TreeSitterExtractor (when available)
+ * - Template component usages (PascalCase and kebab-case tags)
+ *
+ * Every .vue file produces a component node (Vue components are always importable).
+ */
+
+import type { ExtractionNode, ExtractionEdge, UnresolvedRef, ExtractionError, ExtractionResult } from '../types.js'
+import { generateNodeId } from '../helpers.js'
+
+/** Vue built-in components — skipped so <Transition>/<KeepAlive> doesn't become a phantom reference. */
+const VUE_BUILTIN_COMPONENTS = new Set([
+  'Transition',
+  'TransitionGroup',
+  'KeepAlive',
+  'Suspense',
+  'Teleport',
+  'Component',
+  'Slot',
+])
+
+/** `my-component` → `MyComponent` (Vue allows either form in templates). */
+function kebabToPascal(name: string): string {
+  return name
+    .split('-')
+    .map((part) => (part ? part[0]!.toUpperCase() + part.slice(1) : ''))
+    .join('')
+}
+
+export class VueExtractor {
+  private file: string
+  private source: string
+  private nodes: ExtractionNode[] = []
+  private edges: ExtractionEdge[] = []
+  private unresolved_refs: UnresolvedRef[] = []
+  private errors: ExtractionError[] = []
+
+  constructor(file: string, source: string) {
+    this.file = file
+    this.source = source
+  }
+
+  extract(): ExtractionResult {
+    const startTime = Date.now()
+
+    try {
+      const componentNode = this.createComponentNode()
+
+      const scriptBlocks = this.extractScriptBlocks()
+
+      for (const block of scriptBlocks) {
+        this.processScriptBlock(block, componentNode.id)
+      }
+
+      this.extractTemplateComponents(componentNode.id)
+    } catch (error) {
+      this.errors.push({
+        message: `Vue extraction error: ${error instanceof Error ? error.message : String(error)}`,
+        severity: 'error',
+      })
+    }
+
+    return {
+      nodes: this.nodes,
+      edges: this.edges,
+      unresolved_references: this.unresolved_refs,
+      errors: this.errors,
+      duration_ms: Date.now() - startTime,
+    }
+  }
+
+  private createComponentNode(): ExtractionNode {
+    const lines = this.source.split('\n')
+    const fileName = this.file.split(/[/\\]/).pop() || this.file
+    const componentName = fileName.replace(/\.vue$/, '')
+    const id = generateNodeId(this.file, 'component', componentName, 1)
+
+    const node: ExtractionNode = {
+      id,
+      kind: 'component',
+      name: componentName,
+      qualified_name: `${this.file}::${componentName}`,
+      file: this.file,
+      language: 'vue',
+      line: 1,
+      end_line: lines.length,
+      start_column: 0,
+      end_column: lines[lines.length - 1]?.length || 0,
+      is_exported: true,
+      updated_at: Date.now(),
+    }
+
+    this.nodes.push(node)
+    return node
+  }
+
+  private extractScriptBlocks(): Array<{
+    content: string
+    startLine: number
+    isSetup: boolean
+    isTypeScript: boolean
+  }> {
+    const blocks: Array<{
+      content: string
+      startLine: number
+      isSetup: boolean
+      isTypeScript: boolean
+    }> = []
+
+    const scriptRegex = /<script(\s[^>]*)?>(?<content>[\s\S]*?)<\/script>/g
+    let match: RegExpExecArray | null
+
+    while ((match = scriptRegex.exec(this.source)) !== null) {
+      const attrs = match[1] || ''
+      const content = match.groups?.content || match[2] || ''
+
+      const isTypeScript = /lang\s*=\s*["'](ts|typescript)["']/.test(attrs)
+      const isSetup = /\bsetup\b/.test(attrs)
+
+      const beforeScript = this.source.substring(0, match.index)
+      const scriptTagLine = (beforeScript.match(/\n/g) || []).length
+      const openingTag = match[0].substring(0, match[0].indexOf('>') + 1)
+      const openingTagLines = (openingTag.match(/\n/g) || []).length
+      const contentStartLine = scriptTagLine + openingTagLines + 1
+
+      blocks.push({
+        content,
+        startLine: contentStartLine,
+        isSetup,
+        isTypeScript,
+      })
+    }
+
+    return blocks
+  }
+
+  /**
+   * Process a script block by delegating to TreeSitterExtractor.
+   *
+   * TODO: Integrate with TreeSitterExtractor when the tree-sitter subsystem
+   * is ported. Currently emits a warning and skips script parsing.
+   */
+  private processScriptBlock(
+    block: { content: string; startLine: number; isSetup: boolean; isTypeScript: boolean },
+    _componentNodeId: string,
+  ): void {
+    this.errors.push({
+      message: `Vue script block parsing requires TreeSitterExtractor (not yet ported)`,
+      severity: 'warning',
+      code: 'tree_sitter_unavailable',
+    })
+  }
+
+  /**
+   * Extract component usages from the Vue `<template>`.
+   *
+   * PascalCase tags (`<Modal>`, `<Button />`) and kebab-case tags
+   * (`<my-button>`) both represent component instantiations.
+   */
+  private extractTemplateComponents(componentNodeId: string): void {
+    const coveredRanges: Array<[number, number]> = []
+    const blockRegex = /<(script|style)(\s[^>]*)?>[\s\S]*?<\/\1>/g
+    let blockMatch: RegExpExecArray | null
+    while ((blockMatch = blockRegex.exec(this.source)) !== null) {
+      const startLine = (this.source.substring(0, blockMatch.index).match(/\n/g) || []).length
+      const endLine = startLine + (blockMatch[0].match(/\n/g) || []).length
+      coveredRanges.push([startLine, endLine])
+    }
+
+    const lines = this.source.split('\n')
+    const tagRegex = /<([A-Za-z][A-Za-z0-9_-]*)\b/g
+
+    for (let lineIdx = 0; lineIdx < lines.length; lineIdx++) {
+      if (coveredRanges.some(([start, end]) => lineIdx >= start && lineIdx <= end)) continue
+
+      const line = lines[lineIdx]!
+      let match: RegExpExecArray | null
+      while ((match = tagRegex.exec(line)) !== null) {
+        const raw = match[1]!
+        let componentName: string
+        if (/^[A-Z]/.test(raw)) {
+          componentName = raw
+        } else if (raw.includes('-')) {
+          componentName = kebabToPascal(raw)
+        } else {
+          continue
+        }
+        if (VUE_BUILTIN_COMPONENTS.has(componentName)) continue
+
+        this.unresolved_refs.push({
+          from_node_id: componentNodeId,
+          reference_name: componentName,
+          reference_kind: 'references',
+          line: lineIdx + 1,
+          column: match.index + 1,
+          file: this.file,
+          language: 'vue',
+        })
+      }
+    }
+  }
+}
