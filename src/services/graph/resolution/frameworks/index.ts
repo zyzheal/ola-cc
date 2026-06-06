@@ -12,6 +12,12 @@ import type { FrameworkResolver, ResolutionContext } from '../types.js'
 import { reactResolver } from './react.js'
 import { vueResolver } from './vue.js'
 import { svelteResolver } from './svelte.js'
+import { reactNativeBridgeResolver } from './react-native.js'
+import { fabricViewResolver } from './fabric.js'
+import { expoModulesResolver } from './expo-modules.js'
+import { nestjsResolver } from './nestjs.js'
+import { expressResolver } from './express.js'
+import { javaResolver } from './java.js'
 
 /**
  * All registered framework resolvers
@@ -80,3 +86,13 @@ export function resetFrameworkResolvers(): void {
 registerFrameworkResolver(reactResolver)
 registerFrameworkResolver(vueResolver)
 registerFrameworkResolver(svelteResolver)
+
+// Phase 6c-2: Register React Native + Fabric + Expo framework resolvers
+registerFrameworkResolver(reactNativeBridgeResolver)
+registerFrameworkResolver(fabricViewResolver)
+registerFrameworkResolver(expoModulesResolver)
+
+// Phase 6c-2: Register NestJS + Express + Java backend framework resolvers
+registerFrameworkResolver(nestjsResolver)
+registerFrameworkResolver(expressResolver)
+registerFrameworkResolver(javaResolver)
