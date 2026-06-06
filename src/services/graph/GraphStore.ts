@@ -619,7 +619,8 @@ export class GraphStore {
   // Adjacency helpers
   // ----------------------------------------------------------
 
-  private addEdge(from: string, to: string, type: EdgeType, weight: number, confidence?: EdgeConfidence): void {
+  /** 添加边（公开给 CallbackSynthesizer 等内部模块使用） */
+  addEdge(from: string, to: string, type: EdgeType, weight: number, confidence?: EdgeConfidence): void {
     const edgeMeta: EdgeMeta = { type, weight, confidence }
 
     // 正向
