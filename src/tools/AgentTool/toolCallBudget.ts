@@ -49,14 +49,21 @@ export function getMaxToolCalls(agentBudget?: number, agentClass?: AgentClass): 
 
 /**
  * Compute adaptive budget based on agent class.
+ * Falls back to DEFAULT_TOOL_CALL_BUDGET for unknown classes.
  */
 function getAdaptiveBudget(agentClass?: AgentClass): number {
-  const multiplier = agentClass ? CLASS_BUDGET_MULTIPLIERS[agentClass] : 1.0
+  const multiplier = (agentClass && agentClass in CLASS_BUDGET_MULTIPLIERS)
+    ? CLASS_BUDGET_MULTIPLIERS[agentClass]
+    : 1.0
   return Math.round(DEFAULT_TOOL_CALL_BUDGET * multiplier)
 }
 
 /**
  * Build a progressive budget warning message for the given threshold tier.
+ *
+ * @param totalToolCalls - Current tool call count
+ * @param maxToolCalls - Maximum allowed tool calls
+ * @param threshold - The threshold tier that was crossed (0.5/0.7/0.9)
  */
 export function buildBudgetWarning(
   totalToolCalls: number,
@@ -64,12 +71,12 @@ export function buildBudgetWarning(
   threshold: number,
 ): string {
   const remaining = maxToolCalls - totalToolCalls
-  const pct = Math.round(threshold * 100)
+  const usedPct = Math.round((totalToolCalls / maxToolCalls) * 100)
   if (threshold >= 0.9) {
-    return `[Budget Critical] ${remaining} tool calls remaining (${pct}% used). Stop reading new files. Use only the information already gathered to complete your analysis.`
+    return `[Budget Critical] ${remaining} tool calls remaining (${usedPct}% used). Stop reading new files. Use only the information already gathered to complete your analysis.`
   }
   if (threshold >= 0.7) {
-    return `[Budget Warning] ${remaining} tool calls remaining (${pct}% used). Prioritize: use grep/glob over full file reads. Combine related searches into single calls.`
+    return `[Budget Warning] ${remaining} tool calls remaining (${usedPct}% used). Prioritize: use grep/glob over full file reads. Combine related searches into single calls.`
   }
-  return `[Budget Notice] ${remaining} tool calls remaining (${pct}% used). Plan your remaining reads carefully — prefer targeted grep over broad exploration.`
+  return `[Budget Notice] ${remaining} tool calls remaining (${usedPct}% used). Plan your remaining reads carefully — prefer targeted grep over broad exploration.`
 }
