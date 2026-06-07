@@ -498,3 +498,136 @@ describe('localScan', () => {
     expect(result.languages).toContain('Svelte')
   })
 })
+
+// ============================================
+// Integration test: full pipeline optimization
+// Verifies all three Phase 0 optimizations work together:
+//   1. localScan() replaces LLM scanner
+//   2. GrokConfig batchSize/concurrency from env vars
+//   3. GrokAnalyzer model routing (getModelForTask)
+// ============================================
+
+describe('Integration: Phase 0 pipeline optimization', () => {
+  const savedEnv: Record<string, string | undefined> = {}
+  const INT_DIR = resolve('/tmp', `grok-integration-${Date.now()}`)
+  const envKeys = ['OLA_CC_GROK_BATCH_SIZE', 'OLA_CC_GROK_CONCURRENCY', 'OLA_CC_GROK_MODEL', 'OLA_CC_GROK_MODEL_FAST']
+
+  beforeEach(() => {
+    mkdirSync(INT_DIR, { recursive: true })
+    for (const key of envKeys) {
+      savedEnv[key] = process.env[key]
+      delete process.env[key]
+    }
+  })
+
+  afterEach(() => {
+    rmSync(INT_DIR, { recursive: true, force: true })
+    for (const key of envKeys) {
+      if (savedEnv[key] === undefined) {
+        delete process.env[key]
+      } else {
+        process.env[key] = savedEnv[key]
+      }
+    }
+  })
+
+  it('should verify localScan + batch config + model routing work together', () => {
+    // --- Setup: small test project with .ts files and react ---
+    const srcDir = resolve(INT_DIR, 'src')
+    mkdirSync(srcDir, { recursive: true })
+
+    writeFileSync(resolve(srcDir, 'index.ts'), 'export function main() {}')
+    writeFileSync(resolve(srcDir, 'App.tsx'), 'export default function App() { return null }')
+    writeFileSync(resolve(srcDir, 'utils.ts'), 'export const helper = () => {}')
+    writeFileSync(resolve(INT_DIR, 'package.json'), JSON.stringify({
+      name: 'test-project',
+      dependencies: { react: '^18.0.0', 'react-dom': '^18.0.0' },
+    }))
+
+    // --- Set batch + model env vars ---
+    process.env.OLA_CC_GROK_BATCH_SIZE = '10'
+    process.env.OLA_CC_GROK_CONCURRENCY = '3'
+    process.env.OLA_CC_GROK_MODEL = 'custom-primary-model'
+    process.env.OLA_CC_GROK_MODEL_FAST = 'custom-fast-model'
+
+    // --- Create GrokManager (reads config from env) ---
+    const manager = new GrokManager(INT_DIR)
+
+    // === Optimization 1: localScan detects languages + frameworks ===
+    const files = [
+      resolve(srcDir, 'index.ts'),
+      resolve(srcDir, 'App.tsx'),
+      resolve(srcDir, 'utils.ts'),
+    ]
+    const scanResult = (manager as any).localScan(files) as {
+      languages: string[]
+      frameworks: string[]
+      entryPoints: string[]
+    }
+
+    expect(scanResult.languages).toContain('TypeScript')
+    expect(scanResult.languages).not.toContain('JavaScript') // .tsx = TypeScript
+    expect(scanResult.frameworks).toContain('React')
+    expect(scanResult.entryPoints).toContain(resolve(srcDir, 'index.ts'))
+
+    // === Optimization 2: batchSize + concurrency from env vars ===
+    const config = (manager as any).config
+    expect(config.batchSize).toBe(10)
+    expect(config.concurrency).toBe(3)
+
+    // === Optimization 3: model routing via GrokAnalyzer ===
+    const analyzer = (manager as any).analyzer
+    // Trigger getClient() to read model env vars
+    ;(analyzer as any).getClient()
+    expect(analyzer.getModelForTask('primary')).toBe('custom-primary-model')
+    expect(analyzer.getModelForTask('fast')).toBe('custom-fast-model')
+  })
+
+  it('should use defaults when env vars are not set', () => {
+    writeFileSync(resolve(INT_DIR, 'index.ts'), '')
+
+    const manager = new GrokManager(INT_DIR)
+
+    // Config defaults
+    const config = (manager as any).config
+    expect(config.batchSize).toBe(25)
+    expect(config.concurrency).toBe(5)
+
+    // localScan works with empty frameworks when no package.json
+    const files = [resolve(INT_DIR, 'index.ts')]
+    const scanResult = (manager as any).localScan(files)
+    expect(scanResult.languages).toContain('TypeScript')
+    expect(scanResult.frameworks).toEqual([])
+
+    // Model routing defaults
+    const analyzer = (manager as any).analyzer
+    expect(analyzer.getModelForTask('primary')).toBe('claude-sonnet-4-20250514')
+    expect(analyzer.getModelForTask('fast')).toBe('claude-sonnet-4-20250514')
+  })
+
+  it('should detect multiple languages and frameworks in one scan', () => {
+    const srcDir = resolve(INT_DIR, 'src')
+    mkdirSync(srcDir, { recursive: true })
+
+    writeFileSync(resolve(srcDir, 'index.ts'), '')
+    writeFileSync(resolve(srcDir, 'server.py'), '')
+    writeFileSync(resolve(srcDir, 'main.go'), '')
+    writeFileSync(resolve(INT_DIR, 'package.json'), JSON.stringify({
+      dependencies: { react: '^18.0.0', express: '^4.18.0' },
+    }))
+
+    const manager = new GrokManager(INT_DIR)
+    const files = [
+      resolve(srcDir, 'index.ts'),
+      resolve(srcDir, 'server.py'),
+      resolve(srcDir, 'main.go'),
+    ]
+    const scanResult = (manager as any).localScan(files)
+
+    expect(scanResult.languages).toContain('TypeScript')
+    expect(scanResult.languages).toContain('Python')
+    expect(scanResult.languages).toContain('Go')
+    expect(scanResult.frameworks).toContain('React')
+    expect(scanResult.frameworks).toContain('Express')
+  })
+})
