@@ -389,6 +389,8 @@ export async function microcompactMessages(
   messages: Message[],
   toolUseContext?: ToolUseContext,
   querySource?: QuerySource,
+  /** C2: number of frozen messages (cache prefix) to skip in time-based MC */
+  frozenCount?: number,
 ): Promise<MicrocompactResult> {
   // Clear suppression flag at start of new microcompact attempt
   clearCompactWarningSuppression()
@@ -399,7 +401,7 @@ export async function microcompactMessages(
   // tool results now, before the request, to shrink what gets rewritten.
   // Cached MC (cache-editing) is skipped when this fires: editing assumes a
   // warm cache, and we just established it's cold.
-  const timeBasedResult = maybeTimeBasedMicrocompact(messages, querySource)
+  const timeBasedResult = maybeTimeBasedMicrocompact(messages, querySource, frozenCount)
   if (timeBasedResult) {
     return timeBasedResult
   }
@@ -581,6 +583,8 @@ export function evaluateTimeBasedTrigger(
 function maybeTimeBasedMicrocompact(
   messages: Message[],
   querySource: QuerySource | undefined,
+  /** C2: skip messages at indices < frozenCount (cache prefix protection) */
+  frozenCount?: number,
 ): MicrocompactResult | null {
   const trigger = evaluateTimeBasedTrigger(messages, querySource)
   if (!trigger) {
@@ -595,6 +599,22 @@ function maybeTimeBasedMicrocompact(
   // context. Neither degenerate is sensible — always keep at least the last.
   const keepRecent = Math.max(1, config.keepRecent)
   const keepSet = new Set(compactableIds.slice(-keepRecent))
+
+  // C2: Collect tool IDs from frozen zone (cache prefix) — these must
+  // never be cleared as they would break the prompt cache.
+  const frozenIds = new Set<string>()
+  if (frozenCount && frozenCount > 0) {
+    const frozenMessages = messages.slice(0, Math.min(frozenCount, messages.length))
+    for (const message of frozenMessages) {
+      if (message.type === 'user' && Array.isArray(message.message.content)) {
+        for (const block of message.message.content) {
+          if (block.type === 'tool_result') {
+            frozenIds.add(block.tool_use_id)
+          }
+        }
+      }
+    }
+  }
 
   // Build tool use info map for content-aware protection checks
   const toolUseInfoMap = buildToolUseInfoMap(messages)
@@ -619,10 +639,10 @@ function maybeTimeBasedMicrocompact(
     }
   }
 
-  // ClearSet excludes both recent (keepSet) and protected (protectedIds) tool results
+  // ClearSet excludes recent, protected, and frozen tool results
   const clearSet = new Set(
     compactableIds.filter(
-      id => !keepSet.has(id) && !protectedIds.has(id),
+      id => !keepSet.has(id) && !protectedIds.has(id) && !frozenIds.has(id),
     ),
   )
 
@@ -665,12 +685,14 @@ function maybeTimeBasedMicrocompact(
     toolsCleared: clearSet.size,
     toolsKept: keepSet.size,
     toolsProtected: protectedIds.size,
+    toolsFrozen: frozenIds.size,
     keepRecent: config.keepRecent,
+    frozenCount: frozenCount ?? 0,
     tokensSaved,
   })
 
   logForDebugging(
-    `[TIME-BASED MC] gap ${Math.round(gapMinutes)}min > ${config.gapThresholdMinutes}min, cleared ${clearSet.size} tool results (~${tokensSaved} tokens), kept last ${keepSet.size}, protected ${protectedIds.size} (content-aware)`,
+    `[TIME-BASED MC] gap ${Math.round(gapMinutes)}min > ${config.gapThresholdMinutes}min, cleared ${clearSet.size} tool results (~${tokensSaved} tokens), kept last ${keepSet.size}, protected ${protectedIds.size} (content-aware), frozen ${frozenIds.size}`,
   )
 
   suppressCompactWarning()
