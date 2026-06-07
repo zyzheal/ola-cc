@@ -38,7 +38,7 @@ describe('AGENT_SYSTEM_PROMPTS', () => {
   })
 
   it('analyzer prompt should mention symbols', () => {
-    expect(AGENT_SYSTEM_PROMPTS.analyzer).toContain('Extract symbols')
+    expect(AGENT_SYSTEM_PROMPTS.analyzer).toContain('symbols')
   })
 })
 
@@ -237,6 +237,75 @@ describe('sanitizeFilePath', () => {
     const result = analyzer.sanitizeFilePath('src/file`name.ts')
 
     expect(result).toBe('`src/file\\`name.ts`')
+  })
+})
+
+// ============================================
+// Model routing (getModelForTask)
+// ============================================
+
+describe('getModelForTask', () => {
+  const savedEnv: Record<string, string | undefined> = {}
+
+  beforeEach(() => {
+    for (const key of ['OLA_CC_GROK_MODEL', 'OLA_CC_GROK_MODEL_FAST', 'ANTHROPIC_MODEL', 'OLA_CC_MODEL_SONNET']) {
+      savedEnv[key] = process.env[key]
+      delete process.env[key]
+    }
+  })
+
+  afterEach(() => {
+    for (const key of Object.keys(savedEnv)) {
+      if (savedEnv[key] === undefined) {
+        delete process.env[key]
+      } else {
+        process.env[key] = savedEnv[key]
+      }
+    }
+  })
+
+  it('should return primary model by default', () => {
+    const analyzer = new GrokAnalyzer(TEST_DIR)
+    // Before getClient() is called, model is the default
+    expect(analyzer.getModelForTask('primary')).toBe('claude-sonnet-4-20250514')
+  })
+
+  it('should return fast model (same as primary by default)', () => {
+    const analyzer = new GrokAnalyzer(TEST_DIR)
+    expect(analyzer.getModelForTask('fast')).toBe('claude-sonnet-4-20250514')
+  })
+
+  it('should default to primary when no taskType given', () => {
+    const analyzer = new GrokAnalyzer(TEST_DIR)
+    expect(analyzer.getModelForTask()).toBe('claude-sonnet-4-20250514')
+  })
+
+  it('should use OLA_CC_GROK_MODEL for primary after getClient()', () => {
+    process.env.OLA_CC_GROK_MODEL = 'claude-opus-4-20250514'
+    process.env.OLA_CC_GROK_MODEL_FAST = 'claude-haiku-4-20250514'
+    const analyzer = new GrokAnalyzer(TEST_DIR)
+    // Trigger getClient() to populate model/modelFast
+    analyzer.discoverFiles()  // This calls getClient indirectly via analyzeFilesBatch
+    // Actually, getClient is private. We can test via runPipelineStep or by accessing internals.
+    // Use (analyzer as any) to trigger getClient
+    ;(analyzer as any).getClient()
+    expect(analyzer.getModelForTask('primary')).toBe('claude-opus-4-20250514')
+    expect(analyzer.getModelForTask('fast')).toBe('claude-haiku-4-20250514')
+  })
+
+  it('should fallback fast model to primary when OLA_CC_GROK_MODEL_FAST not set', () => {
+    process.env.OLA_CC_GROK_MODEL = 'custom-model'
+    const analyzer = new GrokAnalyzer(TEST_DIR)
+    ;(analyzer as any).getClient()
+    expect(analyzer.getModelForTask('fast')).toBe('custom-model')
+  })
+
+  it('should prefer OLA_CC_GROK_MODEL over ANTHROPIC_MODEL', () => {
+    process.env.OLA_CC_GROK_MODEL = 'grok-primary'
+    process.env.ANTHROPIC_MODEL = 'anthropic-default'
+    const analyzer = new GrokAnalyzer(TEST_DIR)
+    ;(analyzer as any).getClient()
+    expect(analyzer.getModelForTask('primary')).toBe('grok-primary')
   })
 })
 

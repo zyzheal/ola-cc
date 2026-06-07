@@ -2,9 +2,6 @@
 // File discovery + LLM batch analysis + two-phase optimization
 
 import { existsSync, mkdirSync, readFileSync, readdirSync, realpathSync } from 'fs'
-import { execFile } from 'child_process'
-import { promisify } from 'util'
-const execFileAsync = promisify(execFile)
 import { homedir } from 'os'
 import { extname, join, resolve } from 'path'
 import Anthropic from '@anthropic-ai/sdk'
@@ -12,6 +9,7 @@ import { logForDebugging } from '../../utils/debug.js'
 import { getAPIProvider } from '../../utils/model/providers.js'
 import { GrokError, type GraphData } from './GrokTypes.js'
 import { computeFileFingerprint } from './GrokAssembler.js'
+import type { GraphStore, NodeMetadata } from '../../services/graph/GraphStore.js'
 
 // ============================================================
 // Constants + Agent system prompts
@@ -25,13 +23,17 @@ export const AGENT_SYSTEM_PROMPTS = {
 2. Detect programming languages and frameworks
 3. Identify project structure and entry points
 
+CRITICAL: You MUST respond with valid JSON only. Do NOT return natural language.
+
 Output JSON: { files: string[], languages: string[], frameworks: string[], entryPoints: string[] }`,
 
-  analyzer: `You are a code analyzer. Your job is to:
-1. Parse source files using Tree-sitter
-2. Extract symbols (functions, classes, types, interfaces)
-3. Analyze semantic meaning and relationships
-4. Generate concise summaries
+  analyzer: `You are a code analyzer. You receive AST metadata (nodes and edges) extracted by tree-sitter.
+Your job is to:
+1. Analyze the provided symbols and relationships
+2. Infer semantic meaning and architectural roles
+3. Generate concise summaries
+
+CRITICAL: You MUST respond with valid JSON only. Do NOT return natural language.
 
 Output JSON: { symbols: Symbol[], relationships: Relationship[] }
 
@@ -42,6 +44,8 @@ Relationship: { from, to, type }`,
 1. Identify architectural layers (API, Service, Data, UI, Utility)
 2. Detect design patterns
 3. Map module dependencies
+
+CRITICAL: You MUST respond with valid JSON only. Do NOT return natural language.
 
 Output JSON: { layers: Layer[], patterns: Pattern[], dependencies: Dependency[] }
 
@@ -54,6 +58,8 @@ Dependency: { from, to, type }`,
 2. Order modules by dependency and complexity
 3. Generate clear, concise descriptions
 
+CRITICAL: You MUST respond with valid JSON only. Do NOT ask questions or return natural language.
+
 Output JSON: { tours: Tour[] }
 
 Tour: { name, description, steps: Step[] }
@@ -64,6 +70,8 @@ Step: { file, description, estimatedMinutes }`,
 2. Check for missing relationships
 3. Verify node and edge consistency
 
+CRITICAL: You MUST respond with valid JSON only. Do NOT return natural language.
+
 Output JSON: { valid: boolean, issues: Issue[], suggestions: string[] }
 
 Issue: { type, location, message }`,
@@ -73,37 +81,30 @@ Issue: { type, location, message }`,
 // GrokAnalyzer Class
 // ============================================================
 
+export type GrokTaskType = 'primary' | 'fast'
+
 export class GrokAnalyzer {
   private vendorDir: string
   private projectRoot: string
-  private LLM_TIMEOUT = 30_000
+  private LLM_TIMEOUT = 120_000
   private client: Anthropic | null = null
   private model: string = 'claude-sonnet-4-20250514'
+  private modelFast: string = 'claude-sonnet-4-20250514'
+  private graphStore: GraphStore | null
 
-  constructor(projectRoot: string, vendorDir?: string) {
+  constructor(projectRoot: string, vendorDir?: string, graphStore?: GraphStore) {
     this.projectRoot = projectRoot
     this.vendorDir = vendorDir || GROK_VENDOR_DIR
+    this.graphStore = graphStore ?? null
   }
 
   /**
-   * 带指数退避的重试机制
+   * 根据任务类型选择模型
+   * - 'primary': 高质量模型（analyzer/architecture）
+   * - 'fast': 低成本模型（tour/review/scanner）
    */
-  private async retryWithBackoff<T>(
-    fn: () => Promise<T>,
-    maxRetries: number = 3,
-    baseDelay: number = 1000
-  ): Promise<T> {
-    for (let i = 0; i < maxRetries; i++) {
-      try {
-        return await fn()
-      } catch (error) {
-        if (i === maxRetries - 1) throw error
-        const delay = baseDelay * Math.pow(2, i)
-        logForDebugging(`[grok] Retry ${i + 1}/${maxRetries} after ${delay}ms`)
-        await new Promise(resolve => setTimeout(resolve, delay))
-      }
-    }
-    throw new Error('Unreachable')
+  getModelForTask(taskType: GrokTaskType = 'primary'): string {
+    return taskType === 'fast' ? this.modelFast : this.model
   }
 
   // ============================================================
@@ -111,77 +112,15 @@ export class GrokAnalyzer {
   // ============================================================
 
   /**
-   * 确保 Grok 源码已克隆（带重试）
-   * @returns 源码目录路径
+   * Ensure vendor directory exists for caching.
+   * Analysis is fully local (GraphStore + GrokAnalyzer + tree-sitter) — no external repo needed.
    */
   async ensureGrokSource(): Promise<string> {
     const sourceDir = resolve(this.vendorDir, 'understand-anything')
-
-    if (existsSync(sourceDir)) {
-      logForDebugging(`[grok] Source already exists at ${sourceDir}`)
-      return sourceDir
+    if (!existsSync(this.vendorDir)) {
+      mkdirSync(this.vendorDir, { recursive: true })
     }
-
-    // 本地不存在时不阻塞下载，后台尝试 clone，失败也不影响核心功能
-    logForDebugging(`[grok] Source not found at ${sourceDir}, attempting background clone`)
-    console.error(`[grok] Source not found at ${sourceDir}`)
-    this.cloneGrokSourceInBackground(sourceDir)
-
-    // 返回 sourceDir 即使还不存在，调用方如果依赖文件会自行处理
     return sourceDir
-  }
-
-  /**
-   * 后台克隆 Understand-Anything 仓库，不阻塞 TUI
-   */
-  private cloneGrokSourceInBackground(sourceDir: string): void {
-    mkdirSync(this.vendorDir, { recursive: true })
-
-    // 后台异步运行，不 await
-    this.retryWithBackoff(async () => {
-      try {
-        await execFileAsync('git', ['clone', '--depth', '1', 'https://github.com/Lum1104/Understand-Anything.git', sourceDir], {
-          timeout: 120_000,
-        })
-        logForDebugging(`[grok] Background clone complete: ${sourceDir}`)
-        console.error(`[grok] Understand-Anything cloned to ${sourceDir}`)
-      } catch (error) {
-        logForDebugging(`[grok] Background clone failed: ${error instanceof Error ? error.message : String(error)}`)
-        console.error(`[grok] Clone failed. To use full Grok features, run manually:
-  git clone --depth 1 https://github.com/Lum1104/Understand-Anything.git "${sourceDir}"`)
-      }
-    }).catch(() => {
-      // 后台失败不抛出——核心功能继续
-    })
-  }
-
-  /**
-   * 更新 Grok 源码
-   */
-  async updateGrokSource(): Promise<void> {
-    const sourceDir = resolve(this.vendorDir, 'understand-anything')
-
-    if (!existsSync(sourceDir)) {
-      logForDebugging(`[grok] Update skipped: source not found at ${sourceDir}`)
-      console.error(`[grok] Source not found, run manually:
-  git clone --depth 1 https://github.com/Lum1104/Understand-Anything.git "${sourceDir}"`)
-      return
-    }
-
-    logForDebugging(`[grok] Updating source at ${sourceDir}`)
-    console.error(`[grok] Updating Understand-Anything at ${sourceDir}...`)
-    try {
-      await execFileAsync('git', ['pull'], { cwd: sourceDir, timeout: 60_000 })
-      logForDebugging(`[grok] Update complete`)
-    } catch (error) {
-      throw new GrokError(
-        'SOURCE_UPDATE_FAILED',
-        'update',
-        `Failed to update source: ${error instanceof Error ? error.message : String(error)}`,
-        true,
-        'Try running /grok --update manually'
-      )
-    }
   }
 
   // ============================================================
@@ -203,28 +142,36 @@ export class GrokAnalyzer {
         const apiKey = process.env.OPENAI_API_KEY || 'sk-placeholder'
         this.client = new Anthropic({ baseURL, apiKey })
       } else if (provider === 'bedrock' || provider === 'vertex' || provider === 'foundry') {
-        // 非直连 provider：当前 Grok 的轻量调用不支持这些 provider
-        // 降级为直连模式，用户需确保 ANTHROPIC_API_KEY 可用
-        logForDebugging(`[grok] Provider ${provider} detected but Grok uses direct API. Falling back to firstParty.`)
-        this.client = new Anthropic()
+        // 非直连 provider：优先使用 OpenAI 兼容代理（如 LiteLLM / vLLM）
+        const proxyUrl = process.env.OPENAI_BASE_URL || process.env.OPENAI_API_BASE
+        if (proxyUrl) {
+          logForDebugging(`[grok] Provider ${provider} detected, using OpenAI proxy: ${proxyUrl}`)
+          this.client = new Anthropic({ baseURL: proxyUrl, apiKey: process.env.OPENAI_API_KEY || 'sk-placeholder' })
+        } else {
+          // 无代理：降级为直连，用户需确保 ANTHROPIC_API_KEY 可用
+          logForDebugging(`[grok] Provider ${provider} detected, no proxy configured. Falling back to direct Anthropic API.`)
+          this.client = new Anthropic()
+        }
       } else {
         this.client = new Anthropic()
       }
     }
     // 每次调用刷新 model，支持运行时切换
-    this.model = process.env.ANTHROPIC_MODEL || process.env.OLA_CC_MODEL_SONNET || 'claude-sonnet-4-20250514'
+    this.model = process.env.OLA_CC_GROK_MODEL || process.env.ANTHROPIC_MODEL || process.env.OLA_CC_MODEL_SONNET || 'claude-sonnet-4-20250514'
+    this.modelFast = process.env.OLA_CC_GROK_MODEL_FAST || this.model
     return this.client
   }
 
   /**
    * 轻量级 Agent 调用 — 直接使用 Anthropic SDK
    */
-  private async callAgent(prompt: string, systemPrompt: string): Promise<string> {
+  private async callAgent(prompt: string, systemPrompt: string, modelOverride?: string): Promise<string> {
     const client = this.getClient()
+    const model = modelOverride || this.model
 
     try {
       const response = await client.messages.create({
-        model: this.model,
+        model,
         max_tokens: 4096,
         system: systemPrompt,
         messages: [{ role: 'user', content: prompt }],
@@ -247,29 +194,49 @@ export class GrokAnalyzer {
   }
 
   /**
-   * 带超时的 Agent 调用（public for GrokTourBuilder）
+   * 带超时和重试的 Agent 调用（public for GrokTourBuilder）
    */
-  async callAgentWithTimeout(prompt: string, systemPrompt: string): Promise<string> {
-    // 先创建超时 Promise 并捕获 timer 引用，确保 finally 中可清理
-    let timer: NodeJS.Timeout | undefined
-    const timeoutPromise = new Promise<never>((_, reject) => {
-      timer = setTimeout(() => reject(new GrokError(
-        'LLM_TIMEOUT',
-        'agent',
-        'LLM call timed out after 30s',
-        true,
-        'Try with smaller scope or check API status'
-      )), this.LLM_TIMEOUT)
-    })
+  async callAgentWithTimeout(prompt: string, systemPrompt: string, maxRetries: number = 2, modelOverride?: string): Promise<string> {
+    let lastError: Error | undefined
 
-    try {
-      return await Promise.race([
-        this.callAgent(prompt, systemPrompt),
-        timeoutPromise,
-      ])
-    } finally {
-      if (timer) clearTimeout(timer)
+    for (let attempt = 0; attempt <= maxRetries; attempt++) {
+      // 先创建超时 Promise 并捕获 timer 引用，确保 finally 中可清理
+      let timer: NodeJS.Timeout | undefined
+      const timeoutPromise = new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new GrokError(
+          'LLM_TIMEOUT',
+          'agent',
+          `LLM call timed out after ${this.LLM_TIMEOUT / 1000}s`,
+          true,
+          'Try with smaller scope or check API status'
+        )), this.LLM_TIMEOUT)
+      })
+
+      try {
+        const result = await Promise.race([
+          this.callAgent(prompt, systemPrompt, modelOverride),
+          timeoutPromise,
+        ])
+        return result
+      } catch (error) {
+        lastError = error instanceof Error ? error : new Error(String(error))
+        if (timer) clearTimeout(timer)
+
+        // 只对超时和限流错误重试
+        const isRetryable = error instanceof GrokError &&
+          (error.code === 'LLM_TIMEOUT' || error.code === 'LLM_RATE_LIMIT')
+        if (!isRetryable || attempt >= maxRetries) {
+          throw error
+        }
+
+        // 指数退避：2s, 4s
+        const delay = Math.min(2000 * Math.pow(2, attempt), 8000)
+        logForDebugging(`[grok] LLM call failed (${error instanceof GrokError ? error.code : 'unknown'}), retrying in ${delay}ms (attempt ${attempt + 1}/${maxRetries})`)
+        await new Promise(resolve => setTimeout(resolve, delay))
+      }
     }
+
+    throw lastError || new GrokError('LLM_FAILED', 'agent', 'All retry attempts failed', true)
   }
 
   // ============================================================
@@ -398,12 +365,18 @@ export class GrokAnalyzer {
 
     const results: Record<string, unknown>[] = []
 
+    // Two-phase optimization: use AST metadata from GraphStore when available
+    const useMetadata = this.graphStore !== null
+    if (useMetadata) {
+      logForDebugging(`[grok] Using two-phase optimization: AST metadata → LLM`)
+    }
+
     for (let i = 0; i < batches.length; i += maxParallel) {
       const parallelBatches = batches.slice(i, i + maxParallel)
       const batchResults = await Promise.allSettled(
         parallelBatches.map(batch =>
           this.callAgentWithTimeout(
-            this.buildFileAnalyzerPrompt(batch),
+            useMetadata ? this.buildMetadataPrompt(batch) : this.buildFileAnalyzerPrompt(batch),
             AGENT_SYSTEM_PROMPTS.analyzer
           )
         )
@@ -429,7 +402,91 @@ export class GrokAnalyzer {
   }
 
   /**
-   * 构建 file-analyzer 提示词
+   * 从 GraphStore 获取文件的 AST 元数据（Phase 1 优化）
+   * 返回每个文件的节点和边信息，~5-8KB/文件，远小于原始源码
+   */
+  private getFileMetadata(files: string[]): Map<string, { nodes: NodeMetadata[]; edges: Array<{ from: string; to: string; type: string }> }> {
+    const result = new Map<string, { nodes: NodeMetadata[]; edges: Array<{ from: string; to: string; type: string }> }>()
+    if (!this.graphStore) return result
+
+    for (const file of files) {
+      // Normalize path: make relative to projectRoot
+      const relFile = file.startsWith(this.projectRoot)
+        ? file.slice(this.projectRoot.length + 1)
+        : file
+
+      const fileNodes: NodeMetadata[] = []
+      const fileEdges: Array<{ from: string; to: string; type: string }> = []
+
+      // Collect nodes belonging to this file
+      for (const [, meta] of this.graphStore.nodeMeta) {
+        if (meta.file === relFile || meta.file === file) {
+          fileNodes.push(meta)
+        }
+      }
+
+      // Collect edges where source is a node in this file
+      const fileNodeIds = new Set(fileNodes.map(n => n.id))
+      for (const [from, outMap] of this.graphStore.adjacency) {
+        if (!fileNodeIds.has(from)) continue
+        for (const [to, edges] of outMap) {
+          for (const edge of edges) {
+            fileEdges.push({ from, to, type: edge.type })
+          }
+        }
+      }
+
+      if (fileNodes.length > 0) {
+        result.set(file, { nodes: fileNodes, edges: fileEdges })
+      }
+    }
+
+    return result
+  }
+
+  /**
+   * 构建基于 AST 元数据的 file-analyzer 提示词（Phase 2 优化）
+   * 发送元数据给 LLM 而非原始源码，节省 token 并提供精确信息
+   */
+  buildMetadataPrompt(files: string[]): string {
+    const metadata = this.getFileMetadata(files)
+
+    const fileSections = files.map(f => {
+      const meta = metadata.get(f)
+      if (!meta) {
+        return `### ${this.sanitizeFilePath(f)}\n(No AST metadata available — file not indexed by codegraph)`
+      }
+
+      const nodeSummary = meta.nodes.map(n =>
+        `  - ${n.kind}: ${n.name}${n.signature ? ` (${n.signature})` : ''} [L${n.line}]${n.is_exported ? ' [exported]' : ''}${n.is_async ? ' [async]' : ''}`
+      ).join('\n')
+
+      const edgeSummary = meta.edges.slice(0, 50).map(e =>
+        `  - ${e.from} → ${e.to} (${e.type})`
+      ).join('\n')
+
+      return `### ${this.sanitizeFilePath(f)}
+**Nodes** (${meta.nodes.length}):
+${nodeSummary || '  (none)'}
+**Edges** (${meta.edges.length}${meta.edges.length > 50 ? ', showing first 50' : ''}):
+${edgeSummary || '  (none)'}`
+    }).join('\n\n')
+
+    return `Analyze the following files based on their AST metadata (nodes and edges extracted by tree-sitter).
+
+${fileSections}
+
+For each file, provide:
+1. Semantic summary: What is this file's purpose? What module/layer does it belong to?
+2. Key relationships: What are the most important dependencies and call chains?
+3. Architectural role: Is this a controller, service, utility, model, etc.?
+4. Quality signals: Any code smells, missing abstractions, or complexity concerns?
+
+Output JSON array of analysis results.`
+  }
+
+  /**
+   * 构建 file-analyzer 提示词（降级模式：无 GraphStore 时使用）
    */
   buildFileAnalyzerPrompt(files: string[]): string {
     return `Analyze the following files and extract symbols, relationships, and summaries:
@@ -483,11 +540,13 @@ Output JSON array of analysis results.`
     prompt: string,
     systemPrompt: string,
     reportProgress: (stage: string, progress: number) => void,
-    errors: GrokError[]
+    errors: GrokError[],
+    taskType?: GrokTaskType
   ): Promise<Record<string, unknown>> {
     reportProgress(stage, 0)
+    const modelOverride = taskType ? this.getModelForTask(taskType) : undefined
     try {
-      const response = await this.callAgentWithTimeout(prompt, systemPrompt)
+      const response = await this.callAgentWithTimeout(prompt, systemPrompt, 2, modelOverride)
       const result = this.parseAnalysisResult(response)[0] || {}
       reportProgress(stage, 100)
       return result

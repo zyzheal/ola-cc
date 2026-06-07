@@ -403,7 +403,7 @@ export class GrokManager {
       const frameworks = Array.isArray(scannerResult.frameworks) ? scannerResult.frameworks.join(', ') : 'unknown'
       architectureResult = await this.analyzer.runPipelineStep('architecture',
         `Analyze the architecture of this project.\n\nFiles: ${files.length}\nLanguages: ${languages}\nFrameworks: ${frameworks}\n\nSample modules:\n${files.slice(0, 30).map(f => `- ${f}`).join('\n')}`,
-        AGENT_SYSTEM_PROMPTS.architecture, reportProgress, errors
+        AGENT_SYSTEM_PROMPTS.architecture, reportProgress, errors, 'primary'
       )
     }
 
@@ -416,7 +416,7 @@ export class GrokManager {
     } else {
       tourResult = await this.analyzer.runPipelineStep('tour',
         `Create learning tours for this project.\n\nFiles: ${files.length}\nLayers: ${JSON.stringify(architectureResult.layers || [])}`,
-        AGENT_SYSTEM_PROMPTS.tour, reportProgress, errors
+        AGENT_SYSTEM_PROMPTS.tour, reportProgress, errors, 'fast'
       )
     }
 
@@ -432,7 +432,7 @@ export class GrokManager {
       const edgeCount = deps?.length || 0
       reviewResult = await this.analyzer.runPipelineStep('review',
         `Review this knowledge graph for completeness.\n\nNodes: ${nodeCount}\nEdges: ${edgeCount}\nLayers: ${JSON.stringify(architectureResult.layers || [])}`,
-        AGENT_SYSTEM_PROMPTS.review, reportProgress, errors
+        AGENT_SYSTEM_PROMPTS.review, reportProgress, errors, 'fast'
       )
     }
 
