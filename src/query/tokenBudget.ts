@@ -3,6 +3,9 @@ import { getBudgetContinuationMessage } from '../utils/tokenBudget.js'
 const COMPLETION_THRESHOLD = 0.9
 const DIMINISHING_THRESHOLD = 500
 
+/** Maximum auto-continuation count for subagents (prevents runaway loops) */
+const SUBAGENT_MAX_CONTINUATIONS = 3
+
 export type BudgetTracker = {
   continuationCount: number
   lastDeltaTokens: number
@@ -48,9 +51,11 @@ export function checkTokenBudget(
   budget: number | null,
   globalTurnTokens: number,
 ): TokenBudgetDecision {
-  if (agentId || budget === null || budget <= 0) {
+  if (budget === null || budget <= 0) {
     return { action: 'stop', completionEvent: null }
   }
+  // Subagents can auto-continue but with a lower limit to prevent runaway loops
+  const maxContinuations = agentId ? SUBAGENT_MAX_CONTINUATIONS : Infinity
 
   const turnTokens = globalTurnTokens
   const pct = Math.round((turnTokens / budget) * 100)
@@ -61,7 +66,7 @@ export function checkTokenBudget(
     deltaSinceLastCheck < DIMINISHING_THRESHOLD &&
     tracker.lastDeltaTokens < DIMINISHING_THRESHOLD
 
-  if (!isDiminishing && turnTokens < budget * COMPLETION_THRESHOLD) {
+  if (!isDiminishing && turnTokens < budget * COMPLETION_THRESHOLD && tracker.continuationCount < maxContinuations) {
     tracker.continuationCount++
     tracker.lastDeltaTokens = deltaSinceLastCheck
     tracker.lastGlobalTurnTokens = globalTurnTokens

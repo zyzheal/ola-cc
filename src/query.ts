@@ -1,5 +1,6 @@
 // biome-ignore-all assist/source/organizeImports: ANT-ONLY import markers must not be reordered
 import { checkCpuHotspot, logCpuDiag } from "./utils/eventLoopWatchdog.js";
+import { buildBudgetWarning, BUDGET_WARNING_THRESHOLDS } from "./tools/AgentTool/toolCallBudget.js";
 import type {
 	ToolResultBlockParam,
 	ToolUseBlock,
@@ -416,6 +417,7 @@ async function* queryLoop(
 	// Standalone let (NOT on State) to survive compact/reset where state = {...}
 	// would lose the count.
 	let totalToolCalls = 0;
+	let lastBudgetWarningTier = -1; // tracks which progressive warning tier was last fired
 
 	// Expose remaining budget for fork subagent inheritance
 	if (maxToolCalls) {
@@ -2152,13 +2154,19 @@ async function* queryLoop(
 			return { reason: "max_tool_calls", totalToolCalls };
 		}
 
-		// Budget warning: inject hint when approaching limit (80%)
-		if (maxToolCalls && totalToolCalls >= maxToolCalls * 0.8 && totalToolCalls < maxToolCalls) {
-			const remaining = maxToolCalls - totalToolCalls
-			yield createUserMessage({
-				content: `[Budget Warning] You have ${remaining} tool calls remaining out of ${maxToolCalls}. Please prioritize completing the task efficiently.`,
-				isMeta: true,
-			});
+		// Progressive budget warning: inject efficiency hints at 50%, 70%, 90%
+		if (maxToolCalls && totalToolCalls < maxToolCalls) {
+			for (let i = BUDGET_WARNING_THRESHOLDS.length - 1; i >= 0; i--) {
+				const threshold = BUDGET_WARNING_THRESHOLDS[i]!
+				if (totalToolCalls >= maxToolCalls * threshold && i > lastBudgetWarningTier) {
+					lastBudgetWarningTier = i
+					yield createUserMessage({
+						content: buildBudgetWarning(totalToolCalls, maxToolCalls, threshold),
+						isMeta: true,
+					});
+					break;
+				}
+			}
 		}
 
 		// Dispatch tool_completed events for goal runtime tracking
