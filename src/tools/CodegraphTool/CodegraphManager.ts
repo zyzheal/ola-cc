@@ -1,112 +1,121 @@
 /**
- * CodegraphManager — 管理 codegraph CLI 的自动下载与子进程调用
+ * CodegraphManager — 100% 内置 CodeGraph 管理层
  *
- * 核心设计：
- * 1. 优先使用内置的 codegraph 二进制（通过 npm optionalDependencies 安装）
- * 2. 如果内置不可用，首次使用时自动下载对应平台的 codegraph 预编译包（~45MB）到 vendor/
- * 3. 打开项目时自动检测 .codegraph/，不存在时自动初始化
- * 4. 所有查询通过子进程调用（codegraph 自带 Node 运行时 + node:sqlite）
- * 5. 后台 watcher 由 codegraph 自身管理（serve --mcp 模式）
+ * 纯 TypeScript 实现，零 CLI 依赖。
+ * 使用 ExtractionOrchestrator + GraphStore + GraphEngine + FtsSearch + CodegraphWriter。
  *
- * 增强特性（Phase 1.5）：
- * - HTTP 状态码检查（404/500 等错误处理）
- * - 指数退避重试机制（最多 3 次）
- * - 网络超时保护（60 秒）
- * - 下载进度日志
- * - 部分下载恢复支持
+ * 替代原 CLI 调用链：
+ *   init → ExtractionOrchestrator.indexAll() + CodegraphWriter.persist()
+ *   sync → ExtractionOrchestrator.sync() + CodegraphWriter.updateFiles()
+ *   search → FtsSearch + RrfSearch
+ *   callers/callees → GraphStore.getInEdges()/getOutEdges()
+ *   impact → GraphEngine.bfs() + backwardReachability()
+ *   status → CodegraphWriter.getStats()
+ *   files → GraphStore.fileRecords
  */
 
-import { spawn, execFile } from 'child_process';
-import { existsSync, createWriteStream, mkdirSync, readFileSync, statSync, readdirSync, writeFileSync } from 'fs';
-import { chmod, unlink } from 'fs/promises';
-import { createHash, randomUUID } from 'crypto';
-import https from 'https';
-import { homedir } from 'os';
-import { join, dirname, relative, isAbsolute } from 'path';
-import { promisify } from 'util';
-import { createRequire } from 'module';
-
-const execFileAsync = promisify(execFile);
-const require = createRequire(import.meta.url);
+import { existsSync, readFileSync } from 'fs'
+import { join } from 'path'
+import type { GraphStore as GraphStoreType } from '../../services/graph/GraphStore.js'
+import type { GraphEngine as GraphEngineType } from '../../services/graph/GraphEngine.js'
+import type { FtsSearch as FtsSearchType } from '../../services/graph/FtsSearch.js'
+import type { RrfSearch as RrfSearchType } from '../../services/graph/RrfSearch.js'
+import type { CodegraphWriter as CodegraphWriterType } from '../../services/graph/CodegraphWriter.js'
+import type { ExtractionOrchestrator as ExtractionOrchestratorType } from '../../services/graph/extraction/index.js'
 
 // ============================================================
-// 配置
+// Types
 // ============================================================
 
-const CODEGRAPH_VERSION = '0.9.6';
-const VENDOR_DIR = join(homedir(), '.ola-cc', 'vendor', 'codegraph');
-
-/** 下载重试配置 */
-const DOWNLOAD_CONFIG = {
-  maxRetries: 3,
-  baseDelayMs: 1000,
-  timeoutMs: 60_000,
-  minFileSize: 1024 * 1024, // 1MB 最小文件大小检查
-};
-
-/**
- * 查找内置的 codegraph 二进制文件路径
- * 优先从 node_modules 中的平台特定包加载
- */
-function getBuiltinBinaryPath(): string | null {
-  const platform = process.platform;
-  const arch = process.arch === 'arm64' ? 'arm64' : 'x64';
-  const packageName = `@colbymchenry/codegraph-${platform}-${arch}`;
-
-  try {
-    // 尝试解析平台特定的包
-    const packagePath = require.resolve(`${packageName}/package.json`);
-    const packageDir = dirname(packagePath);
-    const binaryPath = join(packageDir, 'codegraph');
-
-    if (existsSync(binaryPath)) {
-      logInfo(`Using builtin codegraph from ${packageName}`);
-      return binaryPath;
-    }
-
-    // 尝试 bin 目录
-    const binPath = join(packageDir, 'bin', 'codegraph');
-    if (existsSync(binPath)) {
-      logInfo(`Using builtin codegraph from ${packageName}/bin`);
-      return binPath;
-    }
-  } catch {
-    // 包未安装，忽略
-  }
-
-  // 尝试主包
-  try {
-    const mainPackagePath = require.resolve('@colbymchenry/codegraph/package.json');
-    const mainPackageDir = dirname(mainPackagePath);
-    const mainBinaryPath = join(mainPackageDir, 'codegraph');
-
-    if (existsSync(mainBinaryPath)) {
-      logInfo('Using builtin codegraph from main package');
-      return mainBinaryPath;
-    }
-  } catch {
-    // 包未安装，忽略
-  }
-
-  return null;
+export interface CodegraphResult {
+  ok: boolean
+  stdout: string
+  stderr: string
 }
 
-/**
- * 获取 codegraph 二进制文件路径
- * 优先使用内置版本，否则使用下载版本
- */
-function getBinaryPath(): string | null {
-  // 优先尝试内置版本
-  const builtinPath = getBuiltinBinaryPath();
-  if (builtinPath) {
-    return builtinPath;
-  }
+// ============================================================
+// Lazy-loaded singletons
+// ============================================================
 
-  // 回退到下载版本
-  const platform = process.platform;
-  const arch = process.arch === 'arm64' ? 'arm64' : 'x64';
-  const vendorPath = join(VENDOR_DIR, `codegraph-${CODEGRAPH_VERSION}-${platform}-${arch}`, 'codegraph');
-  return existsSync(vendorPath) ? vendorPath : null;
+let _store: GraphStoreType | null = null
+let _engine: GraphEngineType | null = null
+let _fts: FtsSearchType | null = null
+let _rrf: RrfSearchType | null = null
+let _writer: CodegraphWriterType | null = null
+let _orchestrator: ExtractionOrchestratorType | null = null
+let _lastProjectRoot: string | null = null
+const _initPromises = new Map<string, Promise<void>>()
+
+function _clearCachedInstances(): void {
+  _store = null
+  _engine = null
+  _fts = null
+  _writer = null
+  _orchestrator = null
+  _lastProjectRoot = null
+}
+
+async function getStore(projectRoot: string): Promise<GraphStoreType> {
+  // Clear cached instances if projectRoot changed
+  if (_lastProjectRoot && _lastProjectRoot !== projectRoot) {
+    _clearCachedInstances()
+  }
+  _lastProjectRoot = projectRoot
+  if (!_store) {
+    const { GraphStore } = await import('../../services/graph/GraphStore.js')
+    _store = GraphStore.getInstance(projectRoot)
+  }
+  return _store
+}
+
+async function getEngine(store: GraphStoreType, projectRoot: string): Promise<GraphEngineType> {
+  // Clear cached instances if projectRoot changed
+  if (_lastProjectRoot && _lastProjectRoot !== projectRoot) {
+    _clearCachedInstances()
+  }
+  _lastProjectRoot = projectRoot
+  if (!_engine) {
+    const { GraphEngine } = await import('../../services/graph/GraphEngine.js')
+    _engine = new GraphEngine(store)
+  }
+  return _engine
+}
+
+async function getWriter(projectRoot: string): Promise<CodegraphWriterType> {
+  if (!_writer) {
+    const { CodegraphWriter } = await import('../../services/graph/CodegraphWriter.js')
+    _writer = new CodegraphWriter(projectRoot)
+  }
+  return _writer
+}
+
+async function getOrchestrator(projectRoot: string, store: GraphStoreType): Promise<ExtractionOrchestratorType> {
+  if (!_orchestrator) {
+    const { ExtractionOrchestrator } = await import('../../services/graph/extraction/index.js')
+    _orchestrator = new ExtractionOrchestrator(projectRoot, store)
+  }
+  return _orchestrator
+}
+
+async function getFts(projectRoot: string, store: GraphStoreType): Promise<FtsSearchType> {
+  if (!_fts) {
+    const { FtsSearch } = await import('../../services/graph/FtsSearch.js')
+    // FtsSearch uses its own database (separate from codegraph.db)
+    // to avoid bun:sqlite FTS5 content table modification issues
+    const dbPath = join(projectRoot, '.codegraph', 'fts-search.db')
+    _fts = new FtsSearch(dbPath)
+    _fts.createIndex()
+    _fts.indexNodes(store)
+  }
+  return _fts
+}
+
+async function getRrf(store: GraphStoreType, fts: FtsSearchType): Promise<RrfSearchType> {
+  if (!_rrf) {
+    const { RrfSearch } = await import('../../services/graph/RrfSearch.js')
+    _rrf = new RrfSearch(fts, store)
+  }
+  return _rrf
 }
 
 // ============================================================
@@ -114,369 +123,12 @@ function getBinaryPath(): string | null {
 // ============================================================
 
 function logInfo(message: string): void {
-  console.log(`[codegraph] ${message}`);
+  console.log(`[codegraph] ${message}`)
 }
 
 function logWarn(message: string, error?: unknown): void {
-  const suffix = error instanceof Error ? `: ${error.message}` : '';
-  console.warn(`[codegraph] WARNING: ${message}${suffix}`);
-}
-
-// ============================================================
-// 自动下载（增强版）
-// ============================================================
-
-let downloadPromise: Promise<string> | null = null;
-let initPromise: Promise<void> | null = null;
-
-async function ensureCodegraphBinary(): Promise<string> {
-  // 优先检查内置版本
-  const builtinPath = getBuiltinBinaryPath();
-  if (builtinPath && existsSync(builtinPath)) {
-    try { await chmod(builtinPath, 0o755); } catch { /* ignore */ }
-    return builtinPath;
-  }
-
-  // 检查已下载的版本
-  const binPath = getBinaryPath();
-  if (binPath && existsSync(binPath)) {
-    try { await chmod(binPath, 0o755); } catch { /* ignore */ }
-    // 完整性校验（TOFU）
-    if (!verifyBinaryIntegrity(binPath)) {
-      logWarn('Binary integrity check failed, re-downloading...');
-      try { await unlink(binPath); } catch { /* ignore */ }
-      try { await unlink(binPath + '.sha256'); } catch { /* ignore */ }
-      // 继续到下载逻辑
-    } else {
-      return binPath;
-    }
-  }
-
-  // 需要下载
-  if (downloadPromise) return downloadPromise;
-
-  downloadPromise = (async () => {
-    const platform = process.platform;
-    const arch = process.arch === 'arm64' ? 'arm64' : 'x64';
-    const assetName = `codegraph-${platform}-${arch}.tar.gz`;
-    const downloadUrl = `https://github.com/colbymchenry/codegraph/releases/download/v${CODEGRAPH_VERSION}/${assetName}`;
-    const expectedPath = join(VENDOR_DIR, `codegraph-${CODEGRAPH_VERSION}-${platform}-${arch}`, 'codegraph');
-
-    mkdirSync(VENDOR_DIR, { recursive: true });
-
-    const tempFile = join(VENDOR_DIR, `download-temp-${randomUUID()}.tar.gz`);
-
-    // 带重试的下载
-    await downloadWithRetry(downloadUrl, tempFile);
-    await extractTarGz(tempFile, VENDOR_DIR);
-
-    try { await unlink(tempFile); } catch { /* ignore */ }
-    try { await chmod(expectedPath, 0o755); } catch { /* ignore */ }
-
-    // 下载后存储哈希（TOFU）
-    verifyBinaryIntegrity(expectedPath);
-
-    logInfo(`Binary ready at ${expectedPath}`);
-    return expectedPath;
-  })();
-
-  try {
-    const result = await downloadPromise;
-    return result;
-  } finally {
-    downloadPromise = null;
-  }
-}
-
-/**
- * 带重试的下载函数（指数退避）
- */
-async function downloadWithRetry(url: string, dest: string): Promise<void> {
-  let lastError: Error | null = null;
-
-  for (let attempt = 1; attempt <= DOWNLOAD_CONFIG.maxRetries; attempt++) {
-    try {
-      logInfo(`Downloading ${url} (attempt ${attempt}/${DOWNLOAD_CONFIG.maxRetries})`);
-      await downloadFile(url, dest);
-
-      // 验证下载文件大小
-      const fileSize = statSync(dest).size;
-      if (fileSize < DOWNLOAD_CONFIG.minFileSize) {
-        throw new Error(`Downloaded file too small: ${fileSize} bytes (minimum: ${DOWNLOAD_CONFIG.minFileSize})`);
-      }
-
-      logInfo(`Download complete: ${(fileSize / 1024 / 1024).toFixed(1)}MB`);
-      return;
-    } catch (error) {
-      lastError = error instanceof Error ? error : new Error(String(error));
-      logWarn(`Download attempt ${attempt} failed`, error);
-
-      if (attempt < DOWNLOAD_CONFIG.maxRetries) {
-        const delay = DOWNLOAD_CONFIG.baseDelayMs * Math.pow(2, attempt - 1);
-        logInfo(`Retrying in ${delay}ms...`);
-        await new Promise(resolve => setTimeout(resolve, delay));
-
-        // 清理失败的下载文件
-        try { await unlink(dest); } catch { /* ignore */ }
-      }
-    }
-  }
-
-  throw new Error(`Failed to download after ${DOWNLOAD_CONFIG.maxRetries} attempts: ${lastError?.message}`);
-}
-
-/**
- * 单次下载（带 HTTP 状态码检查、超时和重定向循环保护）
- */
-function downloadFile(url: string, dest: string, redirectCount = 0): Promise<void> {
-  const MAX_REDIRECTS = 5;
-  if (redirectCount > MAX_REDIRECTS) {
-    return Promise.reject(new Error(`Too many redirects (${redirectCount}), possible redirect loop`));
-  }
-
-  return new Promise((resolve, reject) => {
-    const file = createWriteStream(dest);
-    let timeoutId: NodeJS.Timeout | null = null;
-
-    const cleanup = () => {
-      if (timeoutId) {
-        clearTimeout(timeoutId);
-        timeoutId = null;
-      }
-    };
-
-    const handleError = (error: Error) => {
-      cleanup();
-      file.destroy();
-      reject(error);
-    };
-
-    // 设置超时
-    timeoutId = setTimeout(() => {
-      handleError(new Error(`Download timeout after ${DOWNLOAD_CONFIG.timeoutMs}ms`));
-    }, DOWNLOAD_CONFIG.timeoutMs);
-
-    const request = https.get(url, (response) => {
-      // 处理重定向
-      if (response.statusCode === 302 || response.statusCode === 301) {
-        cleanup();
-        file.destroy(); // 关闭当前 WriteStream，防止文件描述符泄漏
-        const redirectUrl = response.headers.location;
-        if (!redirectUrl) {
-          reject(new Error('Redirect location missing'));
-          return;
-        }
-        // 安全校验：拒绝非 HTTPS 重定向（防止 MITM 协议降级攻击）
-        if (!redirectUrl.startsWith('https://')) {
-          reject(new Error(`Redirect to non-HTTPS URL blocked: ${redirectUrl}`));
-          return;
-        }
-        // 安全校验：限制重定向目标域名（防止恶意服务器投递二进制）
-        try {
-          const redirectHost = new URL(redirectUrl).hostname;
-          const allowed = redirectHost === 'github.com'
-            || redirectHost === 'githubusercontent.com'
-            || redirectHost.endsWith('.githubusercontent.com');
-          if (!allowed) {
-            reject(new Error(`Redirect to unauthorized host blocked: ${redirectHost}`));
-            return;
-          }
-        } catch {
-          reject(new Error(`Invalid redirect URL: ${redirectUrl}`));
-          return;
-        }
-        logInfo(`Following redirect to ${redirectUrl} (${redirectCount + 1}/${MAX_REDIRECTS})`);
-        // 递归下载重定向目标（带循环保护）
-        downloadFile(redirectUrl, dest, redirectCount + 1).then(resolve).catch(reject);
-        return;
-      }
-
-      // 检查 HTTP 状态码
-      if (response.statusCode !== 200) {
-        cleanup();
-        handleError(new Error(`HTTP ${response.statusCode}: ${response.statusMessage}`));
-        return;
-      }
-
-      // 管道写入文件
-      response.pipe(file);
-
-      file.on('finish', () => {
-        cleanup();
-        file.close((err) => {
-          if (err) reject(err);
-          else resolve();
-        });
-      });
-
-      file.on('error', (err) => {
-        cleanup();
-        reject(err);
-      });
-    });
-
-    request.on('error', (err) => {
-      cleanup();
-      reject(err);
-    });
-
-    request.on('timeout', () => {
-      cleanup();
-      request.destroy();
-      handleError(new Error('Request timeout'));
-    });
-  });
-}
-
-/**
- * 计算文件 SHA-256 哈希
- */
-function computeFileHash(filePath: string): string {
-  const content = readFileSync(filePath);
-  return createHash('sha256').update(content).digest('hex');
-}
-
-/**
- * 二进制完整性校验（TOFU: Trust On First Use）
- * 首次下载时存储哈希，后续加载时验证
- */
-function verifyBinaryIntegrity(binaryPath: string): boolean {
-  const hashFile = binaryPath + '.sha256';
-  const currentHash = computeFileHash(binaryPath);
-
-  if (existsSync(hashFile)) {
-    const storedHash = readFileSync(hashFile, 'utf-8').trim();
-    if (currentHash !== storedHash) {
-      logWarn(`Binary integrity check failed: hash mismatch for ${binaryPath}`);
-      logWarn(`Expected: ${storedHash}, Got: ${currentHash}`);
-      return false;
-    }
-    return true;
-  }
-
-  // 首次使用：存储哈希（TOFU）
-  try {
-    writeFileSync(hashFile, currentHash, 'utf-8');
-    logInfo(`Stored binary hash for future verification: ${hashFile}`);
-  } catch {
-    logWarn('Failed to store binary hash, integrity verification disabled for future loads');
-  }
-  return true;
-}
-
-async function extractTarGz(tarPath: string, dest: string): Promise<void> {
-  logInfo('Extracting archive...');
-  // --no-absolute-filenames: 防止绝对路径穿越（如 /etc/passwd）
-  // --overwrite: 允许覆盖已存在的文件
-  await execFileAsync('tar', ['-xzf', tarPath, '-C', dest, '--no-absolute-filenames', '--overwrite']);
-  // Post-extraction validation: ensure no files escaped the destination directory
-  validateExtractedPaths(dest);
-  logInfo('Extraction complete');
-}
-
-/**
- * 验证解压后的文件都在目标目录内（防止 ../ 相对路径穿越）
- */
-function validateExtractedPaths(dest: string): void {
-  const walk = (dir: string) => {
-    for (const entry of readdirSync(dir, { withFileTypes: true })) {
-      const fullPath = join(dir, entry.name);
-      const rel = relative(dest, fullPath);
-      if (isAbsolute(rel) || rel.startsWith('..')) {
-        throw new Error(`Path traversal detected in extracted archive: ${rel}`);
-      }
-      if (entry.isDirectory()) {
-        walk(fullPath);
-      }
-    }
-  };
-  walk(dest);
-}
-
-// ============================================================
-// CLI 调用
-// ============================================================
-
-interface CodegraphResult {
-  ok: boolean;
-  stdout: string;
-  stderr: string;
-}
-
-function runCodegraph(binPath: string, projectRoot: string, args: string[], timeoutMs = 30_000, autoConfirm = false): Promise<CodegraphResult> {
-  return new Promise((resolve, reject) => {
-    const child = spawn(binPath, args, {
-      cwd: projectRoot,
-      env: {
-        // 安全: 白名单环境变量，避免泄露 API 密钥给第三方二进制
-        PATH: process.env.PATH,
-        HOME: process.env.HOME,
-        USER: process.env.USER,
-        LANG: process.env.LANG ?? 'en_US.UTF-8',
-        // Force non-interactive mode: clack/prompts checks isatty(0)
-        CI: '1',
-        FORCE_COLOR: '0',
-      },
-      stdio: autoConfirm ? ['pipe', 'pipe', 'pipe'] : ['ignore', 'pipe', 'pipe'],
-      // 不使用 spawn 的 timeout 选项，改为手动 setTimeout 统一管理超时（SIGKILL）
-    });
-
-    // Auto-confirm: pipe "y\n" to stdin for clack confirm prompts
-    if (autoConfirm) {
-      child.stdin.write('y\ny\ny\ny\ny\n');
-      child.stdin.end();
-    }
-
-    const stdoutChunks: Buffer[] = [];
-    const stderrChunks: Buffer[] = [];
-    let stdoutSize = 0;
-    let stderrSize = 0;
-    let settled = false;
-    const MAX_OUTPUT_SIZE = 50 * 1024 * 1024; // 50MB 上限，防止 OOM
-
-    const settle = (fn: () => void) => {
-      if (settled) return;
-      settled = true;
-      fn();
-    };
-
-    child.stdout.on('data', (data: Buffer) => {
-      stdoutSize += data.length;
-      if (stdoutSize > MAX_OUTPUT_SIZE) {
-        child.kill('SIGKILL');
-        settle(() => reject(new Error('stdout output exceeded 50MB limit')));
-        return;
-      }
-      stdoutChunks.push(data);
-    });
-    child.stderr.on('data', (data: Buffer) => {
-      stderrSize += data.length;
-      if (stderrSize > MAX_OUTPUT_SIZE) {
-        child.kill('SIGKILL');
-        settle(() => reject(new Error('stderr output exceeded 50MB limit')));
-        return;
-      }
-      stderrChunks.push(data);
-    });
-
-    // 手动超时保险（spawn timeout 不可靠）
-    const timer = setTimeout(() => {
-      child.kill('SIGKILL');
-      settle(() => reject(new Error(`codegraph process timed out after ${timeoutMs}ms`)));
-    }, timeoutMs);
-
-    child.on('error', (err) => { clearTimeout(timer); settle(() => reject(err)); });
-    child.on('exit', (code) => {
-      clearTimeout(timer);
-      const stdout = Buffer.concat(stdoutChunks).toString();
-      const stderr = Buffer.concat(stderrChunks).toString();
-      settle(() => resolve({
-        ok: code === 0,
-        stdout,
-        stderr,
-      }));
-    });
-  });
+  const suffix = error instanceof Error ? `: ${error.message}` : ''
+  console.warn(`[codegraph] WARNING: ${message}${suffix}`)
 }
 
 // ============================================================
@@ -484,93 +136,490 @@ function runCodegraph(binPath: string, projectRoot: string, args: string[], time
 // ============================================================
 
 export function isCodegraphInitialized(projectRoot: string): boolean {
-  return existsSync(join(projectRoot, '.codegraph', 'codegraph.db'));
+  return existsSync(join(projectRoot, '.codegraph', 'codegraph.db'))
 }
 
-export async function ensureReady(projectRoot: string): Promise<{ binPath: string; initialized: boolean }> {
-  const binPath = await ensureCodegraphBinary();
+/** Freshness threshold: 30 minutes */
+export const FRESH_THRESHOLD_MS = 30 * 60 * 1000
 
-  if (!isCodegraphInitialized(projectRoot)) {
-    // 单一飞行锁：防止并发触发多次 init
-    if (!initPromise) {
-      initPromise = runCodegraph(binPath, projectRoot, ['init', projectRoot, '--index'], 120_000, true)
-        .then((result) => {
-          if (!result.ok) {
-            throw new Error(`CodeGraph 初始化失败: ${result.stderr || result.stdout}`);
-          }
-          if (!isCodegraphInitialized(projectRoot)) {
-            throw new Error('CodeGraph 初始化命令成功但未创建数据库文件');
-          }
-        })
-        .finally(() => { initPromise = null })
+/** Track last sync time per project */
+const lastSyncTimes = new Map<string, number>()
+
+/**
+ * Get milliseconds since last sync for a project.
+ * Returns null if never synced.
+ */
+export function getLastSyncAge(projectRoot: string): number | null {
+  const lastSync = lastSyncTimes.get(projectRoot)
+  if (lastSync == null) {
+    // Try to read from .codegraph/db.mtime file
+    const mtimeFile = join(projectRoot, '.codegraph', 'db.mtime')
+    if (existsSync(mtimeFile)) {
+      try {
+        const mtime = parseInt(readFileSync(mtimeFile, 'utf-8').trim(), 10)
+        if (!isNaN(mtime)) {
+          lastSyncTimes.set(projectRoot, mtime)
+          return Date.now() - mtime
+        }
+      } catch { /* ignore */ }
     }
+    return null
+  }
+  return Date.now() - lastSync
+}
+
+/**
+ * Ensure codegraph database is ready.
+ * If not initialized, runs full extraction + persist.
+ */
+export async function ensureReady(projectRoot: string): Promise<{ initialized: boolean }> {
+  if (!isCodegraphInitialized(projectRoot)) {
+    // Per-project flight lock: prevent concurrent init for same project
+    const existing = _initPromises.get(projectRoot)
+    if (existing) {
+      await existing
+      return { initialized: true }
+    }
+
+    const initPromise = (async () => {
+      const store = await getStore(projectRoot)
+      const orchestrator = await getOrchestrator(projectRoot, store)
+      const writer = await getWriter(projectRoot)
+
+      writer.createDatabase()
+      const result = await orchestrator.indexAll()
+
+      if (result.filesIndexed > 0) {
+        await store.load()
+        writer.persist(store)
+        lastSyncTimes.set(projectRoot, Date.now())
+        logInfo(`Init complete: ${result.filesIndexed} files, ${result.nodesCreated} nodes, ${result.edgesCreated} edges in ${result.durationMs}ms`)
+      } else {
+        throw new Error(`CodeGraph 初始化失败: ${result.errors.map(e => e.message).join('; ')}`)
+      }
+    })().finally(() => { _initPromises.delete(projectRoot) })
+
+    _initPromises.set(projectRoot, initPromise)
     await initPromise
   }
 
-  return { binPath, initialized: true };
+  return { initialized: true }
 }
 
+/**
+ * Initialize project: extract all files and persist to codegraph.db.
+ */
 export async function initProject(projectRoot: string): Promise<CodegraphResult> {
-  const binPath = await ensureCodegraphBinary();
-  // codegraph init 是交互式 CLI，设置 CI=1 + 自动确认 stdin
-  return runCodegraph(binPath, projectRoot, ['init', projectRoot, '--index'], 120_000, true);
-}
+  try {
+    const store = await getStore(projectRoot)
+    const orchestrator = await getOrchestrator(projectRoot, store)
+    const writer = await getWriter(projectRoot)
 
-export async function getContext(projectRoot: string, query: string, options?: { maxNodes?: number; format?: string }): Promise<CodegraphResult> {
-  const { binPath } = await ensureReady(projectRoot);
-  return runCodegraph(binPath, projectRoot, [
-    'context', query,
-    '--max-nodes', String(options?.maxNodes ?? 20),
-    '--format', options?.format ?? 'json',
-  ], 30_000);
-}
+    writer.createDatabase()
+    const result = await orchestrator.indexAll()
 
-export async function searchNodes(projectRoot: string, query: string, options?: { limit?: number; kind?: string }): Promise<CodegraphResult> {
-  const { binPath } = await ensureReady(projectRoot);
-  const args = ['query', query, '--json'];
-  if (options?.limit) args.push('--limit', String(options.limit));
-  if (options?.kind) args.push('--kind', options.kind);
-  return runCodegraph(binPath, projectRoot, args, 15_000);
-}
+    if (result.filesIndexed > 0) {
+      await store.load()
+      writer.persist(store)
+      lastSyncTimes.set(projectRoot, Date.now())
+      logInfo(`Init complete: ${result.filesIndexed} files, ${result.nodesCreated} nodes, ${result.edgesCreated} edges in ${result.durationMs}ms`)
+      return {
+        ok: true,
+        stdout: JSON.stringify({
+          filesIndexed: result.filesIndexed,
+          nodesCreated: result.nodesCreated,
+          edgesCreated: result.edgesCreated,
+          durationMs: result.durationMs,
+        }),
+        stderr: result.errors.length > 0 ? result.errors.map(e => e.message).join('\n') : '',
+      }
+    }
 
-export async function getCallers(projectRoot: string, symbol: string, options?: { limit?: number }): Promise<CodegraphResult> {
-  const { binPath } = await ensureReady(projectRoot);
-  const args = ['callers', symbol, '--json'];
-  if (options?.limit) args.push('--limit', String(options.limit));
-  return runCodegraph(binPath, projectRoot, args, 15_000);
-}
-
-export async function getCallees(projectRoot: string, symbol: string, options?: { limit?: number }): Promise<CodegraphResult> {
-  const { binPath } = await ensureReady(projectRoot);
-  const args = ['callees', symbol, '--json'];
-  if (options?.limit) args.push('--limit', String(options.limit));
-  return runCodegraph(binPath, projectRoot, args, 15_000);
-}
-
-export async function getImpact(projectRoot: string, symbol: string, depth?: number): Promise<CodegraphResult> {
-  const { binPath } = await ensureReady(projectRoot);
-  const args = ['impact', symbol, '--json'];
-  if (depth) args.push('--depth', String(depth));
-  return runCodegraph(binPath, projectRoot, args, 30_000);
-}
-
-export async function getStatus(projectRoot: string): Promise<CodegraphResult> {
-  const binPath = await ensureCodegraphBinary();
-  if (!isCodegraphInitialized(projectRoot)) {
-    return { ok: true, stdout: JSON.stringify({ initialized: false }), stderr: '' };
+    return {
+      ok: false,
+      stdout: '',
+      stderr: `Init failed: no files indexed. ${result.errors.map(e => e.message).join('; ')}`,
+    }
+  } catch (e) {
+    return {
+      ok: false,
+      stdout: '',
+      stderr: `Init error: ${e instanceof Error ? e.message : String(e)}`,
+    }
   }
-  return runCodegraph(binPath, projectRoot, ['status', '--json'], 10_000);
 }
 
+/**
+ * Get context for a query: search + BFS neighborhood.
+ */
+export async function getContext(projectRoot: string, query: string, options?: { maxNodes?: number; format?: string }): Promise<CodegraphResult> {
+  try {
+    await ensureReady(projectRoot)
+    const store = await getStore(projectRoot)
+    await store.load()
+    const fts = await getFts(projectRoot, store)
+    const rrf = await getRrf(store, fts)
+    const engine = await getEngine(store, projectRoot)
+
+    const maxNodes = options?.maxNodes ?? 20
+
+    // Search for relevant nodes
+    const searchResults = rrf.search(query, Math.min(maxNodes, 10))
+
+    // BFS from top results to get neighborhood
+    const contextNodes: Array<{ id: string; name: string; kind: string; file: string; line: number; depth: number }> = []
+    const visited = new Set<string>()
+
+    for (const result of searchResults) {
+      if (contextNodes.length >= maxNodes) break
+      if (visited.has(result.id)) continue
+
+      const traversal = engine.bfs(result.id, 2)
+      for (const nodeId of traversal.nodes) {
+        if (contextNodes.length >= maxNodes) break
+        if (visited.has(nodeId)) continue
+        visited.add(nodeId)
+
+        const meta = store.getNode(nodeId)
+        if (meta) {
+          contextNodes.push({
+            id: nodeId,
+            name: meta.name,
+            kind: meta.kind,
+            file: meta.file,
+            line: meta.line,
+            depth: traversal.depth.get(nodeId) ?? 0,
+          })
+        }
+      }
+    }
+
+    return {
+      ok: true,
+      stdout: JSON.stringify({ nodes: contextNodes, query }),
+      stderr: '',
+    }
+  } catch (e) {
+    return {
+      ok: false,
+      stdout: '',
+      stderr: `Context error: ${e instanceof Error ? e.message : String(e)}`,
+    }
+  }
+}
+
+/**
+ * Search nodes by query string.
+ */
+export async function searchNodes(projectRoot: string, query: string, options?: { limit?: number; kind?: string }): Promise<CodegraphResult> {
+  try {
+    await ensureReady(projectRoot)
+    const store = await getStore(projectRoot)
+    await store.load()
+    const fts = await getFts(projectRoot, store)
+
+    const limit = options?.limit ?? 20
+    let results
+
+    if (options?.kind) {
+      results = fts.searchByKind(query, options.kind, limit)
+    } else {
+      const rrf = await getRrf(store, fts)
+      results = rrf.search(query, limit)
+    }
+
+    return {
+      ok: true,
+      stdout: JSON.stringify(results),
+      stderr: '',
+    }
+  } catch (e) {
+    return {
+      ok: false,
+      stdout: '',
+      stderr: `Search error: ${e instanceof Error ? e.message : String(e)}`,
+    }
+  }
+}
+
+/**
+ * Get callers of a symbol (nodes that call this symbol).
+ */
+export async function getCallers(projectRoot: string, symbol: string, options?: { limit?: number }): Promise<CodegraphResult> {
+  try {
+    await ensureReady(projectRoot)
+    const store = await getStore(projectRoot)
+    await store.load()
+
+    const nodeId = store.findByName(symbol)
+    if (!nodeId) {
+      return {
+        ok: false,
+        stdout: '',
+        stderr: `Symbol not found: ${symbol}`,
+      }
+    }
+
+    const limit = options?.limit ?? 50
+    const inEdges = store.getInEdges(nodeId)
+    const callers: Array<{ id: string; name: string; kind: string; file: string; line: number; edgeType: string }> = []
+
+    for (const [sourceId, edges] of inEdges) {
+      if (callers.length >= limit) break
+      const meta = store.getNode(sourceId)
+      if (meta) {
+        callers.push({
+          id: sourceId,
+          name: meta.name,
+          kind: meta.kind,
+          file: meta.file,
+          line: meta.line,
+          edgeType: edges[0]?.type ?? 'unknown',
+        })
+      }
+    }
+
+    return {
+      ok: true,
+      stdout: JSON.stringify({ symbol, callers }),
+      stderr: '',
+    }
+  } catch (e) {
+    return {
+      ok: false,
+      stdout: '',
+      stderr: `Callers error: ${e instanceof Error ? e.message : String(e)}`,
+    }
+  }
+}
+
+/**
+ * Get callees of a symbol (nodes that this symbol calls).
+ */
+export async function getCallees(projectRoot: string, symbol: string, options?: { limit?: number }): Promise<CodegraphResult> {
+  try {
+    await ensureReady(projectRoot)
+    const store = await getStore(projectRoot)
+    await store.load()
+
+    const nodeId = store.findByName(symbol)
+    if (!nodeId) {
+      return {
+        ok: false,
+        stdout: '',
+        stderr: `Symbol not found: ${symbol}`,
+      }
+    }
+
+    const limit = options?.limit ?? 50
+    const outEdges = store.getOutEdges(nodeId)
+    const callees: Array<{ id: string; name: string; kind: string; file: string; line: number; edgeType: string }> = []
+
+    for (const [targetId, edges] of outEdges) {
+      if (callees.length >= limit) break
+      const meta = store.getNode(targetId)
+      if (meta) {
+        callees.push({
+          id: targetId,
+          name: meta.name,
+          kind: meta.kind,
+          file: meta.file,
+          line: meta.line,
+          edgeType: edges[0]?.type ?? 'unknown',
+        })
+      }
+    }
+
+    return {
+      ok: true,
+      stdout: JSON.stringify({ symbol, callees }),
+      stderr: '',
+    }
+  } catch (e) {
+    return {
+      ok: false,
+      stdout: '',
+      stderr: `Callees error: ${e instanceof Error ? e.message : String(e)}`,
+    }
+  }
+}
+
+/**
+ * Get impact analysis: forward (BFS) + backward reachability.
+ */
+export async function getImpact(projectRoot: string, symbol: string, depth?: number): Promise<CodegraphResult> {
+  try {
+    await ensureReady(projectRoot)
+    const store = await getStore(projectRoot)
+    await store.load()
+    const engine = await getEngine(store, projectRoot)
+
+    const nodeId = store.findByName(symbol)
+    if (!nodeId) {
+      return {
+        ok: false,
+        stdout: '',
+        stderr: `Symbol not found: ${symbol}`,
+      }
+    }
+
+    const maxDepth = depth ?? 3
+
+    // Forward impact (BFS)
+    const forward = engine.bfs(nodeId, maxDepth)
+
+    // Backward reachability (who depends on this)
+    const backward = engine.backwardReachability(nodeId)
+
+    // Build impact nodes with metadata
+    const forwardNodes = forward.nodes.map(id => {
+      const meta = store.getNode(id)
+      return {
+        id,
+        name: meta?.name ?? id,
+        kind: meta?.kind ?? 'unknown',
+        file: meta?.file ?? '',
+        line: meta?.line ?? 0,
+        depth: forward.depth.get(id) ?? 0,
+      }
+    })
+
+    const backwardNodes = backward.reachable.map(id => {
+      const meta = store.getNode(id)
+      return {
+        id,
+        name: meta?.name ?? id,
+        kind: meta?.kind ?? 'unknown',
+        file: meta?.file ?? '',
+        line: meta?.line ?? 0,
+      }
+    })
+
+    return {
+      ok: true,
+      stdout: JSON.stringify({
+        symbol,
+        forward: { nodeCount: forwardNodes.length, nodes: forwardNodes },
+        backward: { nodeCount: backwardNodes.length, nodes: backwardNodes },
+      }),
+      stderr: '',
+    }
+  } catch (e) {
+    return {
+      ok: false,
+      stdout: '',
+      stderr: `Impact error: ${e instanceof Error ? e.message : String(e)}`,
+    }
+  }
+}
+
+/**
+ * Get codegraph database status.
+ */
+export async function getStatus(projectRoot: string): Promise<CodegraphResult> {
+  try {
+    if (!isCodegraphInitialized(projectRoot)) {
+      return { ok: true, stdout: JSON.stringify({ initialized: false }), stderr: '' }
+    }
+
+    const writer = await getWriter(projectRoot)
+    const stats = writer.getStats()
+
+    return {
+      ok: true,
+      stdout: JSON.stringify({
+        initialized: true,
+        ...stats,
+      }),
+      stderr: '',
+    }
+  } catch (e) {
+    return {
+      ok: false,
+      stdout: '',
+      stderr: `Status error: ${e instanceof Error ? e.message : String(e)}`,
+    }
+  }
+}
+
+/**
+ * Get file list from codegraph.
+ */
 export async function getFiles(projectRoot: string, options?: { maxDepth?: number; format?: string }): Promise<CodegraphResult> {
-  const { binPath } = await ensureReady(projectRoot);
-  const args = ['files', '--json'];
-  if (options?.maxDepth) args.push('--max-depth', String(options.maxDepth));
-  if (options?.format) args.push('--format', options.format);
-  return runCodegraph(binPath, projectRoot, args, 15_000);
+  try {
+    await ensureReady(projectRoot)
+    const store = await getStore(projectRoot)
+    await store.load()
+
+    const files: Array<{ path: string; language: string; nodeCount: number; lineCount: number }> = []
+
+    for (const [filePath, record] of store.fileRecords) {
+      files.push({
+        path: filePath,
+        language: record.language,
+        nodeCount: record.nodeCount,
+        lineCount: record.lineCount,
+      })
+    }
+
+    return {
+      ok: true,
+      stdout: JSON.stringify({ files, count: files.length }),
+      stderr: '',
+    }
+  } catch (e) {
+    return {
+      ok: false,
+      stdout: '',
+      stderr: `Files error: ${e instanceof Error ? e.message : String(e)}`,
+    }
+  }
 }
 
+/**
+ * Sync: detect changed files and update codegraph.db incrementally.
+ */
 export async function sync(projectRoot: string): Promise<CodegraphResult> {
-  const { binPath } = await ensureReady(projectRoot);
-  return runCodegraph(binPath, projectRoot, ['sync'], 30_000);
+  try {
+    const store = await getStore(projectRoot)
+    const orchestrator = await getOrchestrator(projectRoot, store)
+    const writer = await getWriter(projectRoot)
+
+    const result = await orchestrator.sync()
+
+    if (result.changedFilePaths && result.changedFilePaths.length > 0) {
+      await store.load()
+      writer.updateFiles(store, result.changedFilePaths)
+      lastSyncTimes.set(projectRoot, Date.now())
+      logInfo(`Sync complete: ${result.filesChecked} checked, ${result.filesAdded} added, ${result.filesModified} modified, ${result.filesRemoved} removed`)
+    } else {
+      lastSyncTimes.set(projectRoot, Date.now())
+      logInfo(`Sync complete: ${result.filesChecked} checked, no changes`)
+    }
+
+    return {
+      ok: true,
+      stdout: JSON.stringify(result),
+      stderr: '',
+    }
+  } catch (e) {
+    return {
+      ok: false,
+      stdout: '',
+      stderr: `Sync error: ${e instanceof Error ? e.message : String(e)}`,
+    }
+  }
+}
+
+/**
+ * Reset cached singletons (for testing).
+ */
+export function resetCache(): void {
+  _store = null
+  _engine = null
+  _fts = null
+  _rrf = null
+  _writer = null
+  _orchestrator = null
+  _initPromises.clear()
 }
