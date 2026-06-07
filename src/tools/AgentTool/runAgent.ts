@@ -1062,6 +1062,10 @@ export async function* runAgent({
                     success: !block.is_error,
                     duration_ms: Date.now() - pending.startTime,
                   })
+                  // Cap collector to prevent unbounded growth in long agent runs
+                  if (actionChainCollector.length > 100) {
+                    actionChainCollector.splice(0, actionChainCollector.length - 100)
+                  }
                 }
               }
             }
@@ -1080,6 +1084,14 @@ export async function* runAgent({
       // not a user cancellation. The agent's transcript is already recorded.
     } else if (agentAbortController.signal.aborted) {
       throw new AbortError()
+    }
+
+    // A2: Clean up orphaned pending tool uses (tool_use without tool_result)
+    if (crystallizeEnabled && pendingToolUses.size > 0) {
+      logForDebugging(
+        `[Agent ${agentDefinition.agentType}] ${pendingToolUses.size} orphaned tool_use(s) without results — cleared`,
+      )
+      pendingToolUses.clear()
     }
 
     // Run callback if provided (only built-in agents have callbacks)
