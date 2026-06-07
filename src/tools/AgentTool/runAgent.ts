@@ -28,7 +28,7 @@ import {
 } from '../../services/mcp/client.js'
 import { getMcpConfigByName } from '../../services/mcp/config.js'
 import { runQualityScan, type ScanResult } from '../../services/codeQuality/regexScanner.js'
-import { isLessonsInjectEnabled, loadLessonsPrompt } from '../../utils/memory/lessonsInjector.js'
+import { isLessonsInjectEnabled, loadLessonsPrompt } from './lessonsInjector.js'
 import { isEnvTruthy } from '../../utils/envUtils.js'
 import { LearningSystem } from './LearningSystem.js'
 import { runASTCheck } from '../../services/codeQuality/astChecker.js'

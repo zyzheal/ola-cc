@@ -94,3 +94,34 @@ describe('isCompactQualityEnabled', () => {
     delete process.env.OLA_CC_COMPACT_QUALITY
   })
 })
+
+describe('P2: CJK-aware density scoring', () => {
+  it('should tokenize CJK text for density (not single token)', () => {
+    // Before P2: split(/\s+/) would give 1 token for Chinese → density = 0
+    const summary = '讨论了认证系统的设计方案。使用JWT令牌进行身份验证。决定采用RS256算法。'
+    const result = scoreCompactQuality(summary, 10000, 300)
+    // CJK bigrams should give meaningful density score
+    expect(result.breakdown.densityScore).toBeGreaterThan(0.3)
+  })
+
+  it('should split on newlines for structure scoring', () => {
+    const summary =
+      'Implemented JWT auth with RS256.\n' +
+      'Modified auth.ts and middleware.ts.\n' +
+      'Decision: httpOnly cookies for tokens.'
+    const result = scoreCompactQuality(summary, 10000, 200)
+    // Newline-split sentences should count as 3
+    expect(result.breakdown.structureScore).toBeGreaterThan(0.5)
+  })
+})
+
+describe('P3: sigmoid length penalty', () => {
+  it('should not penalize normal-length summaries', () => {
+    const summary =
+      'Implemented JWT authentication with RS256 algorithm. Files modified: auth.ts, middleware.ts. ' +
+      'Decision: use httpOnly cookies for token storage. Set up Redis for token blacklisting.'
+    const result = scoreCompactQuality(summary, 10000, 300)
+    // 15+ tokens → no sigmoid penalty
+    expect(result.breakdown.densityScore).toBeGreaterThan(0.5)
+  })
+})

@@ -8,6 +8,9 @@
  * B5 key correction: uses `lastDecayedAt || createdAt` as decay baseline,
  * NOT `updatedAt` (which resets on save, making memories never decay).
  *
+ * P0 fix: access-timestamps are now parsed from frontmatter and passed
+ * to computeRetention() for reinforcement boost calculation.
+ *
  * Controlled by OLA_CC_RETENTION_DECAY env var (default: disabled).
  */
 
@@ -23,6 +26,9 @@ const DECAY_COOLDOWN_HOURS = 1
 
 /** Retention threshold below which memories are evicted */
 const EVICTION_THRESHOLD = 0.15
+
+/** Max access timestamps to keep in frontmatter (prevents unbounded growth) */
+const MAX_ACCESS_TIMESTAMPS = 20
 
 export interface DecaySweepResult {
   scanned: number
@@ -45,6 +51,55 @@ function parseDateField(value: string | null | undefined): number | undefined {
   if (!value) return undefined
   const ts = new Date(value).getTime()
   return Number.isFinite(ts) ? ts : undefined
+}
+
+/**
+ * Parse access-timestamps from frontmatter.
+ * Format: comma-separated epoch ms values (e.g., "1717000000000,1717100000000")
+ */
+export function parseAccessTimestamps(raw: string | null | undefined): number[] {
+  if (!raw || typeof raw !== 'string') return []
+  return raw
+    .split(',')
+    .map(s => {
+      const n = Number(s.trim())
+      return Number.isFinite(n) && n > 0 ? n : 0
+    })
+    .filter(n => n > 0)
+}
+
+/**
+ * Inject or append an access-timestamp to frontmatter content.
+ * Appends `now` epoch ms to the `access-timestamps` field.
+ * Keeps at most MAX_ACCESS_TIMESTAMPS most recent timestamps.
+ */
+export function appendAccessTimestamp(
+  content: string,
+  now: number,
+): string {
+  const tsLine = (existing: string) => {
+    const timestamps = parseAccessTimestamps(existing)
+    timestamps.push(now)
+    const trimmed = timestamps.slice(-MAX_ACCESS_TIMESTAMPS)
+    return `access-timestamps: '${trimmed.join(',')}'`
+  }
+
+  if (content.startsWith('---\n')) {
+    const endIdx = content.indexOf('\n---', 4)
+    if (endIdx !== -1) {
+      const fmContent = content.slice(4, endIdx)
+      if (fmContent.includes('access-timestamps:')) {
+        const updated = fmContent.replace(
+          /access-timestamps:\s*['"]?([^'"\n]*)['"]?/m,
+          (_, existing) => tsLine(existing),
+        )
+        return `---\n${updated}\n---${content.slice(endIdx + 4)}`
+      }
+      return `---\n${fmContent}\naccess-timestamps: '${now}'\n---${content.slice(endIdx + 4)}`
+    }
+  }
+
+  return `---\naccess-timestamps: '${now}'\n---\n${content}`
 }
 
 /**
@@ -116,8 +171,8 @@ function injectDecayTimestamp(
  * Run a decay sweep on all memory files in a directory.
  *
  * For each .md file (excluding MEMORY.md):
- * 1. Parse frontmatter to get type and lastDecayedAt
- * 2. Compute retention score using retention.ts
+ * 1. Parse frontmatter to get type, lastDecayedAt, and accessTimestamps
+ * 2. Compute retention score using retention.ts (with reinforcement boost)
  * 3. If retention < 0.15 → delete file (evictable)
  * 4. Otherwise → update last-decayed-at in frontmatter
  *
@@ -161,10 +216,16 @@ export async function runDecaySweep(memoryDir: string): Promise<DecaySweepResult
       const baseline = computeDecayBaseline(lastDecayedAt, stats.mtimeMs)
       const daysSinceBaseline = (Date.now() - baseline) / (24 * 60 * 60 * 1000)
 
-      // Compute retention
+      // P0 fix: parse access timestamps from frontmatter for reinforcement boost
+      const accessTimestamps = parseAccessTimestamps(
+        frontmatter['access-timestamps'] as string | null,
+      )
+
+      // Compute retention (now with access-based reinforcement)
       const retention: RetentionResult = computeRetention({
         type: memType ?? 'fact',
         daysSinceCreation: daysSinceBaseline,
+        accessTimestamps: accessTimestamps.length > 0 ? accessTimestamps : undefined,
       })
 
       if (retention.score < EVICTION_THRESHOLD) {

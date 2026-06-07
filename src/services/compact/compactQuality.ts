@@ -6,8 +6,11 @@
  *
  * Quality dimensions:
  * 1. Length ratio: summary should be 5-50% of original
- * 2. Information density: key entities/terms should be preserved
+ * 2. Information density: key entities/terms should be preserved (CJK-aware)
  * 3. Structure: summary should have coherent sentences, not fragments
+ *
+ * P2 fix: CJK-aware tokenization for density scoring (was split(/\s+/))
+ * P3 fix: sigmoid length penalty for very short summaries
  *
  * Controlled by OLA_CC_COMPACT_QUALITY env var (default: disabled).
  */
@@ -15,6 +18,7 @@
 import { isEnvTruthy } from '../../utils/envUtils.js'
 import { logForDebugging } from '../../utils/debug.js'
 import { logEvent } from '../analytics/index.js'
+import { tokenizeCJK } from '../../utils/tokenizer.js'
 
 /** Quality score thresholds */
 const QUALITY_THRESHOLDS = {
@@ -28,6 +32,10 @@ const QUALITY_THRESHOLDS = {
   /** Minimum average sentence length (chars) */
   minAvgSentenceLength: 20,
 } as const
+
+/** P3: Sigmoid penalty constants for short-text density */
+const SIGMOID_MIN_TOKENS = 10   // Below this, density penalty kicks in
+const SIGMOID_K = 2             // Steepness of the sigmoid curve
 
 export interface QualityResult {
   /** Overall quality score 0-1 */
@@ -50,6 +58,16 @@ export interface QualityResult {
  */
 export function isCompactQualityEnabled(): boolean {
   return isEnvTruthy(process.env.OLA_CC_COMPACT_QUALITY)
+}
+
+/**
+ * P3: Sigmoid penalty for very short text.
+ * Returns 1.0 for normal-length text, approaches 0 for very short text.
+ */
+function sigmoidLengthPenalty(tokenCount: number): number {
+  if (tokenCount >= SIGMOID_MIN_TOKENS) return 1.0
+  const x = Math.log2(Math.max(1, tokenCount)) - Math.log2(SIGMOID_MIN_TOKENS)
+  return 1 / (1 + Math.exp(-SIGMOID_K * x))
 }
 
 /**
@@ -86,18 +104,18 @@ export function scoreCompactQuality(
     )
   }
 
-  // 2. Information density score
-  // Check that summary contains meaningful content, not just filler
-  const words = summary.split(/\s+/).filter(w => w.length > 2)
-  const uniqueWords = new Set(words.map(w => w.toLowerCase()))
-  const uniqueRatio = words.length > 0 ? uniqueWords.size / words.length : 0
+  // 2. Information density score (P2: CJK-aware tokenization)
+  const tokens = tokenizeCJK(summary)
+  const uniqueTokens = new Set(tokens)
+  const uniqueRatio = tokens.length > 0 ? uniqueTokens.size / tokens.length : 0
   // High unique ratio = good diversity; low = repetitive filler
-  const densityScore = Math.min(1, uniqueRatio * 1.5)
+  let densityScore = Math.min(1, uniqueRatio * 1.5)
+  // P3: Apply sigmoid penalty for very short text
+  densityScore *= sigmoidLengthPenalty(tokens.length)
 
-  // 3. Structure score
-  // Summary should have coherent sentences
+  // 3. Structure score (P2: also split on newlines for markdown-style summaries)
   const sentences = summary
-    .split(/[.!?。！？]\s+/)
+    .split(/[.!?。！？]\s*|\n/)
     .filter(s => s.trim().length > 0)
   const sentenceCount = sentences.length
   const avgSentenceLength =

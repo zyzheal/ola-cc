@@ -265,7 +265,7 @@ describe('computeFrontierScores', () => {
     const scores = ls.computeFrontierScores('test')
     // Active record should be first (highest score)
     expect(scores[0].record.taskDescription).toBe('active')
-    expect(scores[0].breakdown.activeComponent).toBe(15)
+    expect(scores[0].breakdown.activeComponent).toBe(20)
     expect(scores[1].breakdown.activeComponent).toBe(0)
   })
 
@@ -303,7 +303,8 @@ describe('computeFrontierScores', () => {
 
     const scores = ls.computeFrontierScores('test')
     expect(scores[0].record.taskDescription).toBe('unlocked-2')
-    expect(scores[0].breakdown.unlockComponent).toBe(10)
+    // P1: diminishing returns — 15*(1-exp(-2/3)) ≈ 7.3
+    expect(scores[0].breakdown.unlockComponent).toBeCloseTo(7.3, 0)
   })
 
   it('should add age component based on timestamp', () => {
@@ -315,9 +316,9 @@ describe('computeFrontierScores', () => {
     })
 
     const scores = ls.computeFrontierScores('test')
-    // age_hours ≈ 2 → ageComponent ≈ 1.0
-    expect(scores[0].breakdown.ageComponent).toBeGreaterThan(0.5)
-    expect(scores[0].breakdown.ageComponent).toBeLessThan(1.5)
+    // P1: logarithmic age — 20*ln(1+2)/ln(1+169) ≈ 4.28
+    expect(scores[0].breakdown.ageComponent).toBeGreaterThan(3.5)
+    expect(scores[0].breakdown.ageComponent).toBeLessThan(5.0)
   })
 
   it('should sort by frontier score descending', () => {
