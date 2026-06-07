@@ -14,18 +14,34 @@ import { getCwd } from '../../utils/cwd.js';
 import { logForDebugging } from '../../utils/debug.js';
 import type { ProgressMessage, ToolProgressData } from '../../types/tools.js';
 import * as CodegraphManager from './CodegraphManager.js';
-import { GraphStore } from '../../services/graph/GraphStore.js';
-import { GraphEngine } from '../../services/graph/GraphEngine.js';
-import type { GraphSnapshot } from '../../services/graph/GraphEngine.js';
-import { FtsSearch } from '../../services/graph/FtsSearch.js';
-import { RrfSearch } from '../../services/graph/RrfSearch.js';
-import { UnresolvedRefManager } from '../../services/graph/UnresolvedRefManager.js';
-import { normalizeKind, isValidKind, VALID_KINDS, getKindAliases } from '../../services/graph/NodeKindNormalizer.js';
 import { GraphContextService } from '../../services/graph/GraphContextService.js'
 import { GraphUsageTracker } from '../../services/graph/GraphUsageTracker.js'
-
-import { resolve } from 'path';
 import { sanitizeQuery, sanitizeSymbolName } from '../../services/graph/SecurityUtil.js';
+import {
+  ValidationError,
+  handleContext,
+  handleSearch,
+  handleCallers,
+  handleCallees,
+  handleImpact,
+  handleTrace,
+  handleStatus,
+  handleFiles,
+  handleInit,
+  handleSync,
+  handleScc,
+  handleToposort,
+  handleDelta,
+  handlePagerank,
+  handleRoles,
+  handleSlice,
+  handleCoupling,
+  handleCommunity,
+  handleCentrality,
+  handleTemporal,
+  handleUnresolved,
+  handleKindMap,
+} from './CodegraphHandlers.js';
 
 // ============================================================
 // Schema
@@ -271,500 +287,32 @@ export const codegraphTool = buildTool({
       if (input.query) input.query = sanitizeQuery(input.query)
       if (input.symbol) input.symbol = sanitizeSymbolName(input.symbol)
 
+      const handlerCtx = { projectRoot, sendProgress, onStderrProgress };
       let result: unknown;
 
       switch (input.operation) {
-        case 'codegraph_context': {
-          if (!input.query) return { data: { error: true, message: 'codegraph_context 需要 query 参数' } };
-          sendProgress('context', `Querying: ${input.query.slice(0, 60)}…`)
-          const r = await CodegraphManager.getContext(projectRoot, input.query, {
-            maxNodes: input.maxNodes ?? 20,
-            format: input.format ?? 'json',
-          });
-          result = parseJsonOrError(r);
-          break;
-        }
-
-        case 'codegraph_search': {
-          if (!input.query) return { data: { error: true, message: 'codegraph_search 需要 query 参数' } };
-          sendProgress('search', `Searching: ${input.query.slice(0, 60)}…`)
-          try {
-            // F-63: Use FTS5 + RRF fusion for search
-            const store = GraphStore.getInstance(projectRoot);
-            await store.load();
-            const ftsDbPath = resolve(projectRoot, '.codegraph', 'fts-search.db');
-            const fts = new FtsSearch(ftsDbPath);
-            try {
-              // Index nodes if FTS table is empty
-              fts.createIndex();
-              fts.indexNodes(store);
-              const rrf = new RrfSearch(fts, store);
-              const results = rrf.search(input.query, input.maxNodes ?? 20);
-              result = { results, total: results.length };
-            } finally {
-              fts.close();
-            }
-          } catch {
-            // Fallback to CLI if FTS5 fails
-            const r = await CodegraphManager.searchNodes(projectRoot, input.query, {
-              limit: input.maxNodes ?? 20,
-            });
-            result = parseJsonOrError(r);
-          }
-          break;
-        }
-
-        case 'codegraph_callers': {
-          if (!input.symbol) return { data: { error: true, message: 'codegraph_callers 需要 symbol 参数' } };
-          sendProgress('callers', `Finding callers of ${input.symbol}…`)
-          const r = await CodegraphManager.getCallers(projectRoot, input.symbol, {
-            limit: input.maxNodes ?? 20,
-          });
-          result = parseJsonOrError(r);
-          break;
-        }
-
-        case 'codegraph_callees': {
-          if (!input.symbol) return { data: { error: true, message: 'codegraph_callees 需要 symbol 参数' } };
-          sendProgress('callees', `Finding callees of ${input.symbol}…`)
-          const r = await CodegraphManager.getCallees(projectRoot, input.symbol, {
-            limit: input.maxNodes ?? 20,
-          });
-          result = parseJsonOrError(r);
-          break;
-        }
-
-        case 'codegraph_impact': {
-          if (!input.symbol) return { data: { error: true, message: 'codegraph_impact 需要 symbol 参数' } };
-          const impactDepth = input.depth ?? 2;
-          if (impactDepth > 2) {
-            // Deep impact analysis using GraphEngine (BFS + backward reachability + role classification)
-            sendProgress('impact', `Deep impact analysis of ${input.symbol}…`)
-            const store = GraphStore.getInstance(projectRoot);
-            await store.load();
-            const engine = new GraphEngine(store);
-            const forward = engine.bfs(input.symbol, impactDepth);
-            const backward = engine.backwardReachability(input.symbol);
-            const roles = engine.classifyRoles();
-            const impacted = forward.nodes.map(n => ({
-              node: n,
-              depth: forward.depth.get(n) ?? 0,
-              role: roles.get(n) ?? 'utility',
-              meta: store.getNode(n),
-            }));
-            const dependents = backward.reachable.map(n => ({
-              node: n,
-              role: roles.get(n) ?? 'utility',
-              meta: store.getNode(n),
-            }));
-            result = {
-              symbol: input.symbol,
-              forwardImpact: impacted.slice(0, input.maxNodes ?? 30),
-              backwardDependents: dependents.slice(0, input.maxNodes ?? 30),
-              forwardCount: forward.nodes.length,
-              backwardCount: backward.reachable.length,
-            };
-          } else {
-            // Basic impact analysis using CLI
-            sendProgress('impact', `Analyzing impact of ${input.symbol}…`)
-            const r = await CodegraphManager.getImpact(projectRoot, input.symbol, impactDepth);
-            result = parseJsonOrError(r);
-          }
-          break;
-        }
-
-        case 'codegraph_trace': {
-          if (!input.query) return { data: { error: true, message: 'codegraph_trace 需要 query 参数（格式: "从X到Y"）' } };
-          sendProgress('trace', `Tracing: ${input.query.slice(0, 60)}…`)
-          const parts = input.query.split(/\s*(?:到|to|→|->)\s*/).filter(Boolean);
-          if (parts.length < 2) {
-            return { data: { error: true, message: '需要 "X 到 Y" 格式', example: 'AuthService.login 到 Database.query' } };
-          } else if (parts.length > 2) {
-            return { data: { error: true, message: '只支持两个符号之间的追踪，请使用 "X 到 Y" 格式' } };
-          } else {
-            // 先找到 from 和 to 符号
-            sendProgress('trace', `Searching symbols…`)
-            const fromNodes = await CodegraphManager.searchNodes(projectRoot, parts[0], { limit: 1 });
-            const toNodes = await CodegraphManager.searchNodes(projectRoot, parts[1], { limit: 1 });
-            let fromParsed: unknown, toParsed: unknown;
-            try {
-              fromParsed = parseJsonOrError(fromNodes);
-            } catch (e) {
-              throw new Error(`Symbol lookup failed for "${parts[0]}": ${e instanceof Error ? e.message : String(e)}`);
-            }
-            try {
-              toParsed = parseJsonOrError(toNodes);
-            } catch (e) {
-              throw new Error(`Symbol lookup failed for "${parts[1]}": ${e instanceof Error ? e.message : String(e)}`);
-            }
-            if (!Array.isArray(fromParsed)) {
-              throw new Error(`Symbol search for "${parts[0]}" returned unexpected format (${typeof fromParsed})`);
-            }
-            if (!Array.isArray(toParsed)) {
-              throw new Error(`Symbol search for "${parts[1]}" returned unexpected format (${typeof toParsed})`);
-            }
-            const fromName = fromParsed.length > 0 ? (fromParsed[0].name || fromParsed[0].symbol) : null;
-            const toName = toParsed.length > 0 ? (toParsed[0].name || toParsed[0].symbol) : null;
-            if (fromName && toName) {
-              // 用 impact 做双向分析，找出从 from 到 to 的路径
-              const [fromImpact, toImpact] = await Promise.all([
-                CodegraphManager.getImpact(projectRoot, fromName, input.depth ?? 3),
-                CodegraphManager.getImpact(projectRoot, toName, input.depth ?? 3),
-              ]);
-              let fromGraph: unknown, toGraph: unknown;
-              try {
-                fromGraph = parseJsonOrError(fromImpact);
-              } catch (e) {
-                throw new Error(`Impact query failed for "${fromName}": ${e instanceof Error ? e.message : String(e)}`);
-              }
-              try {
-                toGraph = parseJsonOrError(toImpact);
-              } catch (e) {
-                throw new Error(`Impact query failed for "${toName}": ${e instanceof Error ? e.message : String(e)}`);
-              }
-              // Validate both results are arrays
-              if (!Array.isArray(fromGraph)) {
-                throw new Error(`Impact result for "${fromName}" is not structured data (got ${typeof fromGraph})`);
-              }
-              if (!Array.isArray(toGraph)) {
-                throw new Error(`Impact result for "${toName}" is not structured data (got ${typeof toGraph})`);
-              }
-              // 找交集：同时出现在 from 的下游和 to 的上游的节点
-              const fromSet = new Set(fromGraph.map((n: Record<string, unknown>) => n.name));
-              const pathNodes = toGraph.filter((n: Record<string, unknown>) => fromSet.has(n.name));
-              result = {
-                from: fromName,
-                to: toName,
-                connectingNodes: pathNodes.slice(0, 10),
-                message: pathNodes.length > 0
-                  ? `找到 ${pathNodes.length} 个连接节点`
-                  : '未找到直接连接路径，可能需要增加 depth 参数',
-              };
-            } else {
-              const missingSymbol = !fromName ? parts[0] : parts[1];
-              return { data: { error: true, message: `未找到符号: ${missingSymbol}` } };
-            }
-          }
-          break;
-        }
-
-        case 'codegraph_status': {
-          const r = await CodegraphManager.getStatus(projectRoot);
-          result = parseJsonOrError(r);
-          break;
-        }
-
-        case 'codegraph_files': {
-          sendProgress('files', 'Listing indexed files…')
-          // F-64: Use FileRecord from GraphStore
-          const store = GraphStore.getInstance(projectRoot);
-          await store.load();
-          const files = [...store.fileRecords.values()];
-          result = { files, total: files.length };
-          break;
-        }
-
-        case 'codegraph_init': {
-          if (CodegraphManager.isCodegraphInitialized(projectRoot)) {
-            result = { message: 'CodeGraph 索引已存在，无需重复初始化', initialized: true };
-          } else {
-            sendProgress('init', 'Creating CodeGraph index…')
-            const r = await CodegraphManager.initProject(projectRoot, onStderrProgress);
-            if (!r.ok) return { data: { error: true, message: r.stderr || '初始化失败' } };
-            result = { message: 'CodeGraph 索引已创建', initialized: true };
-          }
-          break;
-        }
-
-        case 'codegraph_sync': {
-          sendProgress('sync', 'Syncing CodeGraph index…')
-          const r = await CodegraphManager.sync(projectRoot, onStderrProgress);
-          if (!r.ok) return { data: { error: true, message: r.stderr || '同步失败' } };
-          result = parseJsonOrError(r);
-          break;
-        }
-
-        // ── Graph algorithm operations ──
-
-        case 'codegraph_scc': {
-          sendProgress('scc', 'Computing strongly connected components…')
-          const store = GraphStore.getInstance(projectRoot);
-          await store.load();
-          const engine = new GraphEngine(store);
-          const sccs = engine.tarjanSCC();
-          const nonTrivial = sccs.filter(s => !s.isTrivial);
-          result = {
-            totalComponents: sccs.length,
-            nonTrivialComponents: nonTrivial.length,
-            components: sccs.slice(0, input.maxNodes ?? 20),
-          };
-          break;
-        }
-
-        case 'codegraph_toposort': {
-          sendProgress('toposort', 'Computing topological order…')
-          const store = GraphStore.getInstance(projectRoot);
-          await store.load();
-          const engine = new GraphEngine(store);
-          const topo = engine.topologicalSort();
-          result = {
-            order: topo.order.slice(0, input.maxNodes ?? 50),
-            totalNodes: topo.order.length,
-            hasCycles: !!topo.cycles && topo.cycles.length > 0,
-            cycles: topo.cycles?.slice(0, 10),
-          };
-          break;
-        }
-
-        case 'codegraph_delta': {
-          sendProgress('delta', 'Computing graph delta…')
-          const store = GraphStore.getInstance(projectRoot);
-          await store.load();
-          const engine = new GraphEngine(store);
-          // Build current snapshot
-          const curr: GraphSnapshot = {
-            adjacency: new Map(store.adjacency),
-            nodeMeta: new Map(store.nodeMeta),
-            timestamp: Date.now(),
-          };
-          // For old snapshot: reload from disk (represents previous state)
-          // In practice, oldSnapshot/newSnapshot could be commit hashes or timestamps
-          // For now, compare current store against a fresh reload
-          const oldStore = GraphStore.getInstance(projectRoot);
-          await oldStore.reload();
-          const old: GraphSnapshot = {
-            adjacency: new Map(oldStore.adjacency),
-            nodeMeta: new Map(oldStore.nodeMeta),
-            timestamp: Date.now() - 1000,
-          };
-          const delta = engine.deltaGraph(old, curr);
-          result = {
-            added: delta.added.slice(0, input.maxNodes ?? 50),
-            removed: delta.removed.slice(0, input.maxNodes ?? 50),
-            edgeAdded: delta.edgeAdded.slice(0, input.maxNodes ?? 50),
-            edgeRemoved: delta.edgeRemoved.slice(0, input.maxNodes ?? 50),
-            summary: delta.summary,
-          };
-          break;
-        }
-
-        case 'codegraph_pagerank': {
-          sendProgress('pagerank', 'Computing PageRank scores…')
-          const store = GraphStore.getInstance(projectRoot);
-          await store.load();
-          const engine = new GraphEngine(store);
-          const pr = engine.pageRank(input.damping ?? 0.85);
-          const topN = input.maxNodes ?? 20;
-          result = {
-            topNodes: pr.scores.slice(0, topN).map(s => ({
-              node: s.node,
-              score: Math.round(s.score * 10000) / 10000,
-              meta: store.getNode(s.node),
-            })),
-            totalScored: pr.scores.length,
-          };
-          break;
-        }
-
-        case 'codegraph_roles': {
-          sendProgress('roles', 'Classifying node roles…')
-          const store = GraphStore.getInstance(projectRoot);
-          await store.load();
-          const engine = new GraphEngine(store);
-          const roles = engine.classifyRoles();
-          // Group by role
-          const grouped: Record<string, Array<{ node: string; meta?: unknown }>> = {};
-          for (const [node, role] of roles) {
-            if (!grouped[role]) grouped[role] = [];
-            grouped[role].push({ node, meta: store.getNode(node) });
-          }
-          // Limit per group
-          const limit = input.maxNodes ?? 20;
-          for (const role of Object.keys(grouped)) {
-            grouped[role] = grouped[role].slice(0, limit);
-          }
-          result = {
-            distribution: Object.fromEntries(
-              Object.entries(grouped).map(([r, nodes]) => [r, { count: nodes.length, sample: nodes.slice(0, 5) }])
-            ),
-            totalNodes: roles.size,
-          };
-          break;
-        }
-
-        case 'codegraph_slice': {
-          if (!input.symbol) return { data: { error: true, message: 'codegraph_slice 需要 symbol 参数' } };
-          sendProgress('slice', `Computing data slice for ${input.symbol}…`)
-          const store = GraphStore.getInstance(projectRoot);
-          await store.load();
-          const engine = new GraphEngine(store);
-          const slice = engine.backwardDataSlice(input.symbol);
-          result = {
-            symbol: input.symbol,
-            symbols: slice.symbols.slice(0, input.maxNodes ?? 30),
-            dataFlows: slice.dataFlows.slice(0, input.maxNodes ?? 30),
-            totalSymbols: slice.symbols.length,
-          };
-          break;
-        }
-
-        case 'codegraph_coupling': {
-          sendProgress('coupling', 'Computing coupling metrics…')
-          const store = GraphStore.getInstance(projectRoot);
-          await store.load();
-          const engine = new GraphEngine(store);
-          const metrics = engine.couplingMetrics();
-          result = {
-            highCoupling: metrics.highCoupling.slice(0, input.maxNodes ?? 20),
-            lcom: metrics.lcom.slice(0, input.maxNodes ?? 20),
-            totalHighCoupling: metrics.highCoupling.length,
-            totalClasses: metrics.lcom.length,
-          };
-          break;
-        }
-
-        case 'codegraph_community': {
-          sendProgress('community', 'Running Louvain community detection…')
-          const store = GraphStore.getInstance(projectRoot);
-          await store.load();
-          const engine = new GraphEngine(store);
-          const community = engine.louvainCommunity({ resolution: input.resolution ?? 1.0 });
-          const limit = input.maxNodes ?? 20;
-          result = {
-            communities: community.communities
-              .sort((a, b) => b.size - a.size)
-              .slice(0, limit)
-              .map(c => ({
-                id: c.id,
-                size: c.size,
-                sample: c.nodes.slice(0, 5),
-              })),
-            modularity: community.modularity,
-            resolution: community.resolution,
-            totalCommunities: community.communities.length,
-          };
-          break;
-        }
-
-        case 'codegraph_centrality': {
-          const method = input.method ?? 'both';
-          sendProgress('centrality', `Computing ${method} centrality…`)
-          const store = GraphStore.getInstance(projectRoot);
-          await store.load();
-          const engine = new GraphEngine(store);
-          const topN = input.maxNodes ?? 20;
-          const resultObj: Record<string, unknown> = {};
-          if (method === 'katz' || method === 'both') {
-            const katz = engine.katzCentrality();
-            resultObj.katz = katz.scores.slice(0, topN).map(s => ({
-              node: s.node,
-              score: Math.round(s.score * 10000) / 10000,
-              meta: store.getNode(s.node),
-            }));
-          }
-          if (method === 'betweenness' || method === 'both') {
-            const bc = engine.betweennessCentrality(input.sampleSize ?? 200);
-            resultObj.betweenness = bc.scores.slice(0, topN).map(s => ({
-              node: s.node,
-              score: Math.round(s.score * 10000) / 10000,
-              meta: store.getNode(s.node),
-            }));
-          }
-          result = resultObj;
-          break;
-        }
-
-        case 'codegraph_temporal': {
-          sendProgress('temporal', 'Analyzing temporal coupling…')
-          const store = GraphStore.getInstance(projectRoot)
-          await store.load()
-          const engine = new GraphEngine(store)
-          const temporal = engine.temporalCoupling(projectRoot, {
-            since: input.since || '30 days',
-          })
-          result = {
-            pairs: temporal.pairs.slice(0, input.maxNodes ?? 20),
-            totalPairs: temporal.pairs.length,
-            timeRange: input.since || '30 days',
-          }
-          break
-        }
-
-        // ── Phase Z4 operations ──
-
-        case 'codegraph_unresolved': {
-          sendProgress('unresolved', 'Scanning for unresolved references…')
-          const store = GraphStore.getInstance(projectRoot);
-          await store.load();
-          const manager = new UnresolvedRefManager(store);
-          manager.loadFromEdges();
-          const unresolved = manager.getUnresolved();
-          const resolvedCount = manager.resolve();
-          result = {
-            unresolved: unresolved.slice(0, input.maxNodes ?? 30),
-            total: unresolved.length,
-            resolved: resolvedCount,
-          };
-          break;
-        }
-
-        case 'codegraph_kind_map': {
-          sendProgress('kind_map', 'Building kind/edge mapping diagnostics…')
-          // Edge kind mapping: codegraph → canonical EdgeType
-          const store = GraphStore.getInstance(projectRoot);
-          await store.load();
-          const edgeMap: Record<string, string> = {
-            calls: 'calls', imports: 'imports', contains: 'contains',
-            references: 'data', extends: 'inherits', implements: 'implements',
-            exports: 'exports', type_of: 'type_of', returns: 'returns',
-            instantiates: 'instantiates', overrides: 'overrides', decorates: 'decorates',
-            subscribes: 'subscribes', publishes: 'publishes', middleware: 'middleware',
-            flow_step: 'flow_step', cross_domain: 'cross_domain',
-            reads: 'reads', writes: 'writes', tests: 'tests',
-            configures: 'configures', deploys: 'deploys', monitors: 'monitors',
-            validates: 'validates', transforms: 'transforms', caches: 'caches',
-            queues: 'queues', notifies: 'notifies',
-            serializes: 'serializes', deserializes: 'deserializes',
-            encrypts: 'encrypts', decrypts: 'decrypts', compresses: 'compresses',
-            logs: 'logs', metrics: 'metrics', traces_edge: 'traces',
-            authenticates: 'authenticates', authorizes: 'authorizes',
-            rate_limits: 'rate_limits',
-          }
-          // Count edge types in graph
-          const edgeTypeCounts: Record<string, number> = {}
-          for (const outMap of store.adjacency.values()) {
-            for (const edges of outMap.values()) {
-              for (const edge of edges) {
-                edgeTypeCounts[edge.type] = (edgeTypeCounts[edge.type] ?? 0) + 1
-              }
-            }
-          }
-          // Count node kinds in graph
-          const nodeKindCounts: Record<string, number> = {}
-          for (const node of store.nodeMeta.values()) {
-            nodeKindCounts[node.kind] = (nodeKindCounts[node.kind] ?? 0) + 1
-          }
-          result = {
-            edgeKindMapping: edgeMap,
-            nodeKindAliases: getKindAliases(),
-            validNodeKinds: [...VALID_KINDS],
-            graphStats: {
-              nodeKinds: nodeKindCounts,
-              edgeTypes: edgeTypeCounts,
-              totalNodes: store.nodeMeta.size,
-            },
-            normalizeKindExamples: {
-              fn: normalizeKind('fn'),
-              cls: normalizeKind('cls'),
-              struct: normalizeKind('struct'),
-              trait: normalizeKind('trait'),
-              proc: normalizeKind('proc'),
-              iface: normalizeKind('iface'),
-            },
-          }
-          break
-        }
-
+        case 'codegraph_context': result = await handleContext(handlerCtx, input); break;
+        case 'codegraph_search': result = await handleSearch(handlerCtx, input); break;
+        case 'codegraph_callers': result = await handleCallers(handlerCtx, input); break;
+        case 'codegraph_callees': result = await handleCallees(handlerCtx, input); break;
+        case 'codegraph_impact': result = await handleImpact(handlerCtx, input); break;
+        case 'codegraph_trace': result = await handleTrace(handlerCtx, input); break;
+        case 'codegraph_status': result = await handleStatus(handlerCtx, input); break;
+        case 'codegraph_files': result = await handleFiles(handlerCtx, input); break;
+        case 'codegraph_init': result = await handleInit(handlerCtx, input, onStderrProgress); break;
+        case 'codegraph_sync': result = await handleSync(handlerCtx, input); break;
+        case 'codegraph_scc': result = await handleScc(handlerCtx, input); break;
+        case 'codegraph_toposort': result = await handleToposort(handlerCtx, input); break;
+        case 'codegraph_delta': result = await handleDelta(handlerCtx, input); break;
+        case 'codegraph_pagerank': result = await handlePagerank(handlerCtx, input); break;
+        case 'codegraph_roles': result = await handleRoles(handlerCtx, input); break;
+        case 'codegraph_slice': result = await handleSlice(handlerCtx, input); break;
+        case 'codegraph_coupling': result = await handleCoupling(handlerCtx, input); break;
+        case 'codegraph_community': result = await handleCommunity(handlerCtx, input); break;
+        case 'codegraph_centrality': result = await handleCentrality(handlerCtx, input); break;
+        case 'codegraph_temporal': result = await handleTemporal(handlerCtx, input); break;
+        case 'codegraph_unresolved': result = await handleUnresolved(handlerCtx, input); break;
+        case 'codegraph_kind_map': result = await handleKindMap(handlerCtx, input); break;
         default:
           return { data: { error: true, message: `未知操作: ${input.operation}` } };
       }
@@ -803,6 +351,10 @@ export const codegraphTool = buildTool({
 
       return { data: { ok: true, operation: input.operation, result, _graphContext: graphContext } };
     } catch (e) {
+      // ValidationError → parameter errors, no logging or failure recording
+      if (e instanceof ValidationError) {
+        return { data: { error: true, message: e.message } };
+      }
       logForDebugging(`[codegraph] error: ${e}`);
       // PostToolUse: record failed usage
       GraphUsageTracker.getInstance(projectRoot).recordUsage({
@@ -993,23 +545,3 @@ export function getOperationDescription(operation: string, tier: 'core' | 'analy
 (codegraphTool as any).operationTiers = OPERATION_TIERS;
 (codegraphTool as any).deferredOperations = DEFERRED_OPERATIONS;
 (codegraphTool as any).getOperationDescription = getOperationDescription;
-
-// ============================================================
-// Helpers
-// ============================================================
-
-function parseJsonOrError(r: { ok: boolean; stdout: string; stderr: string }): unknown {
-  if (!r.ok) {
-    throw new Error(r.stderr || 'command failed');
-  }
-  try {
-    return JSON.parse(r.stdout);
-  } catch {
-    // Non-JSON output from CLI — return as string but log warning for debugging
-    const trimmed = r.stdout.trim().slice(0, 2000);
-    if (trimmed.length > 0) {
-      return trimmed;
-    }
-    throw new Error('CodeGraph CLI returned empty output');
-  }
-}
