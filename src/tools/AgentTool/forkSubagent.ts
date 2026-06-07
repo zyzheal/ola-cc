@@ -77,7 +77,7 @@ export const FORK_AGENT = {
  */
 export function isInForkChild(messages: MessageType[]): boolean {
   return messages.some(m => {
-    if (m.type !== 'user') return false
+    if (m.type !== 'user' || !m.message) return false
     const content = m.message.content
     if (!Array.isArray(content)) return false
     return content.some(
@@ -110,6 +110,16 @@ export function buildForkedMessages(
 ): MessageType[] {
   // Clone the assistant message to avoid mutating the original, keeping all
   // content blocks (thinking, text, and every tool_use)
+  if (!assistantMessage.message) {
+    return [
+      createUserMessage({
+        content: [
+          { type: 'text' as const, text: buildChildMessage(directive) },
+        ],
+      }),
+    ]
+  }
+
   const fullAssistantMessage: AssistantMessage = {
     ...assistantMessage,
     uuid: randomUUID(),
