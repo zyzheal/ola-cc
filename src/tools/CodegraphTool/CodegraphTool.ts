@@ -23,7 +23,7 @@ import { UnresolvedRefManager } from '../../services/graph/UnresolvedRefManager.
 import { normalizeKind, isValidKind, VALID_KINDS, getKindAliases } from '../../services/graph/NodeKindNormalizer.js';
 import { GraphContextService } from '../../services/graph/GraphContextService.js'
 import { GraphUsageTracker } from '../../services/graph/GraphUsageTracker.js'
-import { execFileSync } from 'child_process';
+
 import { resolve } from 'path';
 import { sanitizeQuery, sanitizeSymbolName } from '../../services/graph/SecurityUtil.js';
 
@@ -675,41 +675,19 @@ export const codegraphTool = buildTool({
         }
 
         case 'codegraph_temporal': {
-          sendProgress('temporal', 'Analyzing temporal coupling via git log…')
-          const sinceArg = input.since || '30 days';
-          try {
-            // Get git log with file lists
-            const gitLog = execFileSync('git', ['log', '--name-only', '--pretty=format:COMMIT:%H', `--since=${sinceArg}`], { cwd: projectRoot, encoding: 'utf-8', maxBuffer: 10 * 1024 * 1024 });
-            // Parse commits and their changed files
-            const commits = gitLog.split(/^COMMIT:/m).filter(Boolean);
-            const coChangeMap = new Map<string, number>();
-            for (const commit of commits) {
-              const lines = commit.trim().split('\n').filter(l => l && !l.startsWith('COMMIT:'));
-              // Count co-changes for every pair
-              for (let i = 0; i < lines.length; i++) {
-                for (let j = i + 1; j < lines.length; j++) {
-                  const key = [lines[i], lines[j]].sort().join('↔');
-                  coChangeMap.set(key, (coChangeMap.get(key) ?? 0) + 1);
-                }
-              }
-            }
-            // Sort by co-change count
-            const pairs = [...coChangeMap.entries()]
-              .map(([key, count]) => {
-                const [a, b] = key.split('↔');
-                return { a, b, score: count, coChanges: count };
-              })
-              .sort((a, b) => b.coChanges - a.coChanges)
-              .slice(0, input.maxNodes ?? 30);
-            result = {
-              pairs,
-              totalCommits: commits.length,
-              window: { since: input.since ?? '30d', until: 'now' },
-            };
-          } catch (e) {
-            return { data: { error: true, message: `Git log failed: ${e instanceof Error ? e.message : String(e)}` } };
+          sendProgress('temporal', 'Analyzing temporal coupling…')
+          const store = GraphStore.getInstance(projectRoot)
+          await store.load()
+          const engine = new GraphEngine(store)
+          const temporal = engine.temporalCoupling(projectRoot, {
+            since: input.since || '30 days',
+          })
+          result = {
+            pairs: temporal.pairs.slice(0, input.maxNodes ?? 20),
+            totalPairs: temporal.pairs.length,
+            timeRange: input.since || '30 days',
           }
-          break;
+          break
         }
 
         // ── Phase Z4 operations ──
