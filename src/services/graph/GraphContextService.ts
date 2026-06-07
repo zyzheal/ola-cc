@@ -194,7 +194,7 @@ export class GraphContextService {
     input: Record<string, unknown>,
   ): Array<{ id: string; name: string; kind: string }> {
     // Extract query/symbol from input
-    const query = this.extractQuery(toolName, input)
+    const query = this.extractQuery(input)
     if (!query) return []
 
     // Try to find matching nodes
@@ -232,7 +232,7 @@ export class GraphContextService {
   /**
    * Extract the query/symbol string from tool input.
    */
-  private extractQuery(toolName: string, input: Record<string, unknown>): string | null {
+  private extractQuery(input: Record<string, unknown>): string | null {
     // Common input fields that contain a query
     const candidates = ['query', 'symbol', 'name', 'nodeId', 'term', 'pattern']
     for (const key of candidates) {
