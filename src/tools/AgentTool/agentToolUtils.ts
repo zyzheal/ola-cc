@@ -548,7 +548,7 @@ export function extractPartialResult(
 ): string | undefined {
   for (let i = messages.length - 1; i >= 0; i--) {
     const m = messages[i]!
-    if (m.type !== 'assistant' || !m.message) continue
+    if (m.type !== 'assistant' || !m.message || !Array.isArray(m.message.content)) continue
     const text = extractTextContent(m.message.content, '\n')
     if (text) {
       return text

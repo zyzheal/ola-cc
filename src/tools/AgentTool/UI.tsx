@@ -845,7 +845,7 @@ export function extractLastToolInfo(progressMessages: ProgressMessage<Progress>[
     if (!hasProgressMessage(pm.data)) {
       continue;
     }
-    if (pm.data.message.type === 'assistant' && pm.data.message.message) {
+    if (pm.data.message.type === 'assistant' && pm.data.message.message && Array.isArray(pm.data.message.message.content)) {
       for (const c of pm.data.message.message.content) {
         if (c.type === 'tool_use') {
           toolUseByID.set(c.id, c as ToolUseBlockParam);
@@ -867,7 +867,7 @@ export function extractLastToolInfo(progressMessages: ProgressMessage<Progress>[
     const info = getSearchOrReadInfo(msg, tools, toolUseByID);
     if (info && (info.isSearch || info.isRead)) {
       // Only count tool_result messages to avoid double counting
-      if (msg.data.message.type === 'user' && msg.data.message.message) {
+      if (msg.data.message.type === 'user' && msg.data.message.message && Array.isArray(msg.data.message.message.content)) {
         if (info.isSearch) {
           searchCount++;
         } else if (info.isRead) {
@@ -906,9 +906,9 @@ export function extractLastToolInfo(progressMessages: ProgressMessage<Progress>[
       return false;
     }
     const message = msg.data.message;
-    return message.type === 'user' && !!message.message && message.message.content.some(c => c.type === 'tool_result');
+    return message.type === 'user' && !!message.message && Array.isArray(message.message.content) && message.message.content.some(c => c.type === 'tool_result');
   });
-  if (lastToolResult?.data.message.type === 'user' && lastToolResult.data.message.message) {
+  if (lastToolResult?.data.message.type === 'user' && lastToolResult.data.message.message && Array.isArray(lastToolResult.data.message.message.content)) {
     const toolResultBlock = lastToolResult.data.message.message.content.find(c => c.type === 'tool_result');
     if (toolResultBlock?.type === 'tool_result') {
       // Look up the corresponding tool_use — already indexed above
@@ -947,7 +947,7 @@ export function extractLastToolInfo(progressMessages: ProgressMessage<Progress>[
       continue;
     }
     const message = pm.data.message;
-    if (message.kind !== 'init_progress' || !message.message) {
+    if (message.kind !== 'init_progress' || !message.message || !Array.isArray(message.message.content)) {
       continue;
     }
     const textBlock = message.message.content.find(c => c.type === 'text');
