@@ -5,7 +5,7 @@ import { randomUUID } from 'crypto'
 import { existsSync, readFileSync } from 'fs'
 import { createServer } from 'http'
 import { homedir } from 'os'
-import { extname, join, resolve } from 'path'
+import { extname, join, relative, resolve } from 'path'
 import { z } from 'zod/v4'
 import { openBrowser } from '../../utils/browser.js'
 import { getCwd } from '../../utils/cwd.js'
@@ -257,13 +257,12 @@ export class GrokManager {
       /^src[\\/]main\./,
       /^src[\\/]index\./,
       /^src[\\/]app\./,
-      /^cmd[\\/]/,
       /^cmd[\\/].*[\\/]main\.go$/,
     ]
 
     const entryPoints: string[] = []
     for (const f of files) {
-      const rel = f.slice(this.projectRoot.length).replace(/^[/\\]/, '')
+      const rel = relative(this.projectRoot, f)
       const basename = rel.split(/[\\/]/).pop() || ''
       if (ENTRY_BASENAMES.has(basename)) {
         entryPoints.push(f)
