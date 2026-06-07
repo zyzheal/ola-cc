@@ -170,11 +170,12 @@ export class GraphEngine {
     const visited = new Set<string>()
 
     const queue: Array<{ node: string; d: number }> = [{ node: start, d: 0 }]
+    let head = 0
     visited.add(start)
     depth.set(start, 0)
 
-    while (queue.length > 0) {
-      const { node, d } = queue.shift()!
+    while (head < queue.length) {
+      const { node, d } = queue[head++]!
       nodes.push(node)
 
       if (d >= maxDepth) continue
@@ -237,10 +238,11 @@ export class GraphEngine {
     const via = new Map<string, string[]>()
     const visited = new Set<string>()
     const queue = [nodeId]
+    let head = 0
     visited.add(nodeId)
 
-    while (queue.length > 0) {
-      const current = queue.shift()!
+    while (head < queue.length) {
+      const current = queue[head++]!
       reachable.push(current)
 
       const inEdges = this.store.getInEdges(current)
@@ -400,10 +402,12 @@ export class GraphEngine {
       if (deg === 0) queue.push(id)
     }
 
+    const sccMap = new Map(sccs.map(s => [s.id, s]))
+    let head = 0
     const order: string[] = []
-    while (queue.length > 0) {
-      const sccId = queue.shift()!
-      const scc = sccs.find(s => s.id === sccId)!
+    while (head < queue.length) {
+      const sccId = queue[head++]!
+      const scc = sccMap.get(sccId)!
       if (scc.size === 1) {
         order.push(scc.nodes[0])
       } else {
@@ -735,6 +739,7 @@ export class GraphEngine {
     const dataFlows: Array<{ from: string; to: string; via: string }> = []
     const visited = new Set<string>()
     const queue = [nodeId]
+    let head = 0
     visited.add(nodeId)
 
     // F-67: Follow data, type_of, returns, and P2/P3 data-flow edges
@@ -746,8 +751,8 @@ export class GraphEngine {
 
     let hasDataEdges = false
 
-    while (queue.length > 0) {
-      const current = queue.shift()!
+    while (head < queue.length) {
+      const current = queue[head++]!
       symbols.push(current)
 
       const inEdges = this.store.getInEdges(current)
@@ -941,9 +946,10 @@ export class GraphEngine {
       dist.set(s, 0)
 
       const queue: string[] = [s]
+      let head = 0
 
-      while (queue.length > 0) {
-        const v = queue.shift()!
+      while (head < queue.length) {
+        const v = queue[head++]!
         stack.push(v)
 
         const outEdges = this.store.getOutEdges(v)
@@ -1209,10 +1215,11 @@ export class GraphEngine {
     }
 
     const queue = nodes.filter(n => inDegree.get(n) === 0)
+    let head = 0
     const order: string[] = []
 
-    while (queue.length > 0) {
-      const node = queue.shift()!
+    while (head < queue.length) {
+      const node = queue[head++]!
       order.push(node)
 
       const outEdges = this.store.getOutEdges(node)
