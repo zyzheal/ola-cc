@@ -143,9 +143,22 @@ export function computeBM25Score(
     const pattern = termPatterns.get(term)
     if (!pattern) continue
 
-    // Count term frequency in document
-    const matches = textLower.match(new RegExp(pattern.source, 'gi'))
-    const tf = matches?.length ?? 0
+    // Count term frequency without allocating new RegExp per call.
+    // Use indexOf + word boundary check (matches the pre-compiled pattern's intent).
+    let tf = 0
+    let pos = 0
+    const termLower = term.toLowerCase()
+    while (pos < textLower.length) {
+      const idx = textLower.indexOf(termLower, pos)
+      if (idx === -1) break
+      // Word boundary check: same logic as extractTerms' pattern
+      const beforeOk = idx === 0 || !/[a-z0-9_]/.test(textLower[idx - 1]!)
+      const afterIdx = idx + termLower.length
+      const afterOk =
+        afterIdx >= textLower.length || !/[a-z0-9_]/.test(textLower[afterIdx]!)
+      if (beforeOk && afterOk) tf++
+      pos = idx + 1
+    }
     if (tf === 0) continue
 
     // Simplified IDF: assume term appears in ~30% of documents
