@@ -16,6 +16,8 @@ import type { ProgressMessage, ToolProgressData } from '../../types/tools.js'
 import { grokManager, GrokError, ERROR_SUGGESTIONS } from './GrokManager.js'
 import { GraphStore } from '../../services/graph/GraphStore.js'
 import { GraphEngine } from '../../services/graph/GraphEngine.js'
+import { GraphContextService } from '../../services/graph/GraphContextService.js'
+import { GraphUsageTracker } from '../../services/graph/GraphUsageTracker.js'
 import { execSync } from 'child_process'
 
 // ============================================================
@@ -168,6 +170,7 @@ export const grokTool = buildTool({
   },
 
   async call(input: Input, _context, _canUseTool, _parentMessage, _onProgress) {
+    const opStart = Date.now();
     const sendProgress = (stage: string) => {
       _onProgress?.({ toolUseID: '', data: { type: 'grok_progress', stage } })
     }
@@ -175,6 +178,10 @@ export const grokTool = buildTool({
     try {
       sendProgress('prepare')
       await grokManager.ensureGrokSource()
+
+      // PreToolUse: inject graph context
+      const projectRoot = getCwd()
+      const graphContext = GraphContextService.getInstance(projectRoot).getPreToolContext('grok', input as Record<string, unknown>)
 
       let result: unknown
 
@@ -447,7 +454,17 @@ export const grokTool = buildTool({
         }
       }
 
-      return { data: { ok: true, operation: input.operation, result } }
+      // PostToolUse: record usage
+      GraphUsageTracker.getInstance(projectRoot).recordUsage({
+        toolName: 'grok',
+        operation: input.operation,
+        timestamp: Date.now(),
+        success: true,
+        duration: Date.now() - opStart,
+        query: (input.question || input.target || input.topic) as string | undefined,
+      })
+
+      return { data: { ok: true, operation: input.operation, result, _graphContext: graphContext } }
     } catch (error) {
       logForDebugging(`[grok] error: ${error}`)
       const isGrokError = error instanceof GrokError
@@ -455,6 +472,14 @@ export const grokTool = buildTool({
       const suggestion = isGrokError
         ? error.suggestion
         : ERROR_SUGGESTIONS[code]
+      // PostToolUse: record failed usage
+      GraphUsageTracker.getInstance(getCwd()).recordUsage({
+        toolName: 'grok',
+        operation: input.operation,
+        timestamp: Date.now(),
+        success: false,
+        duration: Date.now() - opStart,
+      })
       return {
         data: {
           error: true,
