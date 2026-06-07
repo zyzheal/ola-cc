@@ -156,6 +156,11 @@ const DEFAULT_PATTERNS: PatternRule[] = [
   { pattern: /\b[45]\d{2}\b.*(?:error|fail|not found|forbidden|unauthorized)/i, category: 'error', confidence: 0.6 },
   // Security patterns
   { pattern: /(?:api[_-]?key|secret|token|password)\s*[:=]\s*\S+/i, category: 'security', confidence: 0.7 },
+  // Multi-word crash phrases (preserved from legacy BASH_ERROR_INDICATORS)
+  { pattern: /segmentation\s+fault/i, category: 'error', confidence: 0.9 },
+  { pattern: /core\s+dumped/i, category: 'error', confidence: 0.9 },
+  { pattern: /fatal\s+error/i, category: 'error', confidence: 0.85 },
+  { pattern: /unrecoverable/i, category: 'error', confidence: 0.8 },
 ]
 
 export class PatternDetector implements LineImportanceDetector {
@@ -191,8 +196,9 @@ const ESCALATE_THRESHOLD = 0.7
  * signal seen is returned.
  *
  * This mirrors Headroom's Tiered combinator pattern:
- * - KeywordDetector (tier 1) fires at confidence 0.7 — wins by default
- * - PatternDetector (tier 2) can override at confidence 0.8+
+ * - PatternDetector (tier 1) runs first — higher precision, confidence 0.6-0.9
+ * - KeywordDetector (tier 2) — high recall fallback, confidence 0.7
+ * - PatternDetector with confidence ≥ 0.7 short-circuits before keyword check
  * - Future ML detectors with calibrated confidence ≥ 0.8 would short-circuit
  */
 export class TieredDetector implements LineImportanceDetector {
