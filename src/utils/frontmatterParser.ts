@@ -61,6 +61,10 @@ export type FrontmatterData = {
   priority?: number | null
   // Declared conflicts with other skill names (for logging only, not runtime)
   'conflicts-with'?: string | string[] | null
+  // B5: Last decay sweep timestamp (ISO 8601). Used as baseline for retention
+  // decay calculation instead of mtimeMs, so saving a memory doesn't reset
+  // the decay clock. Added by memoryDecay sweep.
+  'last-decayed-at'?: string | null
   [key: string]: unknown
 }
 
