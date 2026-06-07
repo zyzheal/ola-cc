@@ -106,6 +106,9 @@ export class QueryCache {
    * 获取表的列名列表
    */
   getColumns(table: string): string[] {
+    if (!/^[a-zA-Z_][a-zA-Z0-9_]*$/.test(table)) {
+      throw new Error(`Invalid table name: ${table}`)
+    }
     const sql = `PRAGMA table_info(${table})`
     const rows = this.db.query(sql).all() as Array<{ name: string }>
     return rows.map(r => r.name)

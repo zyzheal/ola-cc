@@ -18,7 +18,8 @@ import { GraphStore } from '../../services/graph/GraphStore.js'
 import { GraphEngine } from '../../services/graph/GraphEngine.js'
 import { GraphContextService } from '../../services/graph/GraphContextService.js'
 import { GraphUsageTracker } from '../../services/graph/GraphUsageTracker.js'
-import { execSync } from 'child_process'
+import { execFileSync } from 'child_process'
+import { sanitizeQuery, sanitizeSymbolName } from '../../services/graph/SecurityUtil.js'
 
 // ============================================================
 // Schema
@@ -206,7 +207,8 @@ export const grokTool = buildTool({
             return { data: { error: true, message: 'grok_chat 需要 question 参数' } }
           }
           sendProgress('chat')
-          const chatResult = await grokManager.queryGraph(input.question)
+          const safeQuestion = sanitizeQuery(input.question)
+          const chatResult = await grokManager.queryGraph(safeQuestion)
           result = chatResult
           break
         }
@@ -216,8 +218,9 @@ export const grokTool = buildTool({
             return { data: { error: true, message: 'grok_explain 需要 target 参数' } }
           }
           sendProgress('explain')
+          const safeTarget = sanitizeSymbolName(input.target)
           const explainResult = await grokManager.queryGraph(
-            `Explain ${input.target}: what it does, its relationships, which layer and domain it belongs to`
+            `Explain ${safeTarget}: what it does, its relationships, which layer and domain it belongs to`
           )
           result = {
             summary: explainResult.answer,
@@ -359,11 +362,8 @@ export const grokTool = buildTool({
           let temporalPairs: Array<{ a: string; b: string; score: number; coChanges: number }> = []
           let totalCommits = 0
           try {
-            const sinceArg = input.since ? `--since="${input.since}"` : '--since="30 days"'
-            const gitLog = execSync(
-              `git log --name-only --pretty=format:"COMMIT:%H" ${sinceArg}`,
-              { cwd: projectRoot, encoding: 'utf-8', timeout: 30000 }
-            )
+            const sinceArg = input.since || '30 days'
+            const gitLog = execFileSync('git', ['log', '--name-only', '--pretty=format:COMMIT:%H', `--since=${sinceArg}`], { cwd: projectRoot, encoding: 'utf-8', maxBuffer: 10 * 1024 * 1024 })
             const commits = gitLog.split(/^COMMIT:/m).filter(Boolean)
             totalCommits = commits.length
             const coChangeMap = new Map<string, number>()
