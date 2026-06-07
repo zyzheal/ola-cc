@@ -219,8 +219,8 @@ export class FtsSearch {
    * Sanitize query for FTS5: escape special chars, add prefix matching.
    */
   private sanitizeQuery(query: string): string {
-    // Remove FTS5 special characters: " AND OR NOT NEAR ( ) *
-    const cleaned = query.replace(/["*()]/g, ' ').trim()
+    // Strip FTS5 special characters that could affect query semantics
+    const cleaned = query.replace(/["*()+:{}^~!\\-]/g, ' ').trim()
     if (!cleaned) return ''
 
     // Split into terms and add prefix wildcard to each
