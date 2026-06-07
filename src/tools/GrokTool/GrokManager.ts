@@ -5,7 +5,7 @@ import { randomUUID } from 'crypto'
 import { existsSync, readFileSync } from 'fs'
 import { createServer } from 'http'
 import { homedir } from 'os'
-import { join, resolve } from 'path'
+import { extname, join, resolve } from 'path'
 import { z } from 'zod/v4'
 import { openBrowser } from '../../utils/browser.js'
 import { getCwd } from '../../utils/cwd.js'
@@ -160,6 +160,130 @@ export class GrokManager {
     }
   }
 
+  /**
+   * 本地文件系统扫描 — 替代 LLM scanner 步骤
+   * 从文件扩展名检测语言，从 package.json 检测框架，从常见模式检测入口点
+   */
+  private localScan(files: string[]): { languages: string[]; frameworks: string[]; entryPoints: string[] } {
+    // --- Language detection from file extensions ---
+    const EXT_TO_LANG: Record<string, string> = {
+      '.ts': 'TypeScript',
+      '.tsx': 'TypeScript',
+      '.js': 'JavaScript',
+      '.jsx': 'JavaScript',
+      '.py': 'Python',
+      '.go': 'Go',
+      '.rs': 'Rust',
+      '.java': 'Java',
+      '.cpp': 'C++',
+      '.c': 'C',
+      '.h': 'C/C++',
+      '.hpp': 'C++',
+      '.rb': 'Ruby',
+      '.php': 'PHP',
+      '.swift': 'Swift',
+      '.kt': 'Kotlin',
+      '.vue': 'Vue',
+      '.svelte': 'Svelte',
+    }
+
+    const langSet = new Set<string>()
+    for (const f of files) {
+      const ext = extname(f).toLowerCase()
+      const lang = EXT_TO_LANG[ext]
+      if (lang) langSet.add(lang)
+    }
+
+    // --- Framework detection from package.json ---
+    const frameworkSet = new Set<string>()
+    const PKG_DEP_TO_FRAMEWORK: Record<string, string> = {
+      react: 'React',
+      'react-dom': 'React',
+      'react-native': 'React Native',
+      vue: 'Vue',
+      '@angular/core': 'Angular',
+      svelte: 'Svelte',
+      next: 'Next.js',
+      nuxt: 'Nuxt',
+      express: 'Express',
+      fastify: 'Fastify',
+      koa: 'Koa',
+      nestjs: 'NestJS',
+      '@nestjs/core': 'NestJS',
+      hono: 'Hono',
+      drizzle: 'Drizzle ORM',
+      prisma: 'Prisma',
+      '@prisma/client': 'Prisma',
+      typeorm: 'TypeORM',
+      sequelize: 'Sequelize',
+      mongoose: 'Mongoose',
+      tailwindcss: 'Tailwind CSS',
+      vite: 'Vite',
+      webpack: 'Webpack',
+      esbuild: 'esbuild',
+      bun: 'Bun',
+    }
+
+    const pkgPath = join(this.projectRoot, 'package.json')
+    if (existsSync(pkgPath)) {
+      try {
+        const pkg = JSON.parse(readFileSync(pkgPath, 'utf-8'))
+        const allDeps: Record<string, string> = {
+          ...(pkg.dependencies || {}),
+          ...(pkg.devDependencies || {}),
+        }
+        for (const dep of Object.keys(allDeps)) {
+          const fw = PKG_DEP_TO_FRAMEWORK[dep]
+          if (fw) frameworkSet.add(fw)
+        }
+      } catch {
+        // Malformed package.json — skip framework detection
+      }
+    }
+
+    // --- Entry point detection from common patterns ---
+    const ENTRY_BASENAMES = new Set([
+      'index.ts', 'index.tsx', 'index.js', 'index.jsx',
+      'main.ts', 'main.tsx', 'main.js', 'main.jsx',
+      'main.py', '__main__.py',
+      'main.go',
+      'main.rs',
+      'Main.java',
+      'app.ts', 'app.tsx', 'app.js', 'app.jsx',
+      'server.ts', 'server.tsx', 'server.js', 'server.jsx',
+    ])
+
+    const ENTRY_PATTERNS = [
+      /^src[\\/]main\./,
+      /^src[\\/]index\./,
+      /^src[\\/]app\./,
+      /^cmd[\\/]/,
+      /^cmd[\\/].*[\\/]main\.go$/,
+    ]
+
+    const entryPoints: string[] = []
+    for (const f of files) {
+      const rel = f.slice(this.projectRoot.length).replace(/^[/\\]/, '')
+      const basename = rel.split(/[\\/]/).pop() || ''
+      if (ENTRY_BASENAMES.has(basename)) {
+        entryPoints.push(f)
+      } else {
+        for (const pattern of ENTRY_PATTERNS) {
+          if (pattern.test(rel)) {
+            entryPoints.push(f)
+            break
+          }
+        }
+      }
+    }
+
+    return {
+      languages: [...langSet],
+      frameworks: [...frameworkSet],
+      entryPoints,
+    }
+  }
+
   private async runPipelineInner(options: GrokGenerateOptions): Promise<GrokGenerateResult> {
     const errors: GrokError[] = []
     const reportProgress = options.onProgress || (() => {})
@@ -241,20 +365,18 @@ export class GrokManager {
       }
     }
 
-    // Step 2: Scanner Agent — 语言和框架检测（增量模式跳过，复用已有数据）
+    // Step 2: Local Scanner — 语言和框架检测（本地文件系统检测，无需 LLM）
+    reportProgress('scanner', 0)
     let scannerResult: Record<string, unknown> = {}
     if (isIncrementalRun && existingGraph?.metadata) {
       scannerResult = {
         languages: existingGraph.metadata.languages || [],
         frameworks: existingGraph.metadata.frameworks || [],
       }
-      reportProgress('scanner', 100)
     } else {
-      scannerResult = await this.analyzer.runPipelineStep('scanner',
-        `Analyze this project and detect languages, frameworks, and entry points.\n\nFiles:\n${files.slice(0, 50).map(f => `- ${f}`).join('\n')}`,
-        AGENT_SYSTEM_PROMPTS.scanner, reportProgress, errors
-      )
+      scannerResult = this.localScan(files)
     }
+    reportProgress('scanner', 100)
 
     // Step 3: File Analyzer Agent — 批量并行分析（增量模式只分析变更文件）
     reportProgress('analyzer', 0)
