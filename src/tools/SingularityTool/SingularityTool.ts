@@ -86,6 +86,7 @@ type Operation =
   | 'knowledge_extract' | 'knowledge_query' | 'knowledge_transfer'
   | 'predict_trend' | 'proactive_optimize'
   | 'harness_create_spec' | 'harness_review' | 'harness_package_evidence' | 'harness_validate_completion'
+  | 'agent_frontier'
 
 const ALL_OPERATIONS: Operation[] = [
   'score_init', 'score_add', 'score_get', 'score_avg', 'score_trend', 'score_maturity',
@@ -104,6 +105,7 @@ const ALL_OPERATIONS: Operation[] = [
   'knowledge_extract', 'knowledge_query', 'knowledge_transfer',
   'predict_trend', 'proactive_optimize',
   'harness_create_spec', 'harness_review', 'harness_package_evidence', 'harness_validate_completion',
+  'agent_frontier',
 ]
 
 // skill-required 操作集合
@@ -120,6 +122,7 @@ const SKILL_REQUIRED_OPS = new Set([
   'storage_split', 'storage_prune',
   'whitelist_check', 'whitelist_list',
   'harness_create_spec', 'harness_review', 'harness_package_evidence', 'harness_validate_completion',
+  'agent_frontier',
 ])
 
 // readOnly 操作集合（不修改文件系统数据）
@@ -141,6 +144,7 @@ const READ_ONLY_OPS = new Set([
   'whitelist_check', 'whitelist_list',
   'evals_check', 'evals_validate',
   'harness_validate_completion',
+  'agent_frontier',
 ])
 
 // ============================================
@@ -680,6 +684,11 @@ export const singularityToolDef: ToolDef = {
           const ls4 = new LearningSystem({ enablePersistence: true })
           ls4.loadFromDisk(input.skill)
           result = ls4.getExecutionHistory(input.skill, input.lastN ?? 50)
+          break
+        case 'agent_frontier':
+          const lsFrontier = new LearningSystem({ enablePersistence: true })
+          lsFrontier.loadFromDisk(input.skill)
+          result = lsFrontier.computeFrontierScores(input.skill, input.lastN ?? 50)
           break
 
         // ---- Audit ----
