@@ -21,6 +21,7 @@ import memoize from 'lodash-es/memoize.js'
 import { type Tool, type Tools, type ToolPermissionContext, toolMatchesName } from '../../Tool.js'
 import type { AgentDefinition } from '../../tools/AgentTool/loadAgentsDir.js'
 import { escapeRegExp } from '../../utils/stringUtils.js'
+import { containsCJK } from '../../utils/tokenizer.js'
 import { getCacheStrategy } from '../../utils/model/providers.js'
 import { getSessionId } from '../../bootstrap/state.js'
 
@@ -48,15 +49,50 @@ const ALWAYS_INCLUDE_TOOLS = [
 // -- Tokenization
 
 /**
- * Split a query into terms, handling CamelCase and underscores.
+ * Split a query into terms, handling CamelCase, underscores, and CJK.
+ *
+ * CJK handling (fixes B4):
+ * - ASCII segments: split on whitespace, handle CamelCase/underscores
+ * - CJK characters: each character becomes a term (for substring matching)
+ * - Mixed text: split into ASCII words and individual CJK chars
  */
 function extractTerms(text: string): string[] {
-  return text
+  const terms: string[] = []
+  // Split on whitespace first to get segments
+  const segments = text
     .replace(/([a-z])([A-Z])/g, '$1 $2') // CamelCase → spaces
     .replace(/_/g, ' ')
-    .toLowerCase()
     .split(/\s+/)
-    .filter(term => term.length > 1) // Skip single-char terms
+
+  for (const seg of segments) {
+    if (!seg) continue
+    const lower = seg.toLowerCase()
+    // Check if segment contains CJK
+    if (containsCJK(lower)) {
+      // Split into ASCII parts and CJK parts
+      let asciiPart = ''
+      for (const ch of lower) {
+        if (/[\u4e00-\u9fff\u3400-\u4dbf\uf900-\ufaff\u{20000}-\u{2a6df}\u3040-\u309f\u30a0-\u30ff\uac00-\ud7af]/u.test(ch)) {
+          if (asciiPart.length > 1) {
+            terms.push(asciiPart)
+          }
+          asciiPart = ''
+          terms.push(ch) // Individual CJK char as term
+        } else {
+          asciiPart += ch
+        }
+      }
+      if (asciiPart.length > 1) {
+        terms.push(asciiPart)
+      }
+    } else {
+      if (lower.length > 1) {
+        terms.push(lower)
+      }
+    }
+  }
+
+  return terms
 }
 
 // -- Tool description caching
@@ -245,9 +281,14 @@ export async function rankTools(
   }
 
   // Pre-compile regex patterns (once per query, not per-tool)
+  // CJK fix: \b doesn't match CJK boundaries, so CJK terms use plain match
   const termPatterns = new Map<string, RegExp>()
   for (const term of queryTerms) {
-    termPatterns.set(term, new RegExp(`\\b${escapeRegExp(term)}\\b`))
+    if (containsCJK(term)) {
+      termPatterns.set(term, new RegExp(escapeRegExp(term)))
+    } else {
+      termPatterns.set(term, new RegExp(`\\b${escapeRegExp(term)}\\b`))
+    }
   }
 
   // Prune memoized cache to prevent unbounded growth (inc-4120: OOM after ~3h)
@@ -338,9 +379,14 @@ export async function rankToolsTwoPhase(
   }
 
   // Pre-compile regex patterns
+  // CJK fix: \b doesn't match CJK boundaries, so CJK terms use plain match
   const termPatterns = new Map<string, RegExp>()
   for (const term of queryTerms) {
-    termPatterns.set(term, new RegExp(`\\b${escapeRegExp(term)}\\b`))
+    if (containsCJK(term)) {
+      termPatterns.set(term, new RegExp(escapeRegExp(term)))
+    } else {
+      termPatterns.set(term, new RegExp(`\\b${escapeRegExp(term)}\\b`))
+    }
   }
 
   // Prune memoized cache to prevent unbounded growth (inc-4120: OOM after ~3h)
