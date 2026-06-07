@@ -18,7 +18,7 @@ import { GraphStore } from '../../services/graph/GraphStore.js'
 import { GraphEngine } from '../../services/graph/GraphEngine.js'
 import { GraphContextService } from '../../services/graph/GraphContextService.js'
 import { GraphUsageTracker } from '../../services/graph/GraphUsageTracker.js'
-import { execFileSync } from 'child_process'
+
 import { sanitizeQuery, sanitizeSymbolName } from '../../services/graph/SecurityUtil.js'
 
 // ============================================================
@@ -358,31 +358,13 @@ export const grokTool = buildTool({
             meta: store.getNode(s.node),
           }))
 
-          // Git-based temporal coupling (same pattern as codegraph_temporal)
+          // Temporal coupling via unified GraphEngine
           let temporalPairs: Array<{ a: string; b: string; score: number; coChanges: number }> = []
-          let totalCommits = 0
           try {
-            const sinceArg = input.since || '30 days'
-            const gitLog = execFileSync('git', ['log', '--name-only', '--pretty=format:COMMIT:%H', `--since=${sinceArg}`], { cwd: projectRoot, encoding: 'utf-8', maxBuffer: 10 * 1024 * 1024 })
-            const commits = gitLog.split(/^COMMIT:/m).filter(Boolean)
-            totalCommits = commits.length
-            const coChangeMap = new Map<string, number>()
-            for (const commit of commits) {
-              const lines = commit.trim().split('\n').filter(l => l && !l.startsWith('COMMIT:'))
-              for (let i = 0; i < lines.length; i++) {
-                for (let j = i + 1; j < lines.length; j++) {
-                  const key = [lines[i], lines[j]].sort().join('↔')
-                  coChangeMap.set(key, (coChangeMap.get(key) ?? 0) + 1)
-                }
-              }
-            }
-            temporalPairs = [...coChangeMap.entries()]
-              .map(([key, count]) => {
-                const [a, b] = key.split('↔')
-                return { a, b, score: count, coChanges: count }
-              })
-              .sort((a, b) => b.coChanges - a.coChanges)
-              .slice(0, topN)
+            const temporal = engine.temporalCoupling(projectRoot, {
+              since: input.since || '30 days',
+            })
+            temporalPairs = temporal.pairs.slice(0, topN)
           } catch {
             // Git not available — skip temporal coupling
           }
@@ -403,7 +385,7 @@ export const grokTool = buildTool({
             `## Top Hotspots (by PageRank)`,
             hotspotSummary || '(none)',
             '',
-            `## Temporal Coupling (top co-changed pairs, last 30 days, ${totalCommits} commits)`,
+            `## Temporal Coupling (top co-changed pairs, last 30 days, ${temporalPairs.length} pairs)`,
             temporalSummary || '(none)',
             '',
             'Identify: which files are architectural hotspots that need refactoring, which file pairs have high coupling risk, and any recommended actions.',
@@ -422,7 +404,6 @@ export const grokTool = buildTool({
             totalScored: pr.scores.length,
             temporalCoupling: {
               pairs: temporalPairs,
-              totalCommits,
               window: { since: input.since ?? '30 days', until: 'now' },
             },
             llmSummary,
