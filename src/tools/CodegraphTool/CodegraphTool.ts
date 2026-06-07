@@ -21,6 +21,8 @@ import { FtsSearch } from '../../services/graph/FtsSearch.js';
 import { RrfSearch } from '../../services/graph/RrfSearch.js';
 import { UnresolvedRefManager } from '../../services/graph/UnresolvedRefManager.js';
 import { normalizeKind, isValidKind, VALID_KINDS, getKindAliases } from '../../services/graph/NodeKindNormalizer.js';
+import { GraphContextService } from '../../services/graph/GraphContextService.js'
+import { GraphUsageTracker } from '../../services/graph/GraphUsageTracker.js'
 import { execSync } from 'child_process';
 import { resolve } from 'path';
 
@@ -260,6 +262,9 @@ export const codegraphTool = buildTool({
         sendProgress('init', 'Auto-initializing CodeGraph…')
         await CodegraphManager.ensureReady(projectRoot, onStderrProgress);
       }
+
+      // PreToolUse: inject graph context
+      const graphContext = GraphContextService.getInstance(projectRoot).getPreToolContext('codegraph', input as Record<string, unknown>)
 
       let result: unknown;
 
@@ -787,6 +792,16 @@ export const codegraphTool = buildTool({
       // 所有操作完成时发送完成进度
       sendProgress('done')
 
+      // PostToolUse: record usage
+      GraphUsageTracker.getInstance(projectRoot).recordUsage({
+        toolName: 'codegraph',
+        operation: input.operation,
+        timestamp: Date.now(),
+        success: true,
+        duration: Date.now() - opStart,
+        query: (input.query || input.symbol) as string | undefined,
+      })
+
       // 查询操作追加新鲜度提示
       const isQueryOp = ['codegraph_context', 'codegraph_search', 'codegraph_callers',
         'codegraph_callees', 'codegraph_impact', 'codegraph_trace',
@@ -806,9 +821,18 @@ export const codegraphTool = buildTool({
         }
       }
 
-      return { data: { ok: true, operation: input.operation, result } };
+      return { data: { ok: true, operation: input.operation, result, _graphContext: graphContext } };
     } catch (e) {
       logForDebugging(`[codegraph] error: ${e}`);
+      // PostToolUse: record failed usage
+      GraphUsageTracker.getInstance(projectRoot).recordUsage({
+        toolName: 'codegraph',
+        operation: input.operation,
+        timestamp: Date.now(),
+        success: false,
+        duration: Date.now() - opStart,
+        query: (input.query || input.symbol) as string | undefined,
+      })
       return {
         data: {
           error: true,
