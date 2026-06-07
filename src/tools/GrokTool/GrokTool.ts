@@ -14,8 +14,6 @@ import { getCwd } from '../../utils/cwd.js'
 import { logForDebugging } from '../../utils/debug.js'
 import type { ProgressMessage, ToolProgressData } from '../../types/tools.js'
 import { grokManager, GrokError, ERROR_SUGGESTIONS } from './GrokManager.js'
-import { GraphStore } from '../../services/graph/GraphStore.js'
-import { GraphEngine } from '../../services/graph/GraphEngine.js'
 import { GraphContextService } from '../../services/graph/GraphContextService.js'
 import { GraphUsageTracker } from '../../services/graph/GraphUsageTracker.js'
 
@@ -277,137 +275,20 @@ export const grokTool = buildTool({
 
         case 'grok_architecture': {
           sendProgress('architecture')
-          const projectRoot = getCwd()
-          const store = GraphStore.getInstance(projectRoot)
-          await store.load()
-          const engine = new GraphEngine(store)
-
-          // Run Louvain community detection + role classification
-          const community = engine.louvainCommunity({ resolution: input.resolution ?? 1.0 })
-          const roles = engine.classifyRoles()
-          const limit = input.maxNodes ?? 20
-
-          // Build role distribution summary
-          const roleDistribution: Record<string, number> = {}
-          for (const [, role] of roles) {
-            roleDistribution[role] = (roleDistribution[role] ?? 0) + 1
-          }
-
-          // Build community summary for LLM
-          const communitySummary = community.communities
-            .sort((a, b) => b.size - a.size)
-            .slice(0, 10)
-            .map(c => `Community ${c.id}: ${c.size} nodes (sample: ${c.nodes.slice(0, 3).join(', ')})`)
-            .join('\n')
-
-          const llmPrompt = [
-            'Analyze this code architecture based on community detection and role classification:',
-            '',
-            `## Communities (${community.communities.length} total, modularity=${community.modularity})`,
-            communitySummary,
-            '',
-            `## Role Distribution`,
-            ...Object.entries(roleDistribution).map(([r, count]) => `- ${r}: ${count}`),
-            '',
-            'Provide a concise architectural summary: what are the main modules, how they relate, and any structural concerns.',
-          ].join('\n')
-
-          let llmSummary = ''
-          try {
-            const chatResult = await grokManager.queryGraph(llmPrompt)
-            llmSummary = chatResult.answer
-          } catch {
-            // LLM enrichment is optional — graph data is still returned
-            llmSummary = '(LLM enrichment unavailable)'
-          }
-
-          result = {
-            communities: community.communities
-              .sort((a, b) => b.size - a.size)
-              .slice(0, limit)
-              .map(c => ({
-                id: c.id,
-                size: c.size,
-                sample: c.nodes.slice(0, 5),
-              })),
-            modularity: community.modularity,
-            resolution: community.resolution,
-            totalCommunities: community.communities.length,
-            roles: {
-              distribution: roleDistribution,
-              totalNodes: roles.size,
-            },
-            llmSummary,
-          }
+          result = await grokManager.analyzeArchitecture({
+            resolution: input.resolution,
+            maxNodes: input.maxNodes,
+          })
           break
         }
 
         case 'grok_hotspots': {
           sendProgress('hotspots')
-          const projectRoot = getCwd()
-          const store = GraphStore.getInstance(projectRoot)
-          await store.load()
-          const engine = new GraphEngine(store)
-
-          // PageRank for hotspot detection
-          const pr = engine.pageRank(input.damping ?? 0.85)
-          const topN = input.maxNodes ?? 20
-          const hotspots = pr.scores.slice(0, topN).map(s => ({
-            node: s.node,
-            score: Math.round(s.score * 10000) / 10000,
-            meta: store.getNode(s.node),
-          }))
-
-          // Temporal coupling via unified GraphEngine
-          let temporalPairs: Array<{ a: string; b: string; score: number; coChanges: number }> = []
-          try {
-            const temporal = engine.temporalCoupling(projectRoot, {
-              since: input.since || '30 days',
-            })
-            temporalPairs = temporal.pairs.slice(0, topN)
-          } catch {
-            // Git not available — skip temporal coupling
-          }
-
-          // Build LLM prompt
-          const hotspotSummary = hotspots
-            .slice(0, 10)
-            .map(h => `- ${h.node} (score: ${h.score})`)
-            .join('\n')
-          const temporalSummary = temporalPairs
-            .slice(0, 10)
-            .map(p => `- ${p.a} <-> ${p.b} (${p.coChanges} co-changes)`)
-            .join('\n')
-
-          const llmPrompt = [
-            'Analyze code hotspots and temporal coupling patterns:',
-            '',
-            `## Top Hotspots (by PageRank)`,
-            hotspotSummary || '(none)',
-            '',
-            `## Temporal Coupling (top co-changed pairs, last 30 days, ${temporalPairs.length} pairs)`,
-            temporalSummary || '(none)',
-            '',
-            'Identify: which files are architectural hotspots that need refactoring, which file pairs have high coupling risk, and any recommended actions.',
-          ].join('\n')
-
-          let llmSummary = ''
-          try {
-            const chatResult = await grokManager.queryGraph(llmPrompt)
-            llmSummary = chatResult.answer
-          } catch {
-            llmSummary = '(LLM enrichment unavailable)'
-          }
-
-          result = {
-            hotspots,
-            totalScored: pr.scores.length,
-            temporalCoupling: {
-              pairs: temporalPairs,
-              window: { since: input.since ?? '30 days', until: 'now' },
-            },
-            llmSummary,
-          }
+          result = await grokManager.detectHotspots({
+            damping: input.damping,
+            since: input.since,
+            maxNodes: input.maxNodes,
+          })
           break
         }
 
