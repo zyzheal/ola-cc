@@ -310,15 +310,24 @@ export class LearningSystem {
   /**
    * Compute frontier scores for execution records.
    *
-   * Formula: priority*10 + age_hours*0.5 + unlockCount*5 + active*15
+   * P1 fix: logarithmic age (bounded), diminishing returns for unlocks.
    *
-   * Higher scores indicate higher-priority tasks for the agent frontier.
+   * Formula:
+   *   priority*10 + AGE_WEIGHT*ln(1+ageHours)/ln(1+AGE_HALF_LIFE_HOURS)
+   *   + UNLOCK_WEIGHT*(1-exp(-unlockCount/UNLOCK_DECAY)) + ACTIVE_BONUS
    *
    * @param skill - The skill/agent type
    * @param limit - Max records to score (default 50)
    * @returns Sorted array of FrontierScore (highest first)
    */
   computeFrontierScores(skill: string, limit = 50): FrontierScore[] {
+    // Frontier scoring constants
+    const AGE_WEIGHT = 20           // max age bonus at half-life
+    const AGE_HALF_LIFE_HOURS = 169 // 7 days — ln(1+169)/ln(1+169) = 1.0
+    const UNLOCK_WEIGHT = 15        // max unlock bonus (asymptote)
+    const UNLOCK_DECAY = 3          // diminishing returns half-point
+    const ACTIVE_BONUS = 20         // flat bonus for active tasks
+
     const records = this.executionHistory
       .filter(r => r.skill === skill)
       .slice(-limit)
@@ -335,9 +344,11 @@ export class LearningSystem {
       const ageHours = ageMs / (1000 * 60 * 60)
 
       const priorityComponent = priority * 10
-      const ageComponent = ageHours * 0.5
-      const unlockComponent = unlockCount * 5
-      const activeComponent = active ? 15 : 0
+      // P1: logarithmic age — bounded, ~20 at 7 days
+      const ageComponent = AGE_WEIGHT * Math.log(1 + ageHours) / Math.log(1 + AGE_HALF_LIFE_HOURS)
+      // P1: diminishing returns — saturates at UNLOCK_WEIGHT
+      const unlockComponent = UNLOCK_WEIGHT * (1 - Math.exp(-unlockCount / UNLOCK_DECAY))
+      const activeComponent = active ? ACTIVE_BONUS : 0
 
       const frontierScore = priorityComponent + ageComponent + unlockComponent + activeComponent
 
