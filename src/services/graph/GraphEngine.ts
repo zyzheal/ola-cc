@@ -987,115 +987,91 @@ export class GraphEngine {
   }
 
   /**
-   * Louvain 社区检测
-   * 收敛条件: 内层 — 本轮无节点移动 或 delta Q < epsilon
-   *          外层 — modularity 增益 < epsilon 或 达到 maxLevels
+   * Louvain 社区检测 — 多级聚合 (Phase 1 + Phase 2)
+   *
+   * 外层循环:
+   *   1. Phase 1: 内层迭代，将节点移至最佳社区
+   *   2. 计算 modularity 增益，若 < epsilon 则停止
+   *   3. Phase 2: 将社区聚合为超节点，构建粗化图
+   *   4. 在粗化图上重复，直到收敛或达到 maxLevels
    */
   louvainCommunity(opts?: LouvainOpts): CommunityResult {
     const resolution = opts?.resolution ?? 1.0
     const epsilon = opts?.epsilon ?? 1e-6
     const maxPasses = opts?.maxPasses ?? 100
+    const maxLevels = opts?.maxLevels ?? 10
 
     const nodes = this.getAllNodeIds()
     const N = nodes.length
     if (N === 0) return { communities: [], modularity: 0, resolution }
 
-    // 初始化：每个节点一个社区
-    const community = new Map<string, number>()
-    nodes.forEach((node, i) => community.set(node, i))
+    // Build initial undirected graph
+    const { totalWeight, degree, adjMap } = this.buildUndirectedGraph()
 
-    // 计算总边数 (2m) — 构建无向镜像: w(u,v) = max(w(u→v), w(v→u))
-    const undirectedWeight = new Map<string, Map<string, number>>()
-    for (const [from, outMap] of this.store.adjacency) {
-      if (!undirectedWeight.has(from)) undirectedWeight.set(from, new Map())
-      for (const [to, edges] of outMap) {
-        let w = 0
-        for (const edge of edges) w += edge.weight
-        if (w > 0) {
-          undirectedWeight.get(from)!.set(to, w)
-          if (!undirectedWeight.has(to)) undirectedWeight.set(to, new Map())
-          const reverseW = undirectedWeight.get(to)!.get(from) ?? 0
-          const combined = Math.max(w, reverseW)
-          undirectedWeight.get(from)!.set(to, combined)
-          undirectedWeight.get(to)!.set(from, combined)
-        }
-      }
-    }
-    let totalWeight = 0
-    const degree = new Map<string, number>()
+    // Track mapping from current nodes back to original nodes
+    let nodeMapping = new Map<string, string[]>()
     for (const node of nodes) {
-      let deg = 0
-      const neighbors = undirectedWeight.get(node)
-      if (neighbors) {
-        for (const w of neighbors.values()) deg += w
-      }
-      degree.set(node, deg)
-      totalWeight += deg
-    }
-    if (totalWeight === 0) totalWeight = 1
-    // totalWeight 已是 Σdeg(undirected)，即 2m
-
-    // 社区内度数和
-    const communityDegreeSum = new Map<number, number>()
-    for (const node of nodes) {
-      const c = community.get(node)!
-      communityDegreeSum.set(c, (communityDegreeSum.get(c) ?? 0) + (degree.get(node) ?? 0))
+      nodeMapping.set(node, [node])
     }
 
-    // 内层迭代
-    for (let pass = 0; pass < maxPasses; pass++) {
-      let moved = false
+    // Initialize: each node its own community
+    let currentNodes = [...nodes]
+    let currentAdjMap = adjMap
+    let currentDegree = degree
+    let currentCommunity = new Map<string, number>()
+    currentNodes.forEach((node, i) => currentCommunity.set(node, i))
 
-      for (const node of nodes) {
-        const currentCommunity = community.get(node)!
-        const nodeDeg = degree.get(node) ?? 0
+    let level = 0
+    while (level < maxLevels) {
+      // Compute modularity before Phase 1
+      const prevQ = this.computeModularity(currentNodes, currentCommunity, currentAdjMap, totalWeight, resolution)
 
-        // 计算邻居社区（使用无向镜像权重，与 degree 定义一致）
-        const neighborCommunities = new Map<number, number>()
-        const neighbors = undirectedWeight.get(node)
-        if (neighbors) {
-          for (const [neighbor, w] of neighbors) {
-            const nc = community.get(neighbor)
-            if (nc !== undefined) {
-              neighborCommunities.set(nc, (neighborCommunities.get(nc) ?? 0) + w)
-            }
-          }
-        }
-
-        // 找最佳社区
-        let bestCommunity = currentCommunity
-        let bestGain = 0
-
-        for (const [candidateComm, edgeWeightToComm] of neighborCommunities) {
-          if (candidateComm === currentCommunity) continue
-
-          // Modularity gain: ΔQ = resolution * (k_i_in/2m - k_i * Σ_tot / (2m)^2)
-          // degree = undirected degree, totalWeight = 2m
-          const sigmaIn = edgeWeightToComm
-          const sigmaTot = communityDegreeSum.get(candidateComm) ?? 0
-          const gain = resolution * ((sigmaIn / totalWeight) - (nodeDeg * sigmaTot) / (totalWeight * totalWeight))
-
-          if (gain > bestGain) {
-            bestGain = gain
-            bestCommunity = candidateComm
-          }
-        }
-
-        if (bestCommunity !== currentCommunity) {
-          // 移动节点
-          community.set(node, bestCommunity)
-          communityDegreeSum.set(currentCommunity, (communityDegreeSum.get(currentCommunity) ?? 0) - nodeDeg)
-          communityDegreeSum.set(bestCommunity, (communityDegreeSum.get(bestCommunity) ?? 0) + nodeDeg)
-          moved = true
-        }
-      }
+      // Phase 1: Inner iteration — move nodes to best community
+      const { moved } = this.louvainInnerIteration(
+        currentNodes, currentCommunity, totalWeight, currentDegree, currentAdjMap, resolution, maxPasses,
+      )
 
       if (!moved) break
+
+      // Compute modularity after Phase 1
+      const newQ = this.computeModularity(currentNodes, currentCommunity, currentAdjMap, totalWeight, resolution)
+      if (newQ - prevQ < epsilon) break
+
+      level++
+
+      // Phase 2: Aggregation — build coarse graph
+      const { coarseNodes, coarseAdjMap, coarseDegree, coarseMapping } =
+        this.louvainAggregate(currentNodes, currentCommunity, currentAdjMap)
+
+      // Update nodeMapping: coarse node → original nodes
+      const updatedMapping = new Map<string, string[]>()
+      for (const [coarseNode, intermediateNodes] of coarseMapping) {
+        const originals: string[] = []
+        for (const inter of intermediateNodes) {
+          originals.push(...(nodeMapping.get(inter) ?? [inter]))
+        }
+        updatedMapping.set(coarseNode, originals)
+      }
+      nodeMapping = updatedMapping
+
+      currentNodes = coarseNodes
+      currentAdjMap = coarseAdjMap
+      currentDegree = coarseDegree
+      currentCommunity = new Map<string, number>()
+      coarseNodes.forEach((node, i) => currentCommunity.set(node, i))
     }
 
-    // 组装结果
+    // Map back to original node IDs
+    const finalCommunity = new Map<string, number>()
+    for (const [node, c] of currentCommunity) {
+      for (const orig of nodeMapping.get(node) ?? [node]) {
+        finalCommunity.set(orig, c)
+      }
+    }
+
+    // Assemble result
     const commNodes = new Map<number, string[]>()
-    for (const [node, c] of community) {
+    for (const [node, c] of finalCommunity) {
       if (!commNodes.has(c)) commNodes.set(c, [])
       commNodes.get(c)!.push(node)
     }
@@ -1106,25 +1082,8 @@ export class GraphEngine {
       size: nodes.length,
     }))
 
-    // 计算最终 modularity Q
-    let Q = 0
-    for (const comm of communities) {
-      let internalWeight = 0
-      let commDegree = 0
-      for (const node of comm.nodes) {
-        commDegree += degree.get(node) ?? 0
-        const neighbors = undirectedWeight.get(node)
-        if (neighbors) {
-          for (const [target, w] of neighbors) {
-            if (community.get(target) === comm.id) {
-              internalWeight += w
-            }
-          }
-        }
-      }
-      // degree = undirected degree, totalWeight = 2m
-      Q += (internalWeight / totalWeight) - resolution * Math.pow(commDegree / totalWeight, 2)
-    }
+    // Compute final modularity on original graph
+    const Q = this.computeModularity(nodes, finalCommunity, adjMap, totalWeight, resolution)
 
     return { communities, modularity: Math.round(Q * 1000) / 1000, resolution }
   }
@@ -1173,6 +1132,222 @@ export class GraphEngine {
       pairs,
       window: { since: sinceValue, until: 'now' },
     }
+  }
+
+  // ── Louvain helpers ──
+
+  /**
+   * Build undirected graph from store adjacency.
+   * Undirected weight: w(u,v) = max(w(u→v), w(v→u))
+   */
+  private buildUndirectedGraph(): {
+    totalWeight: number
+    degree: Map<string, number>
+    adjMap: Map<string, Map<string, number>>
+  } {
+    const nodes = this.getAllNodeIds()
+    const adjMap = new Map<string, Map<string, number>>()
+
+    for (const [from, outMap] of this.store.adjacency) {
+      if (!adjMap.has(from)) adjMap.set(from, new Map())
+      for (const [to, edges] of outMap) {
+        let w = 0
+        for (const edge of edges) w += edge.weight
+        if (w > 0) {
+          adjMap.get(from)!.set(to, w)
+          if (!adjMap.has(to)) adjMap.set(to, new Map())
+          const reverseW = adjMap.get(to)!.get(from) ?? 0
+          const combined = Math.max(w, reverseW)
+          adjMap.get(from)!.set(to, combined)
+          adjMap.get(to)!.set(from, combined)
+        }
+      }
+    }
+
+    let totalWeight = 0
+    const degree = new Map<string, number>()
+    for (const node of nodes) {
+      let deg = 0
+      const neighbors = adjMap.get(node)
+      if (neighbors) {
+        for (const w of neighbors.values()) deg += w
+      }
+      degree.set(node, deg)
+      totalWeight += deg
+    }
+    if (totalWeight === 0) totalWeight = 1
+
+    return { totalWeight, degree, adjMap }
+  }
+
+  /**
+   * Phase 1: Inner iteration — move nodes to community with best modularity gain.
+   * Returns whether any node moved during the iteration.
+   */
+  private louvainInnerIteration(
+    nodes: string[],
+    community: Map<string, number>,
+    totalWeight: number,
+    degree: Map<string, number>,
+    adjMap: Map<string, Map<string, number>>,
+    resolution: number,
+    maxPasses: number,
+  ): { moved: boolean } {
+    const communityDegreeSum = new Map<number, number>()
+    for (const node of nodes) {
+      const c = community.get(node)!
+      communityDegreeSum.set(c, (communityDegreeSum.get(c) ?? 0) + (degree.get(node) ?? 0))
+    }
+
+    let anyMoved = false
+
+    for (let pass = 0; pass < maxPasses; pass++) {
+      let moved = false
+
+      for (const node of nodes) {
+        const currentCommunity = community.get(node)!
+        const nodeDeg = degree.get(node) ?? 0
+
+        const neighborCommunities = new Map<number, number>()
+        const neighbors = adjMap.get(node)
+        if (neighbors) {
+          for (const [neighbor, w] of neighbors) {
+            const nc = community.get(neighbor)
+            if (nc !== undefined) {
+              neighborCommunities.set(nc, (neighborCommunities.get(nc) ?? 0) + w)
+            }
+          }
+        }
+
+        let bestCommunity = currentCommunity
+        let bestGain = 0
+
+        for (const [candidateComm, edgeWeightToComm] of neighborCommunities) {
+          if (candidateComm === currentCommunity) continue
+
+          const sigmaIn = edgeWeightToComm
+          const sigmaTot = communityDegreeSum.get(candidateComm) ?? 0
+          const gain = resolution * ((sigmaIn / totalWeight) - (nodeDeg * sigmaTot) / (totalWeight * totalWeight))
+
+          if (gain > bestGain) {
+            bestGain = gain
+            bestCommunity = candidateComm
+          }
+        }
+
+        if (bestCommunity !== currentCommunity) {
+          community.set(node, bestCommunity)
+          communityDegreeSum.set(currentCommunity, (communityDegreeSum.get(currentCommunity) ?? 0) - nodeDeg)
+          communityDegreeSum.set(bestCommunity, (communityDegreeSum.get(bestCommunity) ?? 0) + nodeDeg)
+          moved = true
+          anyMoved = true
+        }
+      }
+
+      if (!moved) break
+    }
+
+    return { moved: anyMoved }
+  }
+
+  /**
+   * Phase 2: Aggregation — build coarse graph from community structure.
+   * Each community becomes a super-node. Inter-community edges are summed.
+   */
+  private louvainAggregate(
+    nodes: string[],
+    community: Map<string, number>,
+    adjMap: Map<string, Map<string, number>>,
+  ): {
+    coarseNodes: string[]
+    coarseAdjMap: Map<string, Map<string, number>>
+    coarseDegree: Map<string, number>
+    coarseMapping: Map<string, string[]>
+  } {
+    const commToNodes = new Map<number, string[]>()
+    for (const node of nodes) {
+      const c = community.get(node)!
+      if (!commToNodes.has(c)) commToNodes.set(c, [])
+      commToNodes.get(c)!.push(node)
+    }
+
+    const coarseNodes: string[] = []
+    const coarseMapping = new Map<string, string[]>()
+    const commToCoarseId = new Map<number, string>()
+    for (const [c, members] of commToNodes) {
+      const coarseId = `C${c}`
+      coarseNodes.push(coarseId)
+      coarseMapping.set(coarseId, members)
+      commToCoarseId.set(c, coarseId)
+    }
+
+    const coarseAdjMap = new Map<string, Map<string, number>>()
+    const coarseDegree = new Map<string, number>()
+
+    for (const coarseId of coarseNodes) {
+      coarseAdjMap.set(coarseId, new Map())
+      coarseDegree.set(coarseId, 0)
+    }
+
+    for (const node of nodes) {
+      const nodeComm = community.get(node)!
+      const nodeCoarseId = commToCoarseId.get(nodeComm)!
+      const neighbors = adjMap.get(node)
+      if (!neighbors) continue
+
+      for (const [neighbor, w] of neighbors) {
+        const neighborComm = community.get(neighbor)!
+        const neighborCoarseId = commToCoarseId.get(neighborComm)!
+
+        const coarseNeighbors = coarseAdjMap.get(nodeCoarseId)!
+        coarseNeighbors.set(neighborCoarseId, (coarseNeighbors.get(neighborCoarseId) ?? 0) + w)
+      }
+
+      let deg = 0
+      for (const w of neighbors.values()) deg += w
+      coarseDegree.set(nodeCoarseId, (coarseDegree.get(nodeCoarseId) ?? 0) + deg)
+    }
+
+    return { coarseNodes, coarseAdjMap, coarseDegree, coarseMapping }
+  }
+
+  /**
+   * Compute modularity Q for a given partition.
+   * Q = Σ_c [ (Σ_in / 2m) - resolution * (k_c / 2m)^2 ]
+   */
+  private computeModularity(
+    nodes: string[],
+    community: Map<string, number>,
+    adjMap: Map<string, Map<string, number>>,
+    totalWeight: number,
+    resolution: number,
+  ): number {
+    const commNodes = new Map<number, string[]>()
+    for (const node of nodes) {
+      const c = community.get(node)!
+      if (!commNodes.has(c)) commNodes.set(c, [])
+      commNodes.get(c)!.push(node)
+    }
+
+    let Q = 0
+    for (const [, members] of commNodes) {
+      let internalWeight = 0
+      let commDegree = 0
+      for (const node of members) {
+        const neighbors = adjMap.get(node)
+        if (neighbors) {
+          for (const [target, w] of neighbors) {
+            commDegree += w
+            if (community.get(target) === community.get(node)) {
+              internalWeight += w
+            }
+          }
+        }
+      }
+      Q += (internalWeight / totalWeight) - resolution * Math.pow(commDegree / totalWeight, 2)
+    }
+
+    return Q
   }
 
   // ── Helpers ──

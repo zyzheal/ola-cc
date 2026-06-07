@@ -921,6 +921,132 @@ describe('betweennessCentrality', () => {
 // 15. Bug fixes (TDD RED phase)
 // ============================================================
 
+// ============================================================
+// 12b. Louvain Multi-level Aggregation (Phase 2)
+// ============================================================
+
+describe('louvainCommunity — multi-level aggregation', () => {
+  test('two cliques with bridge: detects 2 communities', () => {
+    const store = createStoreFromAdjacency({
+      // Clique 1: A, B, C, D
+      A: ['B', 'C', 'D'],
+      B: ['A', 'C', 'D'],
+      C: ['A', 'B', 'D'],
+      D: ['A', 'B', 'C', 'E'],  // bridge to clique 2
+      // Clique 2: E, F, G, H
+      E: ['D', 'F', 'G', 'H'],  // bridge from clique 1
+      F: ['E', 'G', 'H'],
+      G: ['E', 'F', 'H'],
+      H: ['E', 'F', 'G'],
+    }, 'louvain-multilevel-test')
+    const engine = new GraphEngine(store)
+    const result = engine.louvainCommunity()
+
+    // Should find 2 communities
+    expect(result.communities).toHaveLength(2)
+    // All nodes assigned
+    const totalSize = result.communities.reduce((sum, c) => sum + c.size, 0)
+    expect(totalSize).toBe(8)
+    // Modularity should be high (clear community structure)
+    expect(result.modularity).toBeGreaterThan(0.3)
+  })
+
+  test('multi-level modularity >= single-level modularity', () => {
+    const store = createStoreFromAdjacency({
+      A: ['B', 'C', 'D'],
+      B: ['A', 'C', 'D'],
+      C: ['A', 'B', 'D'],
+      D: ['A', 'B', 'C', 'E'],
+      E: ['D', 'F', 'G', 'H'],
+      F: ['E', 'G', 'H'],
+      G: ['E', 'F', 'H'],
+      H: ['E', 'F', 'G'],
+    }, 'louvain-multilevel-compare')
+    const engine = new GraphEngine(store)
+
+    const singleLevel = engine.louvainCommunity({ maxLevels: 1 })
+    const multiLevel = engine.louvainCommunity()
+
+    expect(multiLevel.modularity).toBeGreaterThanOrEqual(singleLevel.modularity)
+  })
+
+  test('maxLevels=1 produces valid result (backward compat)', () => {
+    const { engine } = bipartite()
+    const result = engine.louvainCommunity({ maxLevels: 1 })
+
+    expect(result.communities.length).toBeGreaterThan(0)
+    const totalSize = result.communities.reduce((sum, c) => sum + c.size, 0)
+    expect(totalSize).toBe(engine.getAllNodeIds().length)
+    expect(Number.isFinite(result.modularity)).toBe(true)
+  })
+
+  test('hierarchical structure: 4 clusters with bridges', () => {
+    // 4 clusters: {A,B,C}, {D,E,F}, {G,H,I}, {J,K,L}
+    // Within each cluster: dense edges
+    // Bridges connect clusters pairwise
+    const store = createStoreFromAdjacency({
+      // Cluster 1
+      A: ['B', 'C'],
+      B: ['A', 'C', 'D'],  // bridge to cluster 2
+      C: ['A', 'B'],
+      // Cluster 2
+      D: ['B', 'E', 'F'],  // bridge from cluster 1
+      E: ['D', 'F'],
+      F: ['D', 'E', 'G'],  // bridge to cluster 3
+      // Cluster 3
+      G: ['F', 'H', 'I'],  // bridge from cluster 2
+      H: ['G', 'I'],
+      I: ['G', 'H', 'J'],  // bridge to cluster 4
+      // Cluster 4
+      J: ['I', 'K', 'L'],  // bridge from cluster 3
+      K: ['J', 'L'],
+      L: ['J', 'K'],
+    }, 'louvain-hierarchical-test')
+    const engine = new GraphEngine(store)
+    const result = engine.louvainCommunity()
+
+    // Should find multiple communities
+    expect(result.communities.length).toBeGreaterThanOrEqual(2)
+    // All nodes assigned
+    const totalSize = result.communities.reduce((sum, c) => sum + c.size, 0)
+    expect(totalSize).toBe(12)
+    // Modularity should be positive
+    expect(result.modularity).toBeGreaterThan(0)
+  })
+
+  test('single node: trivial community', () => {
+    const store = createStoreFromAdjacency({ A: [] }, 'louvain-single-node')
+    const engine = new GraphEngine(store)
+    const result = engine.louvainCommunity()
+
+    expect(result.communities).toHaveLength(1)
+    expect(result.communities[0].nodes).toEqual(['A'])
+    expect(result.modularity).toBe(0)
+  })
+
+  test('resolution parameter works with multi-level', () => {
+    const store = createStoreFromAdjacency({
+      A: ['B', 'C', 'D'],
+      B: ['A', 'C', 'D'],
+      C: ['A', 'B', 'D'],
+      D: ['A', 'B', 'C', 'E'],
+      E: ['D', 'F', 'G', 'H'],
+      F: ['E', 'G', 'H'],
+      G: ['E', 'F', 'H'],
+      H: ['E', 'F', 'G'],
+    }, 'louvain-multilevel-resolution')
+    const engine = new GraphEngine(store)
+
+    const lowRes = engine.louvainCommunity({ resolution: 0.1 })
+    const highRes = engine.louvainCommunity({ resolution: 2.0 })
+
+    expect(lowRes.resolution).toBe(0.1)
+    expect(highRes.resolution).toBe(2.0)
+    expect(lowRes.communities.length).toBeGreaterThan(0)
+    expect(highRes.communities.length).toBeGreaterThan(0)
+  })
+})
+
 describe('bug: louvain normalization', () => {
   test('modularity Q must be in [-0.5, 1.0] for simple graphs', () => {
     // With the missing 1/(2m) normalization, Q can exceed 1.0
