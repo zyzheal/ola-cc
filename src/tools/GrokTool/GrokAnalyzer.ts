@@ -100,6 +100,7 @@ export class GrokAnalyzer {
   private modelFast: string = 'claude-sonnet-4-20250514'
   private graphStore: GraphStore | null
   private fileToNodesCache: Map<string, Set<string>> | null = null
+  private fileToNodesCacheLoadedAt = 0
 
   constructor(projectRoot: string, vendorDir?: string, graphStore?: GraphStore) {
     this.projectRoot = projectRoot
@@ -414,15 +415,21 @@ export class GrokAnalyzer {
    * 构建 file→nodeIds 索引，避免 O(N*M) 全量扫描
    */
   private buildFileToNodesIndex(): Map<string, Set<string>> {
+    const store = this.graphStore
+    // Invalidate cache if store reloaded
+    if (this.fileToNodesCache && store && store.loadedAt !== this.fileToNodesCacheLoadedAt) {
+      this.fileToNodesCache = null
+    }
     if (this.fileToNodesCache) return this.fileToNodesCache
     const index = new Map<string, Set<string>>()
-    if (!this.graphStore) return index
-    for (const [nodeId, meta] of this.graphStore.nodeMeta) {
+    if (!store) return index
+    for (const [nodeId, meta] of store.nodeMeta) {
       const file = meta.file
       if (!index.has(file)) index.set(file, new Set())
       index.get(file)!.add(nodeId)
     }
     this.fileToNodesCache = index
+    this.fileToNodesCacheLoadedAt = store.loadedAt
     return index
   }
 
