@@ -23,8 +23,9 @@ import { UnresolvedRefManager } from '../../services/graph/UnresolvedRefManager.
 import { normalizeKind, isValidKind, VALID_KINDS, getKindAliases } from '../../services/graph/NodeKindNormalizer.js';
 import { GraphContextService } from '../../services/graph/GraphContextService.js'
 import { GraphUsageTracker } from '../../services/graph/GraphUsageTracker.js'
-import { execSync } from 'child_process';
+import { execFileSync } from 'child_process';
 import { resolve } from 'path';
+import { sanitizeQuery, sanitizeSymbolName } from '../../services/graph/SecurityUtil.js';
 
 // ============================================================
 // Schema
@@ -265,6 +266,10 @@ export const codegraphTool = buildTool({
 
       // PreToolUse: inject graph context
       const graphContext = GraphContextService.getInstance(projectRoot).getPreToolContext('codegraph', input as Record<string, unknown>)
+
+      // Sanitize inputs to prevent prompt injection
+      if (input.query) input.query = sanitizeQuery(input.query)
+      if (input.symbol) input.symbol = sanitizeSymbolName(input.symbol)
 
       let result: unknown;
 
@@ -671,13 +676,10 @@ export const codegraphTool = buildTool({
 
         case 'codegraph_temporal': {
           sendProgress('temporal', 'Analyzing temporal coupling via git log…')
-          const sinceArg = input.since ? `--since="${input.since}"` : '--since="30 days"';
+          const sinceArg = input.since || '30 days';
           try {
             // Get git log with file lists
-            const gitLog = execSync(
-              `git log --name-only --pretty=format:"COMMIT:%H" ${sinceArg}`,
-              { cwd: projectRoot, encoding: 'utf-8', timeout: 30000 }
-            );
+            const gitLog = execFileSync('git', ['log', '--name-only', '--pretty=format:COMMIT:%H', `--since=${sinceArg}`], { cwd: projectRoot, encoding: 'utf-8', maxBuffer: 10 * 1024 * 1024 });
             // Parse commits and their changed files
             const commits = gitLog.split(/^COMMIT:/m).filter(Boolean);
             const coChangeMap = new Map<string, number>();

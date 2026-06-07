@@ -12,6 +12,14 @@ import { computeFileFingerprint } from './GrokAssembler.js'
 import type { GraphStore, NodeMetadata } from '../../services/graph/GraphStore.js'
 
 // ============================================================
+// Prompt sanitization
+// ============================================================
+
+function sanitizeForPrompt(text: string): string {
+  return text.replace(/[\x00-\x1f\x7f]/g, '').slice(0, 500)
+}
+
+// ============================================================
 // Constants + Agent system prompts
 // ============================================================
 
@@ -472,11 +480,11 @@ export class GrokAnalyzer {
       }
 
       const nodeSummary = meta.nodes.map(n =>
-        `  - ${n.kind}: ${n.name}${n.signature ? ` (${n.signature})` : ''} [L${n.line}]${n.is_exported ? ' [exported]' : ''}${n.is_async ? ' [async]' : ''}`
+        `  - ${n.kind}: ${sanitizeForPrompt(n.name)}${n.signature ? ` (${sanitizeForPrompt(n.signature)})` : ''} [L${n.line}]${n.is_exported ? ' [exported]' : ''}${n.is_async ? ' [async]' : ''}`
       ).join('\n')
 
       const edgeSummary = meta.edges.slice(0, 50).map(e =>
-        `  - ${e.from} → ${e.to} (${e.type})`
+        `  - ${sanitizeForPrompt(e.from)} → ${sanitizeForPrompt(e.to)} (${e.type})`
       ).join('\n')
 
       return `### ${this.sanitizeFilePath(f)}

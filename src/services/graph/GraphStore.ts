@@ -23,6 +23,7 @@ import { createDefaultRegistry } from './parsers/index.js'
 import { LRUCache } from './LRUCache.js'
 import { QueryCache } from './QueryCache.js'
 import { parseReExports } from './resolution/reExportParser.js'
+import { CodegraphDbAdapter, GrokJsonAdapter, type DataSourceAdapter } from './DataSourceAdapter.js'
 
 // ============================================================
 // Types (aligned with design doc §2.3)
@@ -175,6 +176,9 @@ const DESIRED_NODE_COLUMNS = [
  * the intersection with DESIRED_NODE_COLUMNS.
  */
 function getExistingColumns(db: Database, table: string): string[] {
+  if (!/^[a-zA-Z_][a-zA-Z0-9_]*$/.test(table)) {
+    throw new Error(`Invalid table name: ${table}`)
+  }
   const rows = db.query(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>
   const existing = new Set(rows.map(r => r.name))
   return DESIRED_NODE_COLUMNS.filter(col => existing.has(col))
@@ -191,6 +195,10 @@ export class GraphStore {
   public readonly reverse = new Map<string, Map<string, EdgeMeta[]>>()
   public readonly nodeMeta = new Map<string, NodeMetadata>()
   public readonly fileRecords = new Map<string, FileRecord>()  // F-54
+  /** name/qualified_name → nodeId(s) 索引（doLoad 后自动构建，冲突时存储数组） */
+  private readonly nameIndex = new Map<string, string | string[]>()
+  /** 存在同名冲突的短名称集合（findByName 对这些名称返回 undefined） */
+  private readonly ambiguousNames = new Set<string>()
 
   /** F-57: LRU 缓存用于高频节点访问 */
   private nodeCache = new LRUCache<string, NodeMetadata>(1000)
@@ -244,19 +252,21 @@ export class GraphStore {
 
   /**
    * Actual loading logic (called once, shared via loadingPromise).
+   * Uses DataSourceAdapter for availability checking (F-95).
    */
   private async doLoad(): Promise<GraphData> {
-    const codegraphDbPath = resolve(this.projectRoot, '.codegraph', 'codegraph.db')
-    const grokJsonPath = resolve(this.projectRoot, '.understand-anything', 'knowledge-graph.json')
+    // F-95: Use adapters for availability checking
+    const codegraphAdapter = new CodegraphDbAdapter(this.projectRoot)
+    const grokAdapter = new GrokJsonAdapter(this.projectRoot)
 
-    const hasCodegraph = existsSync(codegraphDbPath)
-    const hasGrok = existsSync(grokJsonPath)
+    const hasCodegraph = codegraphAdapter.isAvailable()
+    const hasGrok = grokAdapter.isAvailable()
 
     if (!hasCodegraph && !hasGrok) {
       throw new GraphStoreError(
         'NO_DATA_SOURCE',
-        '两个数据源都不存在。请先执行 codegraph_init 或 grok_generate。',
-        'codegraph_init / grok_generate',
+        '两个数据源都不存在。CodegraphTool/GrokTool 会自动初始化，或使用 Grep/Glob 工具进行文本搜索。',
+        'codegraph_init / grok_generate / Grep / Glob',
       )
     }
 
@@ -264,10 +274,12 @@ export class GraphStore {
     let fileKeyToId: Map<string, string> | null = null
 
     if (hasCodegraph) {
+      const codegraphDbPath = resolve(this.projectRoot, '.codegraph', 'codegraph.db')
       fileKeyToId = await this.loadCodegraph(codegraphDbPath)
     }
 
     if (hasGrok) {
+      const grokJsonPath = resolve(this.projectRoot, '.understand-anything', 'knowledge-graph.json')
       this.loadGrok(grokJsonPath, fileKeyToId)
     }
 
@@ -276,6 +288,9 @@ export class GraphStore {
 
     // Re-export chain tracking: derive 'exports' edges from imports + export metadata
     this.extractReExports()
+
+    // Build name/qualified_name → nodeId index
+    this.buildNameIndex()
 
     this.loaded = true
     this.needsReloadFlag = false
@@ -359,6 +374,8 @@ export class GraphStore {
     this.nodeMeta.clear()
     this.fileRecords.clear()
     this.nodeCache.clear()
+    this.nameIndex.clear()
+    this.ambiguousNames.clear()
   }
 
   // ----------------------------------------------------------
@@ -865,6 +882,57 @@ export class GraphStore {
       }
     }
     return result
+  }
+
+  /**
+   * 按 name 或 qualified_name 查找节点 ID（O(1) 索引查找）
+   * 短名称存在同名冲突时返回 undefined（需用 qualified_name 精确查找）
+   */
+  findByName(name: string): string | undefined {
+    if (this.ambiguousNames.has(name)) return undefined
+    const entry = this.nameIndex.get(name)
+    if (Array.isArray(entry)) return entry[0]
+    return entry
+  }
+
+  /**
+   * 按名称查找所有匹配的节点 ID（含歧义情况，O(1) 索引查找）
+   */
+  findAllByName(name: string): string[] {
+    const entry = this.nameIndex.get(name)
+    if (!entry) return []
+    if (Array.isArray(entry)) return entry
+    return [entry]
+  }
+
+  /**
+   * 构建 name/qualified_name → nodeId(s) 索引，检测同名冲突
+   */
+  private buildNameIndex(): void {
+    // Phase 1: 收集每个短名称对应的所有节点
+    const nameToIds = new Map<string, string[]>()
+    for (const [nodeId, meta] of this.nodeMeta) {
+      if (meta.name) {
+        const ids = nameToIds.get(meta.name)
+        if (ids) ids.push(nodeId)
+        else nameToIds.set(meta.name, [nodeId])
+      }
+    }
+    // Phase 2: 标记冲突的短名称，并存储冲突数组到索引
+    for (const [name, ids] of nameToIds) {
+      if (ids.length > 1) {
+        this.ambiguousNames.add(name)
+        this.nameIndex.set(name, ids)  // 存储数组，findAllByName O(1) 返回
+      } else {
+        this.nameIndex.set(name, ids[0])  // 唯一名称存储单值
+      }
+    }
+    // Phase 3: 构建 qualified_name 索引（始终精确）
+    for (const [nodeId, meta] of this.nodeMeta) {
+      if (meta.qualified_name && !this.nameIndex.has(meta.qualified_name)) {
+        this.nameIndex.set(meta.qualified_name, nodeId)
+      }
+    }
   }
 
   /**
