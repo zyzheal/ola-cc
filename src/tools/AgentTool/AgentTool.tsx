@@ -901,6 +901,8 @@ export const AgentTool = buildTool({
       maxTokens: max_tokens,
       timeoutSeconds: timeout_seconds,
       quotaManager: (max_budget_usd || max_tokens || timeout_seconds) ? getSessionQuotaManager() : undefined,
+      // Pass agent class for adaptive tool call budget
+      agentClass: getClassification(selectedAgent.agentType)?.class,
     };
 
     // Helper to wrap execution with a cwd override: explicit cwd arg (KAIROS)

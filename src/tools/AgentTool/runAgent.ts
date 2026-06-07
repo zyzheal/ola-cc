@@ -288,6 +288,7 @@ export async function* runAgent({
   maxTokens,
   timeoutSeconds,
   quotaManager,
+  agentClass,
 }: {
   agentDefinition: AgentDefinition
   promptMessages: Message[]
@@ -365,6 +366,8 @@ export async function* runAgent({
    * supports both per-agent and global session budgets. Falls back to raw
    * parameter checks if omitted. */
   quotaManager?: import('../../utils/quota/ResourceQuotaManager.js').ResourceQuotaManager
+  /** Agent classification for adaptive tool call budget scaling */
+  agentClass?: import('./agentClassifications.js').AgentClass
 }): AsyncGenerator<Message, void> {
   // Track subagent usage for feature discovery
   const _initStart = Date.now()
@@ -904,7 +907,7 @@ export async function* runAgent({
       toolUseContext: agentToolUseContext,
       querySource,
       maxTurns: maxTurns ?? agentDefinition.maxTurns ?? 50,
-      maxToolCalls: getMaxToolCalls(maxToolCalls),
+      maxToolCalls: getMaxToolCalls(maxToolCalls, agentClass),
     })) {
       checkCpuHotspot('runAgent_message_yield')
       _initLog(`first query() message: type=${message.type}`)
