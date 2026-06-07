@@ -7,6 +7,7 @@
  */
 
 import type { GraphStore, EdgeMeta, NodeMetadata } from './GraphStore.js'
+import { execFileSync } from 'child_process'
 
 // ============================================================
 // Return types (design doc §2.4)
@@ -442,8 +443,9 @@ export class GraphEngine {
     for (const node of nodes) {
       pr.set(node, 1 / N)
       let deg = 0
-      for (const [, edge] of this.store.getOutEdges(node)) {
-        if (edge.type !== 'contains') deg++ // 排除 contains 边
+      for (const [, edges] of this.store.getOutEdges(node)) {
+        const hasNonContains = edges.some(e => e.type !== 'contains')
+        if (hasNonContains) deg++
       }
       outDeg.set(node, deg)
     }
@@ -464,8 +466,9 @@ export class GraphEngine {
       for (const v of nodes) {
         let incomingSum = 0
         const inEdges = this.store.getInEdges(v)
-        for (const [u, edge] of inEdges) {
-          if (edge.type !== 'contains') {
+        for (const [u, edges] of inEdges) {
+          const hasNonContains = edges.some(e => e.type !== 'contains')
+          if (hasNonContains) {
             const uDeg = outDeg.get(u) ?? 1
             incomingSum += (pr.get(u) ?? 0) / uDeg
           }
@@ -495,8 +498,9 @@ export class GraphEngine {
   }
 
   /**
-   * 支配树 — Lengauer-Tarjan 算法 O(V·α(V)+E)
-   * 简化版：使用迭代 DFS + 支配者计算
+   * 支配树 — 迭代收敛算法
+   * 注意：非标准 Lengauer-Tarjan 实现，最坏情况 O(V²·E)
+   * 适用于中小规模图，大规模图建议使用 Lengauer-Tarjan
    */
   dominatorTree(root: string): Map<string, string | null> {
     const dominated = new Map<string, string | null>()
@@ -807,8 +811,8 @@ export class GraphEngine {
       const methods: string[] = []
       const fields: string[] = []
 
-      for (const [target, edge] of outEdges) {
-        if (edge.type === 'contains') {
+      for (const [target, edges] of outEdges) {
+        if (edges.some(e => e.type === 'contains')) {
           const targetMeta = this.store.getNode(target)
           if (targetMeta?.kind === 'method') methods.push(target)
           else if (targetMeta?.kind === 'property') fields.push(target)
@@ -994,26 +998,36 @@ export class GraphEngine {
     const community = new Map<string, number>()
     nodes.forEach((node, i) => community.set(node, i))
 
-    // 计算总边数 (2m) — 仅出边权重
-    let totalWeight = 0
-    for (const [, outMap] of this.store.adjacency) {
-      for (const [, edges] of outMap) {
-        for (const edge of edges) {
-          totalWeight += edge.weight
+    // 计算总边数 (2m) — 构建无向镜像: w(u,v) = max(w(u→v), w(v→u))
+    const undirectedWeight = new Map<string, Map<string, number>>()
+    for (const [from, outMap] of this.store.adjacency) {
+      if (!undirectedWeight.has(from)) undirectedWeight.set(from, new Map())
+      for (const [to, edges] of outMap) {
+        let w = 0
+        for (const edge of edges) w += edge.weight
+        if (w > 0) {
+          undirectedWeight.get(from)!.set(to, w)
+          if (!undirectedWeight.has(to)) undirectedWeight.set(to, new Map())
+          const reverseW = undirectedWeight.get(to)!.get(from) ?? 0
+          const combined = Math.max(w, reverseW)
+          undirectedWeight.get(from)!.set(to, combined)
+          undirectedWeight.get(to)!.set(from, combined)
         }
       }
     }
-    if (totalWeight === 0) totalWeight = 1
-
-    // 节点度数（仅出边，与 totalWeight = Σout 一致）
+    let totalWeight = 0
     const degree = new Map<string, number>()
     for (const node of nodes) {
       let deg = 0
-      for (const [, edges] of this.store.getOutEdges(node)) {
-        for (const edge of edges) deg += edge.weight
+      const neighbors = undirectedWeight.get(node)
+      if (neighbors) {
+        for (const w of neighbors.values()) deg += w
       }
       degree.set(node, deg)
+      totalWeight += deg
     }
+    if (totalWeight === 0) totalWeight = 1
+    // totalWeight 已是 Σdeg(undirected)，即 2m
 
     // 社区内度数和
     const communityDegreeSum = new Map<number, number>()
@@ -1030,15 +1044,14 @@ export class GraphEngine {
         const currentCommunity = community.get(node)!
         const nodeDeg = degree.get(node) ?? 0
 
-        // 计算邻居社区（仅出边，与 degree 定义一致）
+        // 计算邻居社区（使用无向镜像权重，与 degree 定义一致）
         const neighborCommunities = new Map<number, number>()
-        const outEdges = this.store.getOutEdges(node)
-
-        for (const [neighbor, edges] of outEdges) {
-          const nc = community.get(neighbor)
-          if (nc !== undefined) {
-            for (const edge of edges) {
-              neighborCommunities.set(nc, (neighborCommunities.get(nc) ?? 0) + edge.weight)
+        const neighbors = undirectedWeight.get(node)
+        if (neighbors) {
+          for (const [neighbor, w] of neighbors) {
+            const nc = community.get(neighbor)
+            if (nc !== undefined) {
+              neighborCommunities.set(nc, (neighborCommunities.get(nc) ?? 0) + w)
             }
           }
         }
@@ -1051,7 +1064,7 @@ export class GraphEngine {
           if (candidateComm === currentCommunity) continue
 
           // Modularity gain: ΔQ = resolution * (k_i_in/2m - k_i * Σ_tot / (2m)^2)
-          // degree = out-degree only, totalWeight = 2m
+          // degree = undirected degree, totalWeight = 2m
           const sigmaIn = edgeWeightToComm
           const sigmaTot = communityDegreeSum.get(candidateComm) ?? 0
           const gain = resolution * ((sigmaIn / totalWeight) - (nodeDeg * sigmaTot) / (totalWeight * totalWeight))
@@ -1094,15 +1107,16 @@ export class GraphEngine {
       let commDegree = 0
       for (const node of comm.nodes) {
         commDegree += degree.get(node) ?? 0
-        for (const [target, edges] of this.store.getOutEdges(node)) {
-          if (community.get(target) === comm.id) {
-            for (const edge of edges) {
-              internalWeight += edge.weight
+        const neighbors = undirectedWeight.get(node)
+        if (neighbors) {
+          for (const [target, w] of neighbors) {
+            if (community.get(target) === comm.id) {
+              internalWeight += w
             }
           }
         }
       }
-      // degree = out-degree only, totalWeight = 2m
+      // degree = undirected degree, totalWeight = 2m
       Q += (internalWeight / totalWeight) - resolution * Math.pow(commDegree / totalWeight, 2)
     }
 
@@ -1110,13 +1124,49 @@ export class GraphEngine {
   }
 
   /**
-   * 时间耦合 — git log 解析 + 滑动时间窗口
-   * 需要 git 命令，由上层 CodegraphTool 调用
+   * 时间耦合 — git log 解析 + 共变统计
+   * @param projectRoot — 项目根目录（用于 git 命令 cwd）
+   * @param opts — 时间窗口、限制等选项
    */
-  async temporalCoupling(opts?: TemporalOpts): Promise<CouplingResult> {
-    // 此方法需要 git 命令，在 GraphEngine 中仅定义接口
-    // 实际实现在 CodegraphTool 层（调用 git log + GraphEngine 分析）
-    throw new Error('temporalCoupling 需要在 CodegraphTool 层实现（依赖 git 命令）')
+  temporalCoupling(projectRoot: string, opts?: TemporalOpts): CouplingResult {
+    const sinceValue = opts?.since ?? '30 days'
+    const limit = opts?.limit ?? 30
+
+    // execFileSync avoids shell injection
+    const gitLog = execFileSync(
+      'git', ['log', '--name-only', '--pretty=format:COMMIT:%H', `--since=${sinceValue}`],
+      { cwd: projectRoot, encoding: 'utf-8', timeout: 30000 }
+    )
+
+    // Parse commits and their changed files
+    const commits = gitLog.split(/^COMMIT:/m).filter(Boolean)
+    const coChangeMap = new Map<string, number>()
+    for (const commit of commits) {
+      const lines = commit.trim().split('\n').filter(l => l && !l.startsWith('COMMIT:'))
+      // Count co-changes for every pair
+      for (let i = 0; i < lines.length; i++) {
+        for (let j = i + 1; j < lines.length; j++) {
+          const key = [lines[i], lines[j]].sort().join('↔')
+          coChangeMap.set(key, (coChangeMap.get(key) ?? 0) + 1)
+        }
+      }
+    }
+
+    // Sort by co-change count, apply minCoChanges filter
+    const minCoChanges = opts?.minCoChanges ?? 1
+    const pairs = [...coChangeMap.entries()]
+      .map(([key, count]) => {
+        const [a, b] = key.split('↔')
+        return { a, b, score: count, coChanges: count }
+      })
+      .filter(p => p.coChanges >= minCoChanges)
+      .sort((a, b) => b.coChanges - a.coChanges)
+      .slice(0, limit)
+
+    return {
+      pairs,
+      window: { since: sinceValue, until: 'now' },
+    }
   }
 
   // ── Helpers ──
