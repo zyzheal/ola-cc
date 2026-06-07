@@ -45,7 +45,7 @@ import {
   getAdditionalDirectoriesForClaudeMd,
   getOriginalCwd,
 } from '../bootstrap/state.js'
-import { truncateEntrypointContent } from '../memdir/memdir.js'
+import { truncateEntrypointContent, truncateEntrypointContentWithScoring } from '../memdir/memdir.js'
 import { getAutoMemEntrypoint, isAutoMemoryEnabled } from '../memdir/paths.js'
 import { getFeatureValue_CACHED_MAY_BE_STALE } from '../services/analytics/growthbook.js'
 import {
@@ -379,9 +379,14 @@ function parseMemoryFileContent(
       : []
 
   // Truncate MEMORY.md entrypoints to the line AND byte caps
+  // C1: Use retention-scored truncation when OLA_CC_RETENTION_SCORING is enabled
   let finalContent = strippedContent
   if (type === 'AutoMem' || type === 'TeamMem') {
-    finalContent = truncateEntrypointContent(strippedContent).content
+    const memoryDir = dirname(filePath) + '/'
+    finalContent = truncateEntrypointContentWithScoring(
+      strippedContent,
+      memoryDir,
+    ).content
   }
 
   // Covers frontmatter strip, HTML comment strip, and MEMORY.md truncation

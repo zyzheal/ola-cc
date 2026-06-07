@@ -102,6 +102,128 @@ export function truncateEntrypointContent(raw: string): EntrypointTruncation {
   }
 }
 
+/**
+ * Synchronous retention-score-based truncation (C1).
+ *
+ * When OLA_CC_RETENTION_SCORING is enabled, parses MEMORY.md into entries,
+ * scores each by the referenced file's mtime-based retention, and keeps
+ * the top-N by score instead of first-N by position.
+ *
+ * Uses statSync for mtime (no async I/O needed). Type defaults to 'fact'
+ * since we don't parse frontmatter in the sync path.
+ *
+ * Falls back to first-N-lines truncation on error or when disabled.
+ *
+ * @param raw - Raw MEMORY.md content
+ * @param memoryDir - Path to the memory directory
+ * @returns EntrypointTruncation with retention-scored content
+ */
+export function truncateEntrypointContentWithScoring(
+  raw: string,
+  memoryDir: string,
+): EntrypointTruncation {
+  if (!isEnvTruthy(process.env.OLA_CC_RETENTION_SCORING)) {
+    return truncateEntrypointContent(raw)
+  }
+
+  try {
+    const { statSync } = require('fs') as typeof import('fs')
+    const { join: pathJoin } = require('path') as typeof import('path')
+
+    const trimmed = raw.trim()
+    const lines = trimmed.split('\n')
+    const lineCount = lines.length
+    const byteCount = trimmed.length
+    const wasLineTruncated = lineCount > MAX_ENTRYPOINT_LINES
+    const wasByteTruncated = byteCount > MAX_ENTRYPOINT_BYTES
+
+    if (!wasLineTruncated && !wasByteTruncated) {
+      return {
+        content: trimmed,
+        lineCount,
+        byteCount,
+        wasLineTruncated,
+        wasByteTruncated,
+      }
+    }
+
+    // Parse entries and compute scores
+    const entryRegex = /^- \[.+?\]\(([^)]+\.md)\)/
+    const scored: { line: string; score: number; isEntry: boolean }[] = []
+
+    for (const line of lines) {
+      const match = line.match(entryRegex)
+      if (!match) {
+        scored.push({ line, score: 1, isEntry: false })
+        continue
+      }
+
+      const filename = match[1]!
+      let score = 0
+      try {
+        const filePath = pathJoin(memoryDir, filename)
+        const stats = statSync(filePath)
+        const daysSinceCreation =
+          (Date.now() - stats.mtimeMs) / (24 * 60 * 60 * 1000)
+        // Use fact salience (0.5) as default since we don't parse frontmatter
+        const salience = 0.5
+        const decayFactor = Math.exp(-0.5 * daysSinceCreation)
+        score = salience * decayFactor
+      } catch {
+        score = 0
+      }
+
+      scored.push({ line, score, isEntry: true })
+    }
+
+    // Sort entries by score, keep top MAX_ENTRYPOINT_LINES
+    const entryIndices = scored
+      .map((e, i) => ({ ...e, i }))
+      .filter(e => e.isEntry)
+    const topIndices = new Set(
+      entryIndices
+        .sort((a, b) => b.score - a.score)
+        .slice(0, MAX_ENTRYPOINT_LINES)
+        .map(e => e.i),
+    )
+
+    // Reconstruct: keep non-entries always, keep top entries
+    const selected = scored
+      .filter((e, i) => !e.isEntry || topIndices.has(i))
+      .map(e => e.line)
+
+    let truncated = selected.join('\n')
+
+    if (truncated.length > MAX_ENTRYPOINT_BYTES) {
+      const cutAt = truncated.lastIndexOf('\n', MAX_ENTRYPOINT_BYTES)
+      truncated = truncated.slice(0, cutAt > 0 ? cutAt : MAX_ENTRYPOINT_BYTES)
+    }
+
+    const entryCount = scored.filter(e => e.isEntry).length
+    const keptCount = topIndices.size
+
+    const reason =
+      wasByteTruncated && !wasLineTruncated
+        ? `${formatFileSize(byteCount)} (limit: ${formatFileSize(MAX_ENTRYPOINT_BYTES)}) — index entries are too long`
+        : wasLineTruncated && !wasByteTruncated
+          ? `${lineCount} lines (limit: ${MAX_ENTRYPOINT_LINES})`
+          : `${lineCount} lines and ${formatFileSize(byteCount)}`
+
+    return {
+      content:
+        truncated +
+        `\n\n> WARNING: ${ENTRYPOINT_NAME} is ${reason}. Kept ${keptCount}/${entryCount} entries by retention score. Move low-value entries to topic files.`,
+      lineCount,
+      byteCount,
+      wasLineTruncated,
+      wasByteTruncated,
+    }
+  } catch {
+    // Retention scoring failed — fall back to sync logic
+    return truncateEntrypointContent(raw)
+  }
+}
+
 /* eslint-disable @typescript-eslint/no-require-imports */
 const teamMemPrompts = feature('TEAMMEM')
   ? (require('./teamMemPrompts.js') as typeof import('./teamMemPrompts.js'))
@@ -293,7 +415,11 @@ export function buildMemoryPrompt(params: {
   const lines = buildMemoryLines(displayName, memoryDir, extraGuidelines)
 
   if (entrypointContent.trim()) {
-    const t = truncateEntrypointContent(entrypointContent)
+    // C1: Use retention-scored truncation when enabled
+    const t = truncateEntrypointContentWithScoring(
+      entrypointContent,
+      memoryDir,
+    )
     const memoryType = displayName === AUTO_MEM_DISPLAY_NAME ? 'auto' : 'agent'
     logMemoryDirCounts(memoryDir, {
       content_length: t.byteCount,

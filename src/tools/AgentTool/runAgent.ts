@@ -28,6 +28,7 @@ import {
 } from '../../services/mcp/client.js'
 import { getMcpConfigByName } from '../../services/mcp/config.js'
 import { runQualityScan, type ScanResult } from '../../services/codeQuality/regexScanner.js'
+import { isLessonsInjectEnabled, loadLessonsPrompt } from '../../utils/memory/lessonsInjector.js'
 import { runASTCheck } from '../../services/codeQuality/astChecker.js'
 import type {
   MCPServerConnection,
@@ -588,7 +589,8 @@ export async function* runAgent({
   )
 
   _initLog('before getAgentSystemPrompt')
-  const agentSystemPrompt = override?.systemPrompt
+  // A1: let (not const) so lessons injection can reassign
+  let agentSystemPrompt = override?.systemPrompt
     ? override.systemPrompt
     : asSystemPrompt(
         await getAgentSystemPrompt(
@@ -600,6 +602,24 @@ export async function* runAgent({
         ),
       )
   _initLog('after getAgentSystemPrompt')
+
+  // A1: Inject lessons from execution history into agent system prompt.
+  // D3 fix: inject regardless of override.systemPrompt — lessons are
+  // operational context, not part of the agent definition.
+  if (isLessonsInjectEnabled()) {
+    try {
+      const lessons = loadLessonsPrompt(agentDefinition.agentType)
+      if (lessons) {
+        if (Array.isArray(agentSystemPrompt)) {
+          agentSystemPrompt.push(lessons)
+        } else {
+          agentSystemPrompt = [agentSystemPrompt, lessons]
+        }
+      }
+    } catch {
+      // Lessons injection failure should never block agent execution
+    }
+  }
 
   // Determine abortController:
   // - Override takes precedence
