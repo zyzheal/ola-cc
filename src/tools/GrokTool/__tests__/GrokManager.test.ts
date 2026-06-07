@@ -74,6 +74,89 @@ describe('ERROR_SUGGESTIONS', () => {
 })
 
 // ============================================
+// loadGrokConfig — batchSize / concurrency env vars
+// ============================================
+
+describe('loadGrokConfig batch parameters', () => {
+  const savedEnv: Record<string, string | undefined> = {}
+
+  beforeEach(() => {
+    for (const key of ['OLA_CC_GROK_BATCH_SIZE', 'OLA_CC_GROK_CONCURRENCY']) {
+      savedEnv[key] = process.env[key]
+      delete process.env[key]
+    }
+  })
+
+  afterEach(() => {
+    for (const key of Object.keys(savedEnv)) {
+      if (savedEnv[key] === undefined) {
+        delete process.env[key]
+      } else {
+        process.env[key] = savedEnv[key]
+      }
+    }
+  })
+
+  it('should use default batchSize=25 and concurrency=5 when env vars not set', () => {
+    const manager = new GrokManager(TEST_DIR)
+    const config = (manager as any).config
+    expect(config.batchSize).toBe(25)
+    expect(config.concurrency).toBe(5)
+  })
+
+  it('should read OLA_CC_GROK_BATCH_SIZE from env', () => {
+    process.env.OLA_CC_GROK_BATCH_SIZE = '10'
+    const manager = new GrokManager(TEST_DIR)
+    const config = (manager as any).config
+    expect(config.batchSize).toBe(10)
+  })
+
+  it('should read OLA_CC_GROK_CONCURRENCY from env', () => {
+    process.env.OLA_CC_GROK_CONCURRENCY = '8'
+    const manager = new GrokManager(TEST_DIR)
+    const config = (manager as any).config
+    expect(config.concurrency).toBe(8)
+  })
+
+  it('should read both env vars together', () => {
+    process.env.OLA_CC_GROK_BATCH_SIZE = '3'
+    process.env.OLA_CC_GROK_CONCURRENCY = '2'
+    const manager = new GrokManager(TEST_DIR)
+    const config = (manager as any).config
+    expect(config.batchSize).toBe(3)
+    expect(config.concurrency).toBe(2)
+  })
+
+  it('should fall back to default batchSize when value exceeds max', () => {
+    process.env.OLA_CC_GROK_BATCH_SIZE = '999'
+    const manager = new GrokManager(TEST_DIR)
+    const config = (manager as any).config
+    expect(config.batchSize).toBe(25)
+  })
+
+  it('should fall back to default concurrency when value exceeds max', () => {
+    process.env.OLA_CC_GROK_CONCURRENCY = '100'
+    const manager = new GrokManager(TEST_DIR)
+    const config = (manager as any).config
+    expect(config.concurrency).toBe(5)
+  })
+
+  it('should fall back to default batchSize when value below minimum', () => {
+    process.env.OLA_CC_GROK_BATCH_SIZE = '0'
+    const manager = new GrokManager(TEST_DIR)
+    const config = (manager as any).config
+    expect(config.batchSize).toBe(25)
+  })
+
+  it('should fall back to default batchSize on non-numeric input', () => {
+    process.env.OLA_CC_GROK_BATCH_SIZE = 'abc'
+    const manager = new GrokManager(TEST_DIR)
+    const config = (manager as any).config
+    expect(config.batchSize).toBe(25)
+  })
+})
+
+// ============================================
 // GrokManager constructor
 // ============================================
 
