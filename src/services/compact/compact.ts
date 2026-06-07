@@ -117,6 +117,7 @@ import {
   roughTokenCountEstimationForMessages,
 } from '../tokenEstimation.js'
 import { groupMessagesByApiRound } from './grouping.js'
+import { validateCompactQuality, isCompactQualityEnabled } from './compactQuality.js'
 import {
   getCompactPrompt,
   getCompactUserSummaryMessage,
@@ -473,6 +474,8 @@ export async function compactConversation(
     let summaryResponse: AssistantMessage
     let summary: string | null
     let ptlAttempts = 0
+    let qualityAttempts = 0
+    const maxQualityRetries = 2
     logCompactDuration('stream_compact_summary_start')
     for (;;) {
       summaryResponse = await streamCompactSummary({
@@ -516,6 +519,41 @@ export async function compactConversation(
       retryCacheSafeParams = {
         ...retryCacheSafeParams,
         forkContextMessages: truncated,
+      }
+    }
+
+    // C3: Quality validation — retry if summary quality is below threshold
+    if (
+      summary &&
+      !startsWithApiErrorPrefix(summary) &&
+      isCompactQualityEnabled() &&
+      qualityAttempts < maxQualityRetries
+    ) {
+      const summaryTokens = summaryResponse?.message?.usage?.output_tokens ?? 0
+      const qualityPassed = validateCompactQuality(
+        summary,
+        preCompactTokenCount,
+        summaryTokens,
+      )
+      if (!qualityPassed) {
+        qualityAttempts++
+        logEvent('tengu_compact_quality_retry', {
+          attempt: qualityAttempts,
+          summaryLength: summary.length,
+          preCompactTokenCount,
+        })
+        // Retry with a modified prompt that emphasizes quality
+        summaryRequest = createUserMessage({
+          content:
+            getCompactPrompt(customInstructions) +
+            '\n\nIMPORTANT: Your previous summary was too short/vague. ' +
+            'Please provide a more detailed summary preserving key information, ' +
+            'decisions, and context. Include specific file names, function names, ' +
+            'and technical details discussed.',
+        })
+        // Reset PTL counter for quality retry
+        ptlAttempts = 0
+        continue
       }
     }
 
