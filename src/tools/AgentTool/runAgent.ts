@@ -1368,12 +1368,11 @@ export function filterIncompleteToolCalls(messages: Message[]): Message[] {
   for (const message of messages) {
     if (message?.type === 'user') {
       const userMessage = message as UserMessage
+      if (!userMessage.message || !Array.isArray(userMessage.message.content)) continue
       const content = userMessage.message.content
-      if (Array.isArray(content)) {
-        for (const block of content) {
-          if (block.type === 'tool_result' && block.tool_use_id) {
-            toolUseIdsWithResults.add(block.tool_use_id)
-          }
+      for (const block of content) {
+        if (block.type === 'tool_result' && block.tool_use_id) {
+          toolUseIdsWithResults.add(block.tool_use_id)
         }
       }
     }
@@ -1383,18 +1382,17 @@ export function filterIncompleteToolCalls(messages: Message[]): Message[] {
   return messages.filter(message => {
     if (message?.type === 'assistant') {
       const assistantMessage = message as AssistantMessage
+      if (!assistantMessage.message || !Array.isArray(assistantMessage.message.content)) return true
       const content = assistantMessage.message.content
-      if (Array.isArray(content)) {
-        // Check if this assistant message has any tool uses without results
-        const hasIncompleteToolCall = content.some(
-          block =>
-            block.type === 'tool_use' &&
-            block.id &&
-            !toolUseIdsWithResults.has(block.id),
-        )
-        // Exclude messages with incomplete tool calls
-        return !hasIncompleteToolCall
-      }
+      // Check if this assistant message has any tool uses without results
+      const hasIncompleteToolCall = content.some(
+        block =>
+          block.type === 'tool_use' &&
+          block.id &&
+          !toolUseIdsWithResults.has(block.id),
+      )
+      // Exclude messages with incomplete tool calls
+      return !hasIncompleteToolCall
     }
     // Keep all non-assistant messages and assistant messages without tool calls
     return true
