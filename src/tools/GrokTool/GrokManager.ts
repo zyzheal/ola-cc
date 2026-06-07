@@ -13,6 +13,8 @@ import { logForDebugging } from '../../utils/debug.js'
 import { GrokAnalyzer, AGENT_SYSTEM_PROMPTS } from './GrokAnalyzer.js'
 import { GrokAssembler } from './GrokAssembler.js'
 import { GrokTourBuilder } from './GrokTourBuilder.js'
+import { GraphStore } from '../../services/graph/GraphStore.js'
+import { GraphEngine } from '../../services/graph/GraphEngine.js'
 
 // Re-export types and errors from GrokTypes for backward compatibility
 export {
@@ -26,6 +28,29 @@ export {
   GrokError,
   ERROR_SUGGESTIONS,
 } from './GrokTypes.js'
+
+// ============================================================
+// Graph operation result types
+// ============================================================
+
+export interface ArchitectureResult {
+  communities: Array<{ id: number; size: number; sample: string[] }>
+  modularity: number
+  resolution: number
+  totalCommunities: number
+  roles: { distribution: Record<string, number>; totalNodes: number }
+  llmSummary: string
+}
+
+export interface HotspotResult {
+  hotspots: Array<{ node: string; score: number; meta: unknown }>
+  totalScored: number
+  temporalCoupling: {
+    pairs: Array<{ a: string; b: string; score: number; coChanges: number }>
+    window: { since: string; until: string }
+  }
+  llmSummary: string
+}
 
 // Import types for internal use
 import type { GrokGenerateOptions, GrokGenerateResult, GrokChatResult, GrokGraphStatus, GraphNode, GraphData } from './GrokTypes.js'
@@ -712,6 +737,145 @@ export class GrokManager {
   </script>
 </body>
 </html>`
+  }
+
+  // ============================================================
+  // Graph algorithm operations
+  // ============================================================
+
+  /**
+   * Analyze system architecture using Louvain community detection + role classification
+   */
+  async analyzeArchitecture(opts?: { resolution?: number; maxNodes?: number }): Promise<ArchitectureResult> {
+    const store = GraphStore.getInstance(this.projectRoot)
+    await store.load()
+    const engine = new GraphEngine(store)
+
+    const community = engine.louvainCommunity({ resolution: opts?.resolution ?? 1.0 })
+    const roles = engine.classifyRoles()
+    const limit = opts?.maxNodes ?? 20
+
+    // Build role distribution summary
+    const roleDistribution: Record<string, number> = {}
+    for (const [, role] of roles) {
+      roleDistribution[role] = (roleDistribution[role] ?? 0) + 1
+    }
+
+    // Build community summary for LLM
+    const communitySummary = community.communities
+      .sort((a, b) => b.size - a.size)
+      .slice(0, 10)
+      .map(c => `Community ${c.id}: ${c.size} nodes (sample: ${c.nodes.slice(0, 3).join(', ')})`)
+      .join('\n')
+
+    const llmPrompt = [
+      'Analyze this code architecture based on community detection and role classification:',
+      '',
+      `## Communities (${community.communities.length} total, modularity=${community.modularity})`,
+      communitySummary,
+      '',
+      `## Role Distribution`,
+      ...Object.entries(roleDistribution).map(([r, count]) => `- ${r}: ${count}`),
+      '',
+      'Provide a concise architectural summary: what are the main modules, how they relate, and any structural concerns.',
+    ].join('\n')
+
+    let llmSummary = ''
+    try {
+      const chatResult = await this.queryGraph(llmPrompt)
+      llmSummary = chatResult.answer
+    } catch {
+      // LLM enrichment is optional — graph data is still returned
+      llmSummary = '(LLM enrichment unavailable)'
+    }
+
+    return {
+      communities: community.communities
+        .sort((a, b) => b.size - a.size)
+        .slice(0, limit)
+        .map(c => ({
+          id: c.id,
+          size: c.size,
+          sample: c.nodes.slice(0, 5),
+        })),
+      modularity: community.modularity,
+      resolution: community.resolution,
+      totalCommunities: community.communities.length,
+      roles: {
+        distribution: roleDistribution,
+        totalNodes: roles.size,
+      },
+      llmSummary,
+    }
+  }
+
+  /**
+   * Detect code hotspots using PageRank + temporal coupling
+   */
+  async detectHotspots(opts?: { damping?: number; since?: string; maxNodes?: number }): Promise<HotspotResult> {
+    const store = GraphStore.getInstance(this.projectRoot)
+    await store.load()
+    const engine = new GraphEngine(store)
+
+    // PageRank for hotspot detection
+    const pr = engine.pageRank(opts?.damping ?? 0.85)
+    const topN = opts?.maxNodes ?? 20
+    const hotspots = pr.scores.slice(0, topN).map(s => ({
+      node: s.node,
+      score: Math.round(s.score * 10000) / 10000,
+      meta: store.getNode(s.node),
+    }))
+
+    // Temporal coupling via unified GraphEngine
+    let temporalPairs: Array<{ a: string; b: string; score: number; coChanges: number }> = []
+    try {
+      const temporal = engine.temporalCoupling(this.projectRoot, {
+        since: opts?.since || '30 days',
+      })
+      temporalPairs = temporal.pairs.slice(0, topN)
+    } catch {
+      // Git not available — skip temporal coupling
+    }
+
+    // Build LLM prompt
+    const hotspotSummary = hotspots
+      .slice(0, 10)
+      .map(h => `- ${h.node} (score: ${h.score})`)
+      .join('\n')
+    const temporalSummary = temporalPairs
+      .slice(0, 10)
+      .map(p => `- ${p.a} <-> ${p.b} (${p.coChanges} co-changes)`)
+      .join('\n')
+
+    const llmPrompt = [
+      'Analyze code hotspots and temporal coupling patterns:',
+      '',
+      `## Top Hotspots (by PageRank)`,
+      hotspotSummary || '(none)',
+      '',
+      `## Temporal Coupling (top co-changed pairs, last 30 days, ${temporalPairs.length} pairs)`,
+      temporalSummary || '(none)',
+      '',
+      'Identify: which files are architectural hotspots that need refactoring, which file pairs have high coupling risk, and any recommended actions.',
+    ].join('\n')
+
+    let llmSummary = ''
+    try {
+      const chatResult = await this.queryGraph(llmPrompt)
+      llmSummary = chatResult.answer
+    } catch {
+      llmSummary = '(LLM enrichment unavailable)'
+    }
+
+    return {
+      hotspots,
+      totalScored: pr.scores.length,
+      temporalCoupling: {
+        pairs: temporalPairs,
+        window: { since: opts?.since ?? '30 days', until: 'now' },
+      },
+      llmSummary,
+    }
   }
 
   // ============================================================
