@@ -8,8 +8,8 @@
  * Depends on OLA_CC_LESSON_DECAY for stale lesson filtering.
  */
 
-import { isEnvTruthy } from '../envUtils.js'
-import { LearningSystem } from '../../tools/AgentTool/LearningSystem.js'
+import { isEnvTruthy } from '../../utils/envUtils.js'
+import { LearningSystem } from './LearningSystem.js'
 
 /**
  * Check if lessons injection is enabled.
