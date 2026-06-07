@@ -29,6 +29,8 @@ import {
 import { getMcpConfigByName } from '../../services/mcp/config.js'
 import { runQualityScan, type ScanResult } from '../../services/codeQuality/regexScanner.js'
 import { isLessonsInjectEnabled, loadLessonsPrompt } from '../../utils/memory/lessonsInjector.js'
+import { isEnvTruthy } from '../../utils/envUtils.js'
+import { LearningSystem } from './LearningSystem.js'
 import { runASTCheck } from '../../services/codeQuality/astChecker.js'
 import type {
   MCPServerConnection,
@@ -879,6 +881,18 @@ export async function* runAgent({
   // Track the last assistant message text for validation gate
   let lastAssistantMessageText = ''
 
+  // A2: Action chain collector for crystallize (fire-and-forget learning)
+  const crystallizeEnabled = isEnvTruthy(process.env.OLA_CC_CRYSTALLIZE)
+  const actionChainCollector: Array<{
+    toolName: string
+    input: string
+    output: string
+    success: boolean
+    duration_ms: number
+  }> = []
+  // Pending tool uses keyed by tool_use_id, tracking start time and input
+  const pendingToolUses = new Map<string, { toolName: string; input: string; startTime: number }>()
+
   _initLog('before query() call')
   try {
     for await (const message of query({
@@ -1015,6 +1029,45 @@ export async function* runAgent({
             if (textBlocks) lastAssistantMessageText = textBlocks
           }
         }
+
+        // A2: Collect action chain for crystallize
+        if (crystallizeEnabled) {
+          if (message.type === 'assistant' && message.message?.content && Array.isArray(message.message.content)) {
+            // Collect pending tool uses from assistant message
+            for (const block of message.message.content) {
+              if (block.type === 'tool_use' && block.id) {
+                pendingToolUses.set(block.id, {
+                  toolName: block.name,
+                  input: typeof block.input === 'string' ? block.input : JSON.stringify(block.input ?? ''),
+                  startTime: Date.now(),
+                })
+              }
+            }
+          } else if (message.type === 'user' && message.message?.content && Array.isArray(message.message.content)) {
+            // Match tool results with pending tool uses
+            for (const block of message.message.content) {
+              if (block.type === 'tool_result' && block.tool_use_id) {
+                const pending = pendingToolUses.get(block.tool_use_id)
+                if (pending) {
+                  pendingToolUses.delete(block.tool_use_id)
+                  const outputText = typeof block.content === 'string'
+                    ? block.content
+                    : Array.isArray(block.content)
+                      ? block.content.filter((b: { type: string }) => b.type === 'text').map((b: { text: string }) => b.text).join('\n')
+                      : ''
+                  actionChainCollector.push({
+                    toolName: pending.toolName,
+                    input: pending.input,
+                    output: outputText.slice(0, 500), // cap output for memory
+                    success: !block.is_error,
+                    duration_ms: Date.now() - pending.startTime,
+                  })
+                }
+              }
+            }
+          }
+        }
+
         yield message
       }
     }
@@ -1220,6 +1273,26 @@ export async function* runAgent({
             `[Agent ${agentDefinition.agentType}] AST check failed: ${astError}`,
           )
         }
+      }
+    }
+
+    // A2: Crystallize action chain — fire-and-forget learning
+    if (crystallizeEnabled && actionChainCollector.length > 0) {
+      try {
+        const learningSystem = new LearningSystem({ enablePersistence: true })
+        const knowledge = learningSystem.crystallize(
+          agentDefinition.agentType,
+          actionChainCollector,
+        )
+        if (knowledge) {
+          logForDebugging(
+            `[Agent ${agentDefinition.agentType}] Crystallized ${actionChainCollector.length} tool calls: ${knowledge.slice(0, 100)}...`,
+          )
+        }
+      } catch (crystallizeError) {
+        logForDebugging(
+          `[Agent ${agentDefinition.agentType}] Crystallize failed: ${crystallizeError}`,
+        )
       }
     }
   } finally {
