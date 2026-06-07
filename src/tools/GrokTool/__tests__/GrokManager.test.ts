@@ -252,3 +252,166 @@ describe('buildFileAnalyzerPrompt', () => {
     expect(prompt).toContain('Skipped: total content size limit reached')
   })
 })
+
+// ============================================
+// localScan — local filesystem detection
+// ============================================
+
+describe('localScan', () => {
+  it('should detect TypeScript from .ts files', () => {
+    writeFileSync(resolve(TEST_DIR, 'index.ts'), 'export {}')
+    writeFileSync(resolve(TEST_DIR, 'app.tsx'), 'export {}')
+
+    const manager = new GrokManager(TEST_DIR)
+    const files = [resolve(TEST_DIR, 'index.ts'), resolve(TEST_DIR, 'app.tsx')]
+    const result = (manager as any).localScan(files) as { languages: string[], frameworks: string[], entryPoints: string[] }
+
+    expect(result.languages).toContain('TypeScript')
+    expect(result.languages).not.toContain('JavaScript') // .tsx is TS, not JS
+  })
+
+  it('should detect Python from .py files', () => {
+    writeFileSync(resolve(TEST_DIR, 'main.py'), 'print("hello")')
+
+    const manager = new GrokManager(TEST_DIR)
+    const files = [resolve(TEST_DIR, 'main.py')]
+    const result = (manager as any).localScan(files)
+
+    expect(result.languages).toContain('Python')
+  })
+
+  it('should detect multiple languages', () => {
+    writeFileSync(resolve(TEST_DIR, 'index.ts'), '')
+    writeFileSync(resolve(TEST_DIR, 'app.py'), '')
+    writeFileSync(resolve(TEST_DIR, 'main.go'), '')
+    writeFileSync(resolve(TEST_DIR, 'lib.rs'), '')
+
+    const manager = new GrokManager(TEST_DIR)
+    const files = [
+      resolve(TEST_DIR, 'index.ts'),
+      resolve(TEST_DIR, 'app.py'),
+      resolve(TEST_DIR, 'main.go'),
+      resolve(TEST_DIR, 'lib.rs'),
+    ]
+    const result = (manager as any).localScan(files)
+
+    expect(result.languages).toContain('TypeScript')
+    expect(result.languages).toContain('Python')
+    expect(result.languages).toContain('Go')
+    expect(result.languages).toContain('Rust')
+  })
+
+  it('should detect frameworks from package.json', () => {
+    writeFileSync(resolve(TEST_DIR, 'index.ts'), '')
+    writeFileSync(resolve(TEST_DIR, 'package.json'), JSON.stringify({
+      dependencies: { react: '^18.0.0', express: '^4.18.0' },
+      devDependencies: { typescript: '^5.0.0' },
+    }))
+
+    const manager = new GrokManager(TEST_DIR)
+    const files = [resolve(TEST_DIR, 'index.ts')]
+    const result = (manager as any).localScan(files)
+
+    expect(result.frameworks).toContain('React')
+    expect(result.frameworks).toContain('Express')
+  })
+
+  it('should detect entry points from common patterns', () => {
+    writeFileSync(resolve(TEST_DIR, 'index.ts'), '')
+    writeFileSync(resolve(TEST_DIR, 'main.ts'), '')
+    writeFileSync(resolve(TEST_DIR, 'app.ts'), '')
+    writeFileSync(resolve(TEST_DIR, 'server.ts'), '')
+
+    const manager = new GrokManager(TEST_DIR)
+    const files = [
+      resolve(TEST_DIR, 'index.ts'),
+      resolve(TEST_DIR, 'main.ts'),
+      resolve(TEST_DIR, 'app.ts'),
+      resolve(TEST_DIR, 'server.ts'),
+    ]
+    const result = (manager as any).localScan(files)
+
+    expect(result.entryPoints).toContain(resolve(TEST_DIR, 'index.ts'))
+    expect(result.entryPoints).toContain(resolve(TEST_DIR, 'main.ts'))
+    expect(result.entryPoints).toContain(resolve(TEST_DIR, 'app.ts'))
+    expect(result.entryPoints).toContain(resolve(TEST_DIR, 'server.ts'))
+  })
+
+  it('should detect entry points in src/ subdirectory', () => {
+    const srcDir = resolve(TEST_DIR, 'src')
+    mkdirSync(srcDir, { recursive: true })
+    writeFileSync(resolve(srcDir, 'main.ts'), '')
+
+    const manager = new GrokManager(TEST_DIR)
+    const files = [resolve(srcDir, 'main.ts')]
+    const result = (manager as any).localScan(files)
+
+    expect(result.entryPoints).toContain(resolve(srcDir, 'main.ts'))
+  })
+
+  it('should return empty arrays for empty file list', () => {
+    const manager = new GrokManager(TEST_DIR)
+    const result = (manager as any).localScan([])
+
+    expect(result.languages).toEqual([])
+    expect(result.frameworks).toEqual([])
+    expect(result.entryPoints).toEqual([])
+  })
+
+  it('should deduplicate languages', () => {
+    writeFileSync(resolve(TEST_DIR, 'a.ts'), '')
+    writeFileSync(resolve(TEST_DIR, 'b.ts'), '')
+
+    const manager = new GrokManager(TEST_DIR)
+    const files = [resolve(TEST_DIR, 'a.ts'), resolve(TEST_DIR, 'b.ts')]
+    const result = (manager as any).localScan(files)
+
+    // TypeScript should appear exactly once
+    const tsCount = result.languages.filter((l: string) => l === 'TypeScript').length
+    expect(tsCount).toBe(1)
+  })
+
+  it('should not crash when package.json is missing', () => {
+    writeFileSync(resolve(TEST_DIR, 'index.ts'), '')
+
+    const manager = new GrokManager(TEST_DIR)
+    const files = [resolve(TEST_DIR, 'index.ts')]
+    const result = (manager as any).localScan(files)
+
+    expect(result.frameworks).toEqual([])
+  })
+
+  it('should not crash when package.json is malformed', () => {
+    writeFileSync(resolve(TEST_DIR, 'index.ts'), '')
+    writeFileSync(resolve(TEST_DIR, 'package.json'), 'not json')
+
+    const manager = new GrokManager(TEST_DIR)
+    const files = [resolve(TEST_DIR, 'index.ts')]
+    const result = (manager as any).localScan(files)
+
+    expect(result.frameworks).toEqual([])
+  })
+
+  it('should detect JavaScript from .js/.jsx files', () => {
+    writeFileSync(resolve(TEST_DIR, 'app.js'), '')
+    writeFileSync(resolve(TEST_DIR, 'view.jsx'), '')
+
+    const manager = new GrokManager(TEST_DIR)
+    const files = [resolve(TEST_DIR, 'app.js'), resolve(TEST_DIR, 'view.jsx')]
+    const result = (manager as any).localScan(files)
+
+    expect(result.languages).toContain('JavaScript')
+  })
+
+  it('should detect Vue/Svelte from extensions', () => {
+    writeFileSync(resolve(TEST_DIR, 'App.vue'), '')
+    writeFileSync(resolve(TEST_DIR, 'Page.svelte'), '')
+
+    const manager = new GrokManager(TEST_DIR)
+    const files = [resolve(TEST_DIR, 'App.vue'), resolve(TEST_DIR, 'Page.svelte')]
+    const result = (manager as any).localScan(files)
+
+    expect(result.languages).toContain('Vue')
+    expect(result.languages).toContain('Svelte')
+  })
+})
