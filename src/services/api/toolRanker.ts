@@ -24,6 +24,11 @@ import { escapeRegExp } from '../../utils/stringUtils.js'
 import { containsCJK } from '../../utils/tokenizer.js'
 import { getCacheStrategy } from '../../utils/model/providers.js'
 import { getSessionId } from '../../bootstrap/state.js'
+import {
+  computeAverageDocLength,
+  computeBM25Score,
+  normalizeBM25Score,
+} from '../search/hybridScorer.js'
 
 // -- Configuration
 
@@ -165,17 +170,23 @@ interface ToolScore {
  * - Exact name match: 100 (highest priority)
  * - Name part match: 20 per term
  * - searchHint match: 15 per term (curated capability phrase)
- * - Description match: 8 per term (full prompt text, high signal)
+ * - Description match: BM25-style scoring with tf normalization
+ *
+ * BM25 integration (from Headroom's HybridScorer):
+ * - Description text scored with k1=1.5, b=0.75 normalization
+ * - Long-token bonus for technical identifiers (UUIDs, hashes)
+ * - Score normalized to [0, 1] then scaled to match legacy weight range
  */
 function scoreTool(
   tool: Tool,
   queryTerms: string[],
   termPatterns: Map<string, RegExp>,
   descriptionLower: string,
+  avgDocLength?: number,
 ): number {
   let score = 0
 
-  // Tool name matching
+  // Tool name matching (structured — keep flat weights)
   const toolName = tool.name
   const toolNameLower = toolName.toLowerCase()
   const toolNameParts = extractTerms(toolName)
@@ -207,12 +218,23 @@ function scoreTool(
         score += 15
       }
     }
+  }
 
-    // Description match — use word boundary to reduce false positives
-    const pattern = termPatterns.get(term)!
-    if (pattern.test(descriptionLower)) {
-      score += 8
-    }
+  // Description matching — BM25-style scoring
+  // Replaces flat weight (8 per term) with normalized BM25 for better relevance
+  if (descriptionLower.length > 0 && queryTerms.length > 0) {
+    const docLength = descriptionLower.length
+    const avgDL = avgDocLength ?? docLength // Fallback: treat as average
+    const bm25Raw = computeBM25Score(
+      descriptionLower,
+      queryTerms,
+      termPatterns,
+      docLength,
+      avgDL,
+    )
+    // Scale normalized BM25 to legacy weight range (0-40 for description)
+    // Legacy max: 8 * 5 terms = 40. BM25 normalized is [0,1], scale to [0, 40]
+    score += normalizeBM25Score(bm25Raw) * 40
   }
 
   return score
@@ -311,6 +333,10 @@ export async function rankTools(
     toolDescriptions.set(tool.name, desc.toLowerCase())
   }
 
+  // Compute average document length for BM25 normalization
+  const allDescs = tools.map(t => toolDescriptions.get(t.name) ?? '')
+  const avgDocLength = computeAverageDocLength(allDescs)
+
   // Score all tools
   const scored: ToolScore[] = tools.map(tool => ({
     tool,
@@ -319,6 +345,7 @@ export async function rankTools(
       queryTerms,
       termPatterns,
       toolDescriptions.get(tool.name) ?? '',
+      avgDocLength,
     ),
   }))
 
@@ -458,6 +485,12 @@ export async function rankToolsTwoPhase(
     candidateDescriptions.set(tool.name, desc.toLowerCase())
   }
 
+  // Compute average document length for BM25 normalization
+  // Use all tools' lightweight descriptions (name + searchHint) as proxy,
+  // so the normalization baseline is consistent with rankTools
+  const allLightDescs = tools.map(t => `${t.name} ${t.searchHint ?? ''}`)
+  const avgDocLength = computeAverageDocLength(allLightDescs)
+
   // Score with full descriptions
   const phase2Scores: ToolScore[] = []
 
@@ -468,7 +501,7 @@ export async function rankToolsTwoPhase(
     }
 
     const descLower = candidateDescriptions.get(tool.name) ?? ''
-    const score = scoreTool(tool, queryTerms, termPatterns, descLower)
+    const score = scoreTool(tool, queryTerms, termPatterns, descLower, avgDocLength)
     phase2Scores.push({ tool, score })
   }
 

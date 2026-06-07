@@ -198,11 +198,56 @@ export async function countMessagesTokensWithAPI(
   })
 }
 
+/**
+ * Model-specific chars-per-token calibration.
+ * Claude models tokenize text more densely than generic models.
+ * Values calibrated against Anthropic's countTokens API.
+ *
+ * Formula: max(1, int(chars/cpt + 0.5)) — round-half-up, matching
+ * Headroom's EstimatingCounter semantics.
+ */
+const CLAUDE_MODELS_CPT = 3.5
+const GENERIC_CPT = 4.0
+
+/**
+ * Detect if the current model is a Claude-family model.
+ * Checks model string for 'claude' or known Claude aliases.
+ */
+function isClaudeModel(): boolean {
+  try {
+    const model = getMainLoopModel().toLowerCase()
+    return (
+      model.includes('claude') ||
+      model.includes('sonnet') ||
+      model.includes('opus') ||
+      model.includes('haiku')
+    )
+  } catch {
+    return false
+  }
+}
+
+/**
+ * Get the chars-per-token ratio for the current model.
+ * Claude: 3.5 cpt, Generic/OpenAI: 4.0 cpt.
+ */
+function getCharsPerToken(): number {
+  return isClaudeModel() ? CLAUDE_MODELS_CPT : GENERIC_CPT
+}
+
 export function roughTokenCountEstimation(
   content: string,
-  bytesPerToken: number = 4,
+  bytesPerToken?: number,
 ): number {
-  return Math.round(content.length / bytesPerToken)
+  if (bytesPerToken !== undefined) {
+    // Legacy call site with explicit override — preserve behavior
+    return Math.max(1, Math.round(content.length / bytesPerToken))
+  }
+  // Model-aware estimation: max(1, int(chars/cpt + 0.5))
+  // Matches Headroom's round-half-up semantics for accurate token budgets
+  const cpt = getCharsPerToken()
+  const chars = content.length
+  return Math.max(1, Math.floor(chars / cpt + 0.5))
 }
 
 /**
