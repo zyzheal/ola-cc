@@ -91,6 +91,7 @@ export class GrokAnalyzer {
   private model: string = 'claude-sonnet-4-20250514'
   private modelFast: string = 'claude-sonnet-4-20250514'
   private graphStore: GraphStore | null
+  private fileToNodesCache: Map<string, Set<string>> | null = null
 
   constructor(projectRoot: string, vendorDir?: string, graphStore?: GraphStore) {
     this.projectRoot = projectRoot
@@ -402,6 +403,22 @@ export class GrokAnalyzer {
   }
 
   /**
+   * 构建 file→nodeIds 索引，避免 O(N*M) 全量扫描
+   */
+  private buildFileToNodesIndex(): Map<string, Set<string>> {
+    if (this.fileToNodesCache) return this.fileToNodesCache
+    const index = new Map<string, Set<string>>()
+    if (!this.graphStore) return index
+    for (const [nodeId, meta] of this.graphStore.nodeMeta) {
+      const file = meta.file
+      if (!index.has(file)) index.set(file, new Set())
+      index.get(file)!.add(nodeId)
+    }
+    this.fileToNodesCache = index
+    return index
+  }
+
+  /**
    * 从 GraphStore 获取文件的 AST 元数据（Phase 1 优化）
    * 返回每个文件的节点和边信息，~5-8KB/文件，远小于原始源码
    */
@@ -409,24 +426,21 @@ export class GrokAnalyzer {
     const result = new Map<string, { nodes: NodeMetadata[]; edges: Array<{ from: string; to: string; type: string }> }>()
     if (!this.graphStore) return result
 
+    const fileToNodes = this.buildFileToNodesIndex()
+
     for (const file of files) {
       // Normalize path: make relative to projectRoot
       const relFile = file.startsWith(this.projectRoot)
         ? file.slice(this.projectRoot.length + 1)
         : file
 
-      const fileNodes: NodeMetadata[] = []
       const fileEdges: Array<{ from: string; to: string; type: string }> = []
 
-      // Collect nodes belonging to this file
-      for (const [, meta] of this.graphStore.nodeMeta) {
-        if (meta.file === relFile || meta.file === file) {
-          fileNodes.push(meta)
-        }
-      }
+      // O(1) lookup via index instead of O(N) scan
+      const fileNodeIds = fileToNodes.get(relFile) ?? fileToNodes.get(file) ?? new Set<string>()
+      const fileNodes = [...fileNodeIds].map(id => this.graphStore!.nodeMeta.get(id)!).filter(Boolean)
 
       // Collect edges where source is a node in this file
-      const fileNodeIds = new Set(fileNodes.map(n => n.id))
       for (const [from, outMap] of this.graphStore.adjacency) {
         if (!fileNodeIds.has(from)) continue
         for (const [to, edges] of outMap) {

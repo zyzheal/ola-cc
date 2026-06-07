@@ -116,8 +116,11 @@ export class RrfSearch {
       const inDegree = this.store.getInDegree(id)
       if (inDegree > 0) {
         // Treat in-degree as a rank signal (rank = 1/(1+log(inDegree)))
+        // Use independent k for graph signal — in-degree rank distribution
+        // differs significantly from text rank distribution
+        const GRAPH_K = 200
         const graphRank = Math.max(1, Math.floor(1 + Math.log2(inDegree)))
-        score += 1 / (this.k + graphRank)
+        score += 1 / (GRAPH_K + graphRank)
       }
 
       // Signal 4: Kind-based boost
