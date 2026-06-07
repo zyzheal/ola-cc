@@ -59,6 +59,7 @@ export class GraphContextService {
 
   private hotspotsCache: CacheEntry<Array<{ id: string; name: string; score: number }>> | null = null
   private communityCountCache: CacheEntry<number> | null = null
+  private engineCache: { engine: GraphEngine; storeLoadedAt: number } | null = null
 
   private constructor(private readonly projectRoot: string) {}
 
@@ -147,6 +148,20 @@ export class GraphContextService {
   // ----------------------------------------------------------
 
   /**
+   * Get or create a cached GraphEngine instance.
+   * Invalidates when the underlying GraphStore reloads.
+   */
+  private getEngine(store: GraphStore): GraphEngine | null {
+    if (!store.isLoaded) return null
+    if (this.engineCache && store.loadedAt === this.engineCache.storeLoadedAt) {
+      return this.engineCache.engine
+    }
+    const engine = new GraphEngine(store)
+    this.engineCache = { engine, storeLoadedAt: store.loadedAt }
+    return engine
+  }
+
+  /**
    * Get top 5 PageRank nodes (cached with 60s TTL).
    */
   private getHotspots(store: GraphStore): Array<{ id: string; name: string; score: number }> {
@@ -154,7 +169,9 @@ export class GraphContextService {
       return this.hotspotsCache.value
     }
 
-    const engine = new GraphEngine(store)
+    const engine = this.getEngine(store)
+    if (!engine) return []
+
     const pr = engine.pageRank()
     const top5 = pr.scores.slice(0, 5).map(s => {
       const meta = store.getNode(s.node)
@@ -177,7 +194,9 @@ export class GraphContextService {
       return this.communityCountCache.value
     }
 
-    const engine = new GraphEngine(store)
+    const engine = this.getEngine(store)
+    if (!engine) return 0
+
     const result = engine.louvainCommunity()
     const count = result.communities.length
 
