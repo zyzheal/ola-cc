@@ -48,6 +48,8 @@ const GrokConfigSchema = z.object({
   language: z.string().min(2).max(5).default('en'),
   maxBatch: z.number().int().min(1).max(10).default(5),
   autoUpdate: z.boolean().default(false),
+  batchSize: z.number().int().min(1).max(50).default(25),
+  concurrency: z.number().int().min(1).max(10).default(5),
 })
 
 type GrokConfig = z.infer<typeof GrokConfigSchema>
@@ -62,6 +64,8 @@ function loadGrokConfig(): GrokConfig {
     language: process.env.OLA_CC_GROK_LANGUAGE,
     maxBatch: process.env.OLA_CC_GROK_MAX_BATCH ? parseInt(process.env.OLA_CC_GROK_MAX_BATCH) : undefined,
     autoUpdate: process.env.OLA_CC_GROK_AUTO_UPDATE === 'true',
+    batchSize: process.env.OLA_CC_GROK_BATCH_SIZE ? parseInt(process.env.OLA_CC_GROK_BATCH_SIZE) : undefined,
+    concurrency: process.env.OLA_CC_GROK_CONCURRENCY ? parseInt(process.env.OLA_CC_GROK_CONCURRENCY) : undefined,
   }
 
   // 移除 undefined 值，让 Zod 使用默认值
@@ -381,7 +385,7 @@ export class GrokManager {
     reportProgress('analyzer', 0)
     let analysisResults: Record<string, unknown>[] = []
     try {
-      analysisResults = await this.analyzer.analyzeFilesBatch(filesToAnalyze)
+      analysisResults = await this.analyzer.analyzeFilesBatch(filesToAnalyze, this.config.batchSize, this.config.concurrency)
       reportProgress('analyzer', 100)
     } catch (error) {
       errors.push(error instanceof GrokError ? error : new GrokError('ANALYZER_FAILED', 'analyzer', String(error), true))
