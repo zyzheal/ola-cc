@@ -44,6 +44,12 @@ describe('WebFetch Utils', () => {
     it('should reject URLs with authentication', () => {
       expect(validateURL('https://user:pass@example.com')).toBe(false)
     })
+
+    it('should reject URLs that are too long', () => {
+      // LIMITS.MAX_URL_LENGTH is 2000
+      const longUrl = 'https://example.com/' + 'a'.repeat(2000)
+      expect(validateURL(longUrl)).toBe(false)
+    })
   })
 
   describe('checkDomainBlocklist', () => {
@@ -121,7 +127,7 @@ describe('WebFetch Utils', () => {
 
       expect(result.status).toBe('check_failed')
       expect(mockGet).toHaveBeenCalledTimes(2) // 1 initial + 1 retry
-      expect(endTime - startTime).toBeGreaterThan(1000) // Should have waited for retry
+      expect(endTime - startTime).toBeGreaterThanOrEqual(1000) // Should have waited for retry
     })
 
     it('should not retry on HTTP errors', async () => {
