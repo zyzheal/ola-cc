@@ -17,6 +17,7 @@ import * as CodegraphManager from './CodegraphManager.js';
 import { GraphContextService } from '../../services/graph/GraphContextService.js'
 import { GraphUsageTracker } from '../../services/graph/GraphUsageTracker.js'
 import { sanitizeQuery, sanitizeSymbolName } from '../../services/graph/SecurityUtil.js';
+import { createTerminalProgress } from '../../services/graph/TerminalProgress.js';
 import {
   ValidationError,
   handleContext,
@@ -248,8 +249,11 @@ export const codegraphTool = buildTool({
   async call(input: Input, _context, _canUseTool, _parentMessage, _onProgress) {
     const projectRoot = getCwd();
     const opStart = Date.now();
+    // Terminal progress: direct stderr animation bypassing Ink/React
+    const termProgress = createTerminalProgress('CodeGraph')
     const sendProgress = (stage: string, message?: string, progress?: number) => {
       _onProgress?.({ toolUseID: '', data: { type: 'codegraph_progress', stage, message, elapsed: Date.now() - opStart, progress } })
+      termProgress.update({ name: stage, label: message || stage, percent: progress })
     }
     /** 解析 CodeGraph stderr 并转发为结构化进度 */
     const onStderrProgress = (line: string) => {
@@ -319,6 +323,8 @@ export const codegraphTool = buildTool({
 
       // 所有操作完成时发送完成进度
       sendProgress('done')
+      termProgress.finishPhase('Done')
+      termProgress.stop()
       // Yield to event loop so React can render the final progress
       // before the tool result arrives and marks the tool as resolved.
       await new Promise(resolve => setTimeout(resolve, 0))
@@ -354,6 +360,7 @@ export const codegraphTool = buildTool({
 
       return { data: { ok: true, operation: input.operation, result, _graphContext: graphContext } };
     } catch (e) {
+      termProgress.stop()
       // ValidationError → parameter errors, no logging or failure recording
       if (e instanceof ValidationError) {
         return { data: { error: true, message: e.message } };
