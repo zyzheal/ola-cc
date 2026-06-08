@@ -196,8 +196,10 @@ export function getLanguageSection(
   // Always use Chinese regardless of user settings
   const lang = 'Chinese (中文)'
 
-  return `# Language
-Always respond in ${lang}. Use ${lang} for all explanations, comments, and communications with the user. Technical terms and code identifiers should remain in their original form.`
+  return `# Language (CRITICAL)
+Always respond in ${lang}. Use ${lang} for ALL explanations, comments, summaries, analyses, and communications with the user. Technical terms, code identifiers, file paths, and function names should remain in their original form.
+
+IMPORTANT: This includes task summaries, status reports, error explanations, and any concluding remarks. Never use English for these.`
 }
 
 function getOutputStyleSection(
