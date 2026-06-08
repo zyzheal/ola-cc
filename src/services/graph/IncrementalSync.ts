@@ -9,7 +9,7 @@
  * 设计文档: docs/superpowers/specs/2026-06-05-codegraph-grok-enhancement-design.md
  */
 
-import { execSync } from 'child_process'
+import { execFileSync } from 'child_process'
 import { statSync, readFileSync } from 'fs'
 import { createHash } from 'crypto'
 import { resolve } from 'path'
@@ -100,8 +100,8 @@ export class IncrementalSync {
 
   private detectGitDiff(): DetectResult {
     try {
-      const output = execSync(
-        'git diff --name-only HEAD -- "*.ts" "*.tsx" "*.js" "*.jsx"',
+      const output = execFileSync(
+        'git', ['diff', '--name-only', 'HEAD', '--', '*.ts', '*.tsx', '*.js', '*.jsx'],
         { cwd: this.projectRoot, encoding: 'utf-8', timeout: 5000 },
       ).trim()
 

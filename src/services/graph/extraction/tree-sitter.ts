@@ -36,7 +36,7 @@ type Node = ExtractionNode
 type Edge = ExtractionEdge
 type UnresolvedReference = UnresolvedRef
 
-// Backward-compatible aliases used throughout the extraction code
+// Backward-compatible aliases used throughout this file
 const generateNodeId = generate_node_id
 const getNodeText = get_node_text
 const getChildByField = get_child_by_field
@@ -46,7 +46,7 @@ const detectLanguage = detect_language
 const isLanguageSupported = is_language_supported
 const isFileLevelOnlyLanguage = is_file_level_only_language
 
-// Re-export for backward compatibility
+// Re-export for backward compatibility (language extractors use camelCase names)
 export { generate_node_id as generateNodeId } from './helpers.js'
 
 /**
@@ -152,6 +152,7 @@ export class TreeSitterExtractor {
   private source: string;
   private tree: Tree | null = null;
   private nodes: Node[] = [];
+  private nodeIndex: Map<string, Node> = new Map(); // O(1) lookup by node ID
   private edges: Edge[] = [];
   private _unresolvedRefs: UnresolvedReference[] = [];
   private errors: ExtractionError[] = [];
@@ -229,6 +230,7 @@ export class TreeSitterExtractor {
         updated_at: Date.now(),
       };
       this.nodes.push(fileNode);
+      this.nodeIndex.set(fileNode.id, fileNode);
 
       // Push file node onto stack so top-level declarations get contains edges
       this.nodeStack.push(fileNode.id);
@@ -500,6 +502,7 @@ export class TreeSitterExtractor {
     };
 
     this.nodes.push(newNode);
+    this.nodeIndex.set(id, newNode);
 
     // Add containment edge from parent
     if (this.nodeStack.length > 0) {
@@ -563,7 +566,7 @@ export class TreeSitterExtractor {
     // The file path is stored separately in filePath and pollutes FTS if included here.
     const parts: string[] = [];
     for (const nodeId of this.nodeStack) {
-      const node = this.nodes.find((n) => n.id === nodeId);
+      const node = this.nodeIndex.get(nodeId);
       if (node && node.kind !== 'file') {
         parts.push(node.name);
       }
@@ -600,7 +603,7 @@ export class TreeSitterExtractor {
     if (this.nodeStack.length === 0) return false;
     const parentId = this.nodeStack[this.nodeStack.length - 1];
     if (!parentId) return false;
-    const parentNode = this.nodes.find((n) => n.id === parentId);
+    const parentNode = this.nodeIndex.get(parentId);
     if (!parentNode) return false;
     return (
       parentNode.kind === 'class' ||
@@ -811,12 +814,17 @@ export class TreeSitterExtractor {
     // For methods with a receiver type but no class-like parent on the stack
     // (e.g., Rust impl blocks), add a contains edge from the owning struct/trait
     if (receiverType && !this.isInsideClassLikeNode()) {
-      const ownerNode = this.nodes.find(
-        (n) =>
+      let ownerNode: Node | undefined;
+      for (const n of this.nodes) {
+        if (
           n.name === receiverType &&
           n.file === this.filePath &&
           (n.kind === 'struct' || n.kind === 'class' || n.kind === 'enum' || n.kind === 'trait')
-      );
+        ) {
+          ownerNode = n;
+          break;
+        }
+      }
       if (ownerNode) {
         this.edges.push({
           source: ownerNode.id,

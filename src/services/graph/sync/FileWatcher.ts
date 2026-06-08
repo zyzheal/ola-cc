@@ -12,7 +12,7 @@
  * built-in ignore matcher and source-file extension check.
  */
 
-import { watch, readdirSync, statSync, type FSWatcher } from 'fs'
+import { watch, readdirSync, statSync, readFileSync, existsSync, type FSWatcher } from 'fs'
 import { join, relative, resolve } from 'path'
 import { logForDebugging } from '../../../utils/debug.js'
 import { watchDisabledReason } from './watchPolicy.js'
@@ -59,12 +59,57 @@ const DEFAULT_IGNORE_PATTERNS = [
   'vendor',
 ]
 
-/** Simple ignore matcher — checks if a relative path matches ignored patterns. */
+/**
+ * Simple ignore matcher — checks if a relative path matches ignored patterns.
+ *
+ * Three-layer mode:
+ *   Layer 1: DEFAULT_IGNORE_PATTERNS (hardcoded common dirs)
+ *   Layer 2: .gitignore patterns (project-level)
+ *   Layer 3: .ola-cc-ignore patterns (tool-level override)
+ */
 export class SimpleIgnoreMatcher {
   private readonly patterns: string[]
+  private readonly gitignorePatterns: string[]
+  private readonly olaIgnorePatterns: string[]
 
   constructor(patterns: string[] = DEFAULT_IGNORE_PATTERNS) {
     this.patterns = patterns
+    this.gitignorePatterns = []
+    this.olaIgnorePatterns = []
+  }
+
+  /**
+   * Create a matcher that loads .gitignore and .ola-cc-ignore from project root.
+   * Falls back to DEFAULT_IGNORE_PATTERNS if files don't exist.
+   */
+  static fromProjectRoot(projectRoot: string): SimpleIgnoreMatcher {
+    const matcher = new SimpleIgnoreMatcher()
+
+    // Layer 2: .gitignore
+    const gitignorePath = join(projectRoot, '.gitignore')
+    if (existsSync(gitignorePath)) {
+      try {
+        const content = readFileSync(gitignorePath, 'utf-8')
+        const parsed = parseIgnoreFile(content)
+        ;(matcher as any).gitignorePatterns = parsed
+      } catch {
+        logForDebugging('Failed to parse .gitignore, using defaults only')
+      }
+    }
+
+    // Layer 3: .ola-cc-ignore (tool-specific overrides)
+    const olaIgnorePath = join(projectRoot, '.ola-cc-ignore')
+    if (existsSync(olaIgnorePath)) {
+      try {
+        const content = readFileSync(olaIgnorePath, 'utf-8')
+        const parsed = parseIgnoreFile(content)
+        ;(matcher as any).olaIgnorePatterns = parsed
+      } catch {
+        logForDebugging('Failed to parse .ola-cc-ignore, using defaults only')
+      }
+    }
+
+    return matcher
   }
 
   /** Returns true if `relPath` should be ignored. */
@@ -72,11 +117,89 @@ export class SimpleIgnoreMatcher {
     // Normalize to forward slashes
     const normalized = relPath.replace(/\\/g, '/')
     const segments = normalized.split('/')
+
+    // Layer 1: Default patterns (segment-level match)
     for (const seg of segments) {
       if (this.patterns.includes(seg)) return true
     }
+
+    // Layer 2: .gitignore patterns
+    if (this.gitignorePatterns.length > 0 && matchesIgnorePatterns(normalized, this.gitignorePatterns)) {
+      return true
+    }
+
+    // Layer 3: .ola-cc-ignore patterns (highest priority, can un-ignore via negation)
+    if (this.olaIgnorePatterns.length > 0) {
+      // Check for negation patterns first (un-ignore)
+      const negations = this.olaIgnorePatterns.filter(p => p.startsWith('!'))
+      const positives = this.olaIgnorePatterns.filter(p => !p.startsWith('!'))
+
+      // If matched by positive .ola-cc-ignore pattern, ignore
+      if (positives.length > 0 && matchesIgnorePatterns(normalized, positives)) {
+        // But if negation matches, un-ignore
+        if (negations.length > 0 && matchesIgnorePatterns(normalized, negations.map(n => n.slice(1)))) {
+          return false
+        }
+        return true
+      }
+    }
+
     return false
   }
+}
+
+/**
+ * Parse a .gitignore-style file into an array of patterns.
+ * Strips comments, empty lines, and trims whitespace.
+ */
+function parseIgnoreFile(content: string): string[] {
+  return content
+    .split('\n')
+    .map(line => line.trim())
+    .filter(line => line.length > 0 && !line.startsWith('#'))
+}
+
+/**
+ * Check if a normalized path matches any ignore pattern.
+ * Supports:
+ *   - Directory patterns (e.g., "dist/" matches "dist/anything")
+ *   - Glob-like wildcards (e.g., "*.log")
+ *   - Prefix matching (e.g., "build" matches "build/anything")
+ *   - Negation patterns (e.g., "!important.log")
+ */
+function matchesIgnorePatterns(normalizedPath: string, patterns: string[]): boolean {
+  let ignored = false
+
+  for (const pattern of patterns) {
+    const isNegation = pattern.startsWith('!')
+    const raw = isNegation ? pattern.slice(1) : pattern
+    const isDir = raw.endsWith('/')
+    const base = isDir ? raw.slice(0, -1) : raw
+
+    // Convert glob-like pattern to a simple regex
+    const escaped = base
+      .replace(/[.+^${}()|[\]\\]/g, '\\$&')
+      .replace(/\*\*/g, '{{DOUBLE_STAR}}')
+      .replace(/\*/g, '[^/]*')
+      .replace(/\?/g, '[^/]')
+      .replace(/{{DOUBLE_STAR}}/g, '.*')
+
+    const regex = new RegExp(`(^|/)${escaped}(/|$)`)
+
+    if (regex.test(normalizedPath)) {
+      if (isDir) {
+        // Directory pattern: only match if path is under this directory
+        const dirPrefix = base + '/'
+        if (normalizedPath.startsWith(dirPrefix) || normalizedPath === base) {
+          ignored = !isNegation
+        }
+      } else {
+        ignored = !isNegation
+      }
+    }
+  }
+
+  return ignored
 }
 
 function supportsRecursiveWatch(): boolean {
@@ -172,7 +295,7 @@ export class FileWatcher {
       return false
     }
 
-    this.ignoreMatcher = new SimpleIgnoreMatcher()
+    this.ignoreMatcher = SimpleIgnoreMatcher.fromProjectRoot(this.projectRoot)
 
     try {
       if (this.inertForTests) {
