@@ -170,8 +170,8 @@ export const grokTool = buildTool({
 
   async call(input: Input, _context, _canUseTool, _parentMessage, _onProgress) {
     const opStart = Date.now();
-    const sendProgress = (stage: string) => {
-      _onProgress?.({ toolUseID: '', data: { type: 'grok_progress', stage } })
+    const sendProgress = (stage: string, progress?: number) => {
+      _onProgress?.({ toolUseID: '', data: { type: 'grok_progress', stage, progress, startTime: opStart } })
     }
 
     try {
@@ -186,14 +186,14 @@ export const grokTool = buildTool({
 
       switch (input.operation) {
         case 'grok_generate': {
-          sendProgress('generate')
+          sendProgress('generate', 0)
           const genResult = await grokManager.runAgentPipeline({
             path: input.path || getCwd(),
             language: input.language,
             scope: input.scope ? sanitizeQuery(input.scope) : undefined,
             incremental: input.incremental ?? true,
             onProgress: (stage, progress) => {
-              _onProgress?.({ toolUseID: '', data: { type: 'grok_progress', stage, progress } })
+              sendProgress(stage, progress)
             },
           })
           result = genResult
@@ -300,6 +300,9 @@ export const grokTool = buildTool({
 
       // 所有操作完成时发送完成进度
       sendProgress('done')
+      // Yield to event loop so React can render the final progress
+      // before the tool result arrives and marks the tool as resolved.
+      await new Promise(resolve => setTimeout(resolve, 0))
 
       // 查询操作追加过期提示
       const isQueryOp = ['grok_chat', 'grok_explain', 'grok_domain', 'grok_tour', 'grok_diff'].includes(input.operation)

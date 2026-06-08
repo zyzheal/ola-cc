@@ -319,6 +319,9 @@ export const codegraphTool = buildTool({
 
       // 所有操作完成时发送完成进度
       sendProgress('done')
+      // Yield to event loop so React can render the final progress
+      // before the tool result arrives and marks the tool as resolved.
+      await new Promise(resolve => setTimeout(resolve, 0))
 
       // PostToolUse: record usage
       GraphUsageTracker.getInstance(projectRoot).recordUsage({
