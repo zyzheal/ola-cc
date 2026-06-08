@@ -537,15 +537,11 @@ Output JSON array of analysis results.`
    */
   parseAnalysisResult(result: string): Record<string, unknown>[] {
     try {
-      // Strip leading code fence (only at string start)
+      // Strip leading code fence (handles ```json, ```JSON, ``` json, with \r\n)
       let cleaned = result.trim()
-      if (cleaned.startsWith('```')) {
-        cleaned = cleaned.replace(/^```(?:json)?\n?/, '')
-      }
-      // Strip trailing code fence (only at string end)
-      if (cleaned.endsWith('```')) {
-        cleaned = cleaned.replace(/\n?```$/, '')
-      }
+      cleaned = cleaned.replace(/^```(?:\s*(?:json|JSON))?[\s\r\n]*/, '')
+      // Strip trailing code fence
+      cleaned = cleaned.replace(/[\s\r\n]*```[\s\S]*$/, '')
       cleaned = cleaned.trim()
       const parsed = JSON.parse(cleaned)
       return Array.isArray(parsed) ? parsed : [parsed]
