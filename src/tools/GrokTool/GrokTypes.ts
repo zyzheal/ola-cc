@@ -96,4 +96,5 @@ export const ERROR_SUGGESTIONS: Record<string, string> = {
   'LLM_TOKEN_BUDGET': 'Token 预算耗尽，建议 --scope 缩小范围',
   'GRAPH_INVALID': '图谱数据损坏，建议 /grok --full 重新生成',
   'SOURCE_CLONE_FAILED': '源码克隆失败，检查网络连接后重试',
+  'NO_DATA_SOURCE': '图谱数据未就绪，请使用 Grep/Glob 工具进行文本搜索，或执行 codegraph_init / grok_generate 初始化图谱。',
 }

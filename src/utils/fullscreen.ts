@@ -200,3 +200,19 @@ export function _resetForTesting(): void {
   loggedTmuxCcDisable = false
   checkedTmuxMouseHint = false
 }
+
+// ── Fullscreen change subscription ──────────────────────────────
+const fullscreenListeners = new Set<() => void>()
+
+/** Subscribe to fullscreen toggle notifications. Returns unsubscribe fn. */
+export function subscribeFullscreen(callback: () => void): () => void {
+  fullscreenListeners.add(callback)
+  return () => { fullscreenListeners.delete(callback) }
+}
+
+/** Notify all subscribers that fullscreen state changed. */
+export function notifyFullscreenChange(): void {
+  for (const cb of fullscreenListeners) {
+    try { cb() } catch { /* ignore */ }
+  }
+}

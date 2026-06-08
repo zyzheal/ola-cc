@@ -164,7 +164,13 @@ Context compression lives in `src/services/compact/`:
 - FtsSearch (FTS5) + BM25 + RrfSearch 三路融合
 - SemanticSearchEngine (EmbeddingProvider + VectorStore)
 
-**Tool 层**: CodegraphTool 22 个操作（三层描述：core/analysis/advanced），GrokTool 2 个操作（grok_architecture/grok_hotspots），OperationRouter 智能路由 CLI/Engine/Hybrid
+**Tool 层**: CodegraphTool 22 个操作（三层描述：core/analysis/advanced），100% 内置零 CLI 依赖。GrokTool 2 个操作（grok_architecture/grok_hotspots）
+
+**CodegraphWriter** (`CodegraphWriter.ts`)，100% 内置 SQLite 写入层：
+- 替代 codegraph CLI 的 init/sync 功能，纯 TypeScript 实现
+- 创建与 CLI 兼容的 schema（21 列 nodes + 3 列 edges + FTS5）
+- FTS5 通过 drop→insert→rebuild→recreate 模式绕过 bun:sqlite 限制
+- `persist()` 全量写入，`updateFiles()` 按文件增量写入，`rebuildFts()` 重建索引
 
 **Extraction 系统** (`extraction/`)，零 CLI 依赖源码解析：
 - `tree-sitter.ts` — TreeSitterExtractor 核心类，14 种提取方法，AST→节点/边
@@ -325,6 +331,7 @@ Safety checks (`checkPathSafetyForAutoEdit` in `src/utils/permissions/filesystem
 | `src/services/graph/GraphEngine.ts` | 核心图算法引擎（15 种算法：PageRank/Tarjan SCC/Louvain 等） |
 | `src/services/graph/GraphStore.ts` | 统一图存储层（40 种 EdgeType，EdgeMeta[] 数组存储，GraphSnapshot） |
 | `src/services/graph/IncrementalSync.ts` | 三级增量同步（git diff → mtime → hash）+ markClean |
+| `src/services/graph/CodegraphWriter.ts` | 100% 内置 SQLite 写入层（替代 codegraph CLI init/sync） |
 | `src/services/graph/CallbackSynthesizer.ts` | 14 种回调模式边合成（Part1: 7 种基础模式） |
 | `src/services/graph/CallbackSynthesizerPart2.ts` | 7 种框架回调合成 + 主入口 synthesizeCallbackEdges() |
 | `src/services/graph/CallbackSynthesizerTypes.ts` | 共享类型/正则/GraphStoreAdapter 桥接层 |

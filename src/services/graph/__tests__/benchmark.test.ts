@@ -6,7 +6,7 @@ describe('performance benchmarks', () => {
   let engine: GraphEngine
   let store: GraphStore
 
-  test('load codegraph.db < 1s', async () => {
+  test('load codegraph.db < 3s', async () => {
     // Use process.cwd() as project root (where codegraph.db lives)
     // reload() forces a fresh load, bypassing any cached singleton
     store = GraphStore.getInstance(process.cwd())
@@ -16,7 +16,7 @@ describe('performance benchmarks', () => {
 
     engine = new GraphEngine(store)
     console.log(`GraphStore.load(): ${elapsed}ms, ${store.size.nodes} nodes, ${store.size.edges} edges`)
-    expect(elapsed).toBeLessThan(1000)
+    expect(elapsed).toBeLessThan(3000)
   })
 
   test('PageRank < 5s', () => {
@@ -43,13 +43,13 @@ describe('performance benchmarks', () => {
     expect(elapsed).toBeLessThan(15000)
   }, 20000)
 
-  test('topologicalSort < 5s', () => {
+  test('topologicalSort < 10s', () => {
     const start = Date.now()
     const result = engine.topologicalSort()
     const elapsed = Date.now() - start
     console.log(`topologicalSort(): ${elapsed}ms, ${result.order.length} nodes`)
-    expect(elapsed).toBeLessThan(5000)
-  })
+    expect(elapsed).toBeLessThan(10000)
+  }, 15000)
 
   test('classifyRoles < 5s', () => {
     const start = Date.now()

@@ -57,6 +57,7 @@ export interface ExtractionEdge {
   source: string
   target: string
   kind: string
+  weight?: number
   line?: number
 }
 

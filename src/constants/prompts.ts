@@ -351,6 +351,7 @@ function getUsingYourToolsSection(enabledTools: Set<string>): string {
           `To search the content of files, use ${GREP_TOOL_NAME} instead of grep or rg`,
         ]),
     `Reserve using the ${BASH_TOOL_NAME} exclusively for system commands and terminal operations that require shell execution. If you are unsure and there is a relevant dedicated tool, default to using the dedicated tool and only fallback on using the ${BASH_TOOL_NAME} tool for these if it is absolutely necessary.`,
+    `For symbol/function/class lookups, call chains, and impact analysis, prefer the codegraph tool (codegraph_search, codegraph_callers, codegraph_impact, codegraph_pagerank) — semantic graph queries are faster and more accurate than text search for these. For architecture overview and codebase understanding, use the grok tool (grok_architecture, grok_hotspots, grok_explain). For plain text/string pattern matching (log formats, config values, literal strings), use ${GREP_TOOL_NAME}/${GLOB_TOOL_NAME} directly. If codegraph/grok tools fail or return errors (e.g., index not initialized), fall back to ${GREP_TOOL_NAME}/${GLOB_TOOL_NAME} for text-based search.`,
   ]
 
   const items = [
