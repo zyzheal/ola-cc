@@ -3,6 +3,21 @@ import { promises as fs } from 'node:fs'
 import { join } from 'node:path'
 import { getAvailableASTChecks, runASTCheck } from './astChecker.js'
 
+/**
+ * Tests for AST-based code quality checker.
+ *
+ * NOTE: This file tests the 5 checks currently implemented in astChecker.ts:
+ *   1. unused-variable
+ *   2. unused-import
+ *   3. magic-number
+ *   4. unreachable-code
+ *   5. implicit-any
+ *
+ * Earlier versions had 20 checks (hardcoded-color, form-without-validation,
+ * async-without-try-catch, etc.) that were removed in a prior refactor.
+ * If new checks are added, update this test file accordingly.
+ */
+
 // -- Test helpers
 
 const TEST_DIR = join(process.cwd(), 'src', '.test-ast-temp')
@@ -114,6 +129,13 @@ describe('runASTCheck', () => {
     expect(results.length).toBe(1)
     expect(results[0].check).toBe('unreachable-code')
     expect(results[0].severity).toBe('warning')
+  })
+
+  it('detects unreachable code after process.exit()', async () => {
+    const path = await writeTestFile('procExit.ts', 'function foo() { process.exit(0); console.log("dead"); }\n')
+    const results = await runASTCheck([path], ['unreachable-code'])
+    expect(results.length).toBe(1)
+    expect(results[0].check).toBe('unreachable-code')
   })
 
   it('does not flag code in else branch after return in if', async () => {
