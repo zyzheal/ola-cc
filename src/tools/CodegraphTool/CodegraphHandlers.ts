@@ -18,6 +18,34 @@ import * as CodegraphManager from './CodegraphManager.js'
 import { resolve } from 'path'
 
 // ============================================================
+// Engine cache — avoids re-creating GraphEngine per handler call
+// ============================================================
+
+const engineCache = new Map<string, { engine: GraphEngine; loadedAt: number }>()
+
+async function getEngine(projectRoot: string): Promise<{ store: GraphStore; engine: GraphEngine }> {
+  const store = GraphStore.getInstance(projectRoot)
+  await store.load()
+
+  const cached = engineCache.get(projectRoot)
+  if (cached && cached.loadedAt === store.loadedAt) {
+    return { store, engine: cached.engine }
+  }
+
+  const engine = new GraphEngine(store)
+  engineCache.set(projectRoot, { engine, loadedAt: store.loadedAt })
+  return { store, engine }
+}
+
+export function clearEngineCache(projectRoot?: string): void {
+  if (projectRoot) {
+    engineCache.delete(projectRoot)
+  } else {
+    engineCache.clear()
+  }
+}
+
+// ============================================================
 // Types
 // ============================================================
 
@@ -157,9 +185,7 @@ export async function handleImpact(ctx: HandlerContext, input: { symbol?: string
   if (impactDepth > 2) {
     // Deep impact analysis using GraphEngine (BFS + backward reachability + role classification)
     ctx.sendProgress('impact', `Deep impact analysis of ${input.symbol}…`)
-    const store = GraphStore.getInstance(ctx.projectRoot)
-    await store.load()
-    const engine = new GraphEngine(store)
+    const { store, engine } = await getEngine(ctx.projectRoot)
     const nodeId = store.findByName(input.symbol)
     if (!nodeId) {
       return { data: { error: true, operation: 'codegraph_impact', message: `未找到符号: ${input.symbol}` } }
@@ -195,9 +221,7 @@ export async function handleImpact(ctx: HandlerContext, input: { symbol?: string
 
 export async function handleScc(ctx: HandlerContext, input: { maxNodes?: number }): Promise<unknown> {
   ctx.sendProgress('scc', 'Computing strongly connected components…')
-  const store = GraphStore.getInstance(ctx.projectRoot)
-  await store.load()
-  const engine = new GraphEngine(store)
+  const { engine } = await getEngine(ctx.projectRoot)
   const sccs = engine.tarjanSCC()
   const nonTrivial = sccs.filter(s => !s.isTrivial)
   return {
@@ -209,9 +233,7 @@ export async function handleScc(ctx: HandlerContext, input: { maxNodes?: number 
 
 export async function handleToposort(ctx: HandlerContext, input: { maxNodes?: number }): Promise<unknown> {
   ctx.sendProgress('toposort', 'Computing topological order…')
-  const store = GraphStore.getInstance(ctx.projectRoot)
-  await store.load()
-  const engine = new GraphEngine(store)
+  const { engine } = await getEngine(ctx.projectRoot)
   const topo = engine.topologicalSort()
   return {
     order: topo.order.slice(0, input.maxNodes ?? 50),
@@ -239,7 +261,7 @@ export async function handleDelta(ctx: HandlerContext, input: { maxNodes?: numbe
   await store.load()
 
   const curr: GraphSnapshot = { adjacency: store.adjacency, nodeMeta: store.nodeMeta, timestamp: Date.now() }
-  const engine = new GraphEngine(store)
+  const { engine } = await getEngine(ctx.projectRoot)
   const delta = engine.deltaGraph(old, curr)
   return {
     added: delta.added.slice(0, input.maxNodes ?? 50),
@@ -252,9 +274,7 @@ export async function handleDelta(ctx: HandlerContext, input: { maxNodes?: numbe
 
 export async function handlePagerank(ctx: HandlerContext, input: { damping?: number; maxNodes?: number }): Promise<unknown> {
   ctx.sendProgress('pagerank', 'Computing PageRank scores…')
-  const store = GraphStore.getInstance(ctx.projectRoot)
-  await store.load()
-  const engine = new GraphEngine(store)
+  const { store, engine } = await getEngine(ctx.projectRoot)
   const pr = engine.pageRank(input.damping ?? 0.85)
   const topN = input.maxNodes ?? 20
   return {
@@ -269,9 +289,7 @@ export async function handlePagerank(ctx: HandlerContext, input: { damping?: num
 
 export async function handleRoles(ctx: HandlerContext, input: { maxNodes?: number }): Promise<unknown> {
   ctx.sendProgress('roles', 'Classifying node roles…')
-  const store = GraphStore.getInstance(ctx.projectRoot)
-  await store.load()
-  const engine = new GraphEngine(store)
+  const { store, engine } = await getEngine(ctx.projectRoot)
   const roles = engine.classifyRoles()
   // Group by role
   const grouped: Record<string, Array<{ node: string; meta?: unknown }>> = {}
@@ -295,9 +313,7 @@ export async function handleRoles(ctx: HandlerContext, input: { maxNodes?: numbe
 export async function handleSlice(ctx: HandlerContext, input: { symbol?: string; maxNodes?: number }): Promise<unknown> {
   if (!input.symbol) throw new ValidationError('codegraph_slice 需要 symbol 参数')
   ctx.sendProgress('slice', `Computing data slice for ${input.symbol}…`)
-  const store = GraphStore.getInstance(ctx.projectRoot)
-  await store.load()
-  const engine = new GraphEngine(store)
+  const { store, engine } = await getEngine(ctx.projectRoot)
   const nodeId = store.findByName(input.symbol)
   if (!nodeId) {
     return { data: { error: true, operation: 'codegraph_slice', message: `未找到符号: ${input.symbol}` } }
@@ -313,9 +329,7 @@ export async function handleSlice(ctx: HandlerContext, input: { symbol?: string;
 
 export async function handleCoupling(ctx: HandlerContext, input: { maxNodes?: number }): Promise<unknown> {
   ctx.sendProgress('coupling', 'Computing coupling metrics…')
-  const store = GraphStore.getInstance(ctx.projectRoot)
-  await store.load()
-  const engine = new GraphEngine(store)
+  const { store, engine } = await getEngine(ctx.projectRoot)
   const metrics = engine.couplingMetrics()
   return {
     highCoupling: metrics.highCoupling.slice(0, input.maxNodes ?? 20),
@@ -327,9 +341,7 @@ export async function handleCoupling(ctx: HandlerContext, input: { maxNodes?: nu
 
 export async function handleCommunity(ctx: HandlerContext, input: { resolution?: number; maxNodes?: number }): Promise<unknown> {
   ctx.sendProgress('community', 'Running Louvain community detection…')
-  const store = GraphStore.getInstance(ctx.projectRoot)
-  await store.load()
-  const engine = new GraphEngine(store)
+  const { engine } = await getEngine(ctx.projectRoot)
   const community = engine.louvainCommunity({ resolution: input.resolution ?? 1.0 })
   const limit = input.maxNodes ?? 20
   return {
@@ -350,9 +362,7 @@ export async function handleCommunity(ctx: HandlerContext, input: { resolution?:
 export async function handleCentrality(ctx: HandlerContext, input: { method?: string; maxNodes?: number; sampleSize?: number }): Promise<unknown> {
   const method = input.method ?? 'both'
   ctx.sendProgress('centrality', `Computing ${method} centrality…`)
-  const store = GraphStore.getInstance(ctx.projectRoot)
-  await store.load()
-  const engine = new GraphEngine(store)
+  const { store, engine } = await getEngine(ctx.projectRoot)
   const topN = input.maxNodes ?? 20
   const result: Record<string, unknown> = {}
   if (method === 'katz' || method === 'both') {
@@ -376,9 +386,7 @@ export async function handleCentrality(ctx: HandlerContext, input: { method?: st
 
 export async function handleTemporal(ctx: HandlerContext, input: { since?: string; maxNodes?: number }): Promise<unknown> {
   ctx.sendProgress('temporal', 'Analyzing temporal coupling…')
-  const store = GraphStore.getInstance(ctx.projectRoot)
-  await store.load()
-  const engine = new GraphEngine(store)
+  const { engine } = await getEngine(ctx.projectRoot)
   const temporal = engine.temporalCoupling(ctx.projectRoot, {
     since: input.since || '30 days',
   })
