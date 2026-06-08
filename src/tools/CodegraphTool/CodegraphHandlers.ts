@@ -7,7 +7,7 @@
  * and freshness notes.
  */
 
-import { GraphStore } from '../../services/graph/GraphStore.js'
+import { GraphStore, type EdgeMeta } from '../../services/graph/GraphStore.js'
 import { GraphEngine } from '../../services/graph/GraphEngine.js'
 import type { GraphSnapshot } from '../../services/graph/GraphEngine.js'
 import { FtsSearch } from '../../services/graph/FtsSearch.js'
@@ -160,8 +160,12 @@ export async function handleImpact(ctx: HandlerContext, input: { symbol?: string
     const store = GraphStore.getInstance(ctx.projectRoot)
     await store.load()
     const engine = new GraphEngine(store)
-    const forward = engine.bfs(input.symbol, impactDepth)
-    const backward = engine.backwardReachability(input.symbol)
+    const nodeId = store.findByName(input.symbol)
+    if (!nodeId) {
+      return { data: { error: true, operation: 'codegraph_impact', message: `未找到符号: ${input.symbol}` } }
+    }
+    const forward = engine.bfs(nodeId, impactDepth)
+    const backward = engine.backwardReachability(nodeId)
     const roles = engine.classifyRoles()
     const impacted = forward.nodes.map(n => ({
       node: n,
@@ -221,21 +225,21 @@ export async function handleDelta(ctx: HandlerContext, input: { maxNodes?: numbe
   ctx.sendProgress('delta', 'Computing graph delta…')
   const store = GraphStore.getInstance(ctx.projectRoot)
   await store.load()
+
+  // Deep-copy current state as "old" snapshot (singleton returns same object after reload)
+  const oldAdj = new Map<string, Map<string, EdgeMeta[]>>()
+  for (const [k, v] of store.adjacency) {
+    oldAdj.set(k, new Map(v))
+  }
+  const oldNodes = new Map(store.nodeMeta)
+  const old: GraphSnapshot = { adjacency: oldAdj, nodeMeta: oldNodes, timestamp: Date.now() - 1000 }
+
+  // Reload to get "new" state
+  store.markDirty()
+  await store.load()
+
+  const curr: GraphSnapshot = { adjacency: store.adjacency, nodeMeta: store.nodeMeta, timestamp: Date.now() }
   const engine = new GraphEngine(store)
-  // Build current snapshot
-  const curr: GraphSnapshot = {
-    adjacency: new Map(store.adjacency),
-    nodeMeta: new Map(store.nodeMeta),
-    timestamp: Date.now(),
-  }
-  // For old snapshot: reload from disk (represents previous state)
-  const oldStore = GraphStore.getInstance(ctx.projectRoot)
-  await oldStore.reload()
-  const old: GraphSnapshot = {
-    adjacency: new Map(oldStore.adjacency),
-    nodeMeta: new Map(oldStore.nodeMeta),
-    timestamp: Date.now() - 1000,
-  }
   const delta = engine.deltaGraph(old, curr)
   return {
     added: delta.added.slice(0, input.maxNodes ?? 50),
@@ -294,7 +298,11 @@ export async function handleSlice(ctx: HandlerContext, input: { symbol?: string;
   const store = GraphStore.getInstance(ctx.projectRoot)
   await store.load()
   const engine = new GraphEngine(store)
-  const slice = engine.backwardDataSlice(input.symbol)
+  const nodeId = store.findByName(input.symbol)
+  if (!nodeId) {
+    return { data: { error: true, operation: 'codegraph_slice', message: `未找到符号: ${input.symbol}` } }
+  }
+  const slice = engine.backwardDataSlice(nodeId)
   return {
     symbol: input.symbol,
     symbols: slice.symbols.slice(0, input.maxNodes ?? 30),

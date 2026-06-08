@@ -190,7 +190,7 @@ export const grokTool = buildTool({
           const genResult = await grokManager.runAgentPipeline({
             path: input.path || getCwd(),
             language: input.language,
-            scope: input.scope,
+            scope: input.scope ? sanitizeQuery(input.scope) : undefined,
             incremental: input.incremental ?? true,
             onProgress: (stage, progress) => {
               _onProgress?.({ toolUseID: '', data: { type: 'grok_progress', stage, progress } })
@@ -238,9 +238,10 @@ export const grokTool = buildTool({
 
         case 'grok_tour': {
           sendProgress('tour')
+          const safeTopic = input.topic ? sanitizeQuery(input.topic) : undefined
           const tourResult = await grokManager.queryGraph(
-            input.topic
-              ? `Create a guided learning tour for: ${input.topic}`
+            safeTopic
+              ? `Create a guided learning tour for: ${safeTopic}`
               : 'Create guided learning tours for this codebase'
           )
           result = { tours: tourResult.answer }
@@ -252,8 +253,9 @@ export const grokTool = buildTool({
             return { data: { error: true, message: 'grok_diff 需要 files 参数' } }
           }
           sendProgress('diff')
+          const safeFiles = input.files.map(f => sanitizeSymbolName(f))
           const diffResult = await grokManager.queryGraph(
-            `Analyze the impact of changes to these files: ${input.files.join(', ')}`
+            `Analyze the impact of changes to these files: ${safeFiles.join(', ')}`
           )
           result = { impacted: diffResult.answer }
           break
