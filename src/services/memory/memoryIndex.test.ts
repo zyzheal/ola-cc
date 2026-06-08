@@ -1,7 +1,14 @@
-import { describe, it, expect, beforeEach, afterEach } from 'bun:test'
+import { describe, it, expect, beforeEach, afterEach, mock } from 'bun:test'
 import { MemoryIndex } from './memoryIndex'
 import * as fs from 'fs'
 import * as path from 'path'
+
+// Mock embedding module to avoid loading ~80MB transformer model in tests
+mock.module('../../utils/memory/embedding', () => ({
+  embedText: () => Promise.resolve(null),
+  embedBatch: () => Promise.resolve([]),
+  isEmbeddingAvailable: () => Promise.resolve(false),
+}))
 
 describe('MemoryIndex', () => {
   const tmpDir = '/tmp/test-memory-index-' + Date.now()
