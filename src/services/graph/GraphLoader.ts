@@ -447,6 +447,37 @@ export class GraphLoader {
     // Pass 2: source-level re-export parsing (Phase 6e)
     // Parse actual re-export statements from file content to create
     // more accurate exports edges based on `export { ... } from '...'`
+
+    // Build O(1) lookup indexes to avoid O(files × nodes) scanning
+    // Index 1: filePath → first nodeId in that file (replaces findFileNodeId)
+    const fileToNodeId = new Map<string, string>()
+    // Index 2: filePath::name → nodeId for named re-export lookup
+    const fileAndNameToNodeId = new Map<string, string>()
+    // Index 3: filePath → exported nodeIds for wildcard re-export lookup
+    const exportedByFile = new Map<string, string[]>()
+
+    for (const [nodeId, meta] of this.nodeMeta) {
+      if (!meta.file) continue
+      // fileToNodeId: first node per file
+      if (!fileToNodeId.has(meta.file)) {
+        fileToNodeId.set(meta.file, nodeId)
+      }
+      // fileAndNameToNodeId: exact name match per file
+      const nameKey = `${meta.file}::${meta.name}`
+      if (!fileAndNameToNodeId.has(nameKey)) {
+        fileAndNameToNodeId.set(nameKey, nodeId)
+      }
+      // exportedByFile: collect exported nodes per file
+      if (meta.is_exported === true || meta.kind.includes('export')) {
+        let arr = exportedByFile.get(meta.file)
+        if (!arr) {
+          arr = []
+          exportedByFile.set(meta.file, arr)
+        }
+        arr.push(nodeId)
+      }
+    }
+
     for (const [filePath, record] of this.fileRecords) {
       const language = record.language
       if (!language) continue
@@ -462,17 +493,19 @@ export class GraphLoader {
       const reExports = parseReExports(content, language)
       if (reExports.length === 0) continue
 
-      // Build a lookup of nodes in this file for the source module
+      const fromNodeId = fileToNodeId.get(filePath)
+      if (!fromNodeId) continue
+
       for (const reExport of reExports) {
         const sourceFile = this.resolveReExportSource(filePath, reExport.source)
         if (!sourceFile) continue
 
         if (reExport.kind === 'wildcard') {
           // For wildcard re-exports, find all exported nodes in the source file
-          for (const [nodeId, meta] of this.nodeMeta) {
-            if (meta.file === sourceFile && (meta.is_exported === true || meta.kind.includes('export'))) {
-              const fromNodeId = this.findFileNodeId(filePath)
-              if (fromNodeId && !this.edgeExists(fromNodeId, nodeId, 'exports')) {
+          const exportedNodes = exportedByFile.get(sourceFile)
+          if (exportedNodes) {
+            for (const nodeId of exportedNodes) {
+              if (!this.edgeExists(fromNodeId, nodeId, 'exports')) {
                 this.addEdge(fromNodeId, nodeId, 'exports', 1)
                 reExportCount++
               }
@@ -480,14 +513,11 @@ export class GraphLoader {
           }
         } else if (reExport.kind === 'named') {
           // For named re-exports, find the specific node by original name
-          for (const [nodeId, meta] of this.nodeMeta) {
-            if (meta.file === sourceFile && meta.name === reExport.originalName) {
-              const fromNodeId = this.findFileNodeId(filePath)
-              if (fromNodeId && !this.edgeExists(fromNodeId, nodeId, 'exports')) {
-                this.addEdge(fromNodeId, nodeId, 'exports', 1)
-                reExportCount++
-              }
-            }
+          const key = `${sourceFile}::${reExport.originalName}`
+          const nodeId = fileAndNameToNodeId.get(key)
+          if (nodeId && !this.edgeExists(fromNodeId, nodeId, 'exports')) {
+            this.addEdge(fromNodeId, nodeId, 'exports', 1)
+            reExportCount++
           }
         }
       }
