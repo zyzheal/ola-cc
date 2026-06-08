@@ -10,6 +10,11 @@
  * - Shimmer: sine-wave RGB oscillation (160,100,9)→(251,191,36)
  * - Moving highlight band (width=3) sweeps across progress bar
  * - Phase-aware: scanning → parsing → resolving → done
+ *
+ * Limitation: Uses fs.writeSync(2, ...) which bypasses Ink's stderr
+ * patch. In alt-screen mode, stdout (Ink) and stderr (this) write to
+ * the same terminal, which may cause visual flicker. In normal scroll
+ * mode (default), stdout and stderr each scroll independently — safe.
  */
 
 import { writeSync } from 'fs'
@@ -90,6 +95,11 @@ function formatNumber(n: number): string {
  * @returns Handle to update/stop the progress
  */
 export function createTerminalProgress(toolName: string): TerminalProgressHandle {
+  // Non-TTY: return noop handle to avoid ANSI noise in pipes/CI
+  if (!process.stderr.isTTY) {
+    return { update() {}, finishPhase() {}, error() {}, stop() {} }
+  }
+
   const startTime = Date.now()
   let currentPhase: ProgressPhase | null = null
   let stopped = false

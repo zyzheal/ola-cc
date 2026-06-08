@@ -267,19 +267,17 @@ export const codegraphTool = buildTool({
       // 自动初始化：如果项目未初始化，自动下载 + init
       if (!CodegraphManager.isCodegraphInitialized(projectRoot)) {
         if (input.operation === 'codegraph_init') {
-          // 显式 init → 前台执行，返回进度
           sendProgress('init', 'Initializing CodeGraph index…')
           const initResult = await CodegraphManager.initProject(projectRoot, onStderrProgress);
           if (!initResult.ok) {
             return { data: { error: true, message: `初始化失败: ${initResult.stderr || initResult.stdout}` } };
           }
+          termProgress.finishPhase('Done')
           return { data: { ok: true, operation: input.operation, result: { message: 'CodeGraph 索引已创建', initialized: true } } };
         }
         if (input.operation === 'codegraph_status') {
-          // status 不触发自动初始化，直接返回未初始化状态
           return { data: { ok: true, operation: input.operation, result: { initialized: false, message: 'CodeGraph 索引未初始化' } } };
         }
-        // 非 init 操作 → 后台静默初始化
         sendProgress('init', 'Auto-initializing CodeGraph…')
         await CodegraphManager.ensureReady(projectRoot, onStderrProgress);
       }
@@ -324,7 +322,6 @@ export const codegraphTool = buildTool({
       // 所有操作完成时发送完成进度
       sendProgress('done')
       termProgress.finishPhase('Done')
-      termProgress.stop()
       // Yield to event loop so React can render the final progress
       // before the tool result arrives and marks the tool as resolved.
       await new Promise(resolve => setTimeout(resolve, 0))
@@ -360,7 +357,6 @@ export const codegraphTool = buildTool({
 
       return { data: { ok: true, operation: input.operation, result, _graphContext: graphContext } };
     } catch (e) {
-      termProgress.stop()
       // ValidationError → parameter errors, no logging or failure recording
       if (e instanceof ValidationError) {
         return { data: { error: true, message: e.message } };
@@ -382,6 +378,8 @@ export const codegraphTool = buildTool({
           message: e instanceof Error ? e.message : String(e),
         },
       };
+    } finally {
+      termProgress.stop()
     }
   },
 
