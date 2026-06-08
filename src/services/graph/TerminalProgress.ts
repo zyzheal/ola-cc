@@ -2,18 +2,19 @@
  * TerminalProgress — Direct terminal progress animation
  *
  * Bypasses Ink/React rendering pipeline to write ANSI escape codes
- * directly to stderr. Inspired by codegraph's shimmer-worker architecture.
+ * directly to stderr. Matches codegraph's shimmer-worker architecture.
  *
  * Key design:
- * - Runs on a 80ms setInterval, independent of React's render cycle
- * - Uses ANSI escape codes (\r\x1b[K) for in-place line updates
- * - Shimmer effect: sine-wave RGB color animation on progress bar
+ * - 50ms render loop (20 FPS), independent of React's render cycle
+ * - ANSI truecolor (38;2;r;g;b) for smooth gradient transitions
+ * - Shimmer: sine-wave RGB oscillation (160,100,9)→(251,191,36)
+ * - Moving highlight band (width=3) sweeps across progress bar
  * - Phase-aware: scanning → parsing → resolving → done
  */
 
 import { writeSync } from 'fs'
 
-// ANSI escape codes
+// ANSI escape codes — matching codegraph exactly
 const RST = '\x1b[0m'
 const DM = '\x1b[2m'
 const GRN = '\x1b[32m'
@@ -21,15 +22,16 @@ const RED = '\x1b[31m'
 const BOLD = '\x1b[1m'
 const CLEAR_LINE = '\r\x1b[K'
 
-// Spinner glyphs (matching codegraph's style)
+// Spinner glyphs — matching codegraph's UNICODE_GLYPHS.spinner
 const SPINNER_GLYPHS = ['·', '✢', '✳', '✶', '✻', '✽']
 const BAR_FILLED = '█'
 const BAR_EMPTY = '░'
-const PHASE_DONE = '✓'
+const PHASE_DONE = '◆'
 const PHASE_ERR = '✗'
 const RAIL = '│'
 
-const ANIM_INTERVAL = 80
+// Match codegraph: 50ms render interval (20 FPS), 150ms per glyph
+const ANIM_INTERVAL = 50
 const FRAMES_PER_GLYPH = 3
 
 export interface ProgressPhase {
@@ -112,15 +114,19 @@ export function createTerminalProgress(toolName: string): TerminalProgressHandle
     const label = currentPhase.label || currentPhase.name
 
     if (currentPhase.percent != null && currentPhase.percent >= 0) {
-      const barWidth = 20
+      // Match codegraph: barWidth=25
+      const barWidth = 25
       const filled = Math.round(barWidth * currentPhase.percent / 100)
       const empty = barWidth - filled
       const detail = currentPhase.detail ? ` ${DM}${currentPhase.detail}${RST}` : ''
-      line = `${DM}${RAIL}${RST}  ${color}${glyph}${RST} ${DM}${toolName}${RST} · ${label}  ${renderBar(frame, filled, empty)}  ${currentPhase.percent}%${detail}`
+      // Format: │  ✶ label  ▓▓▓▓░░░░  45%
+      line = `${DM}${RAIL}${RST}  ${color}${glyph}${RST} ${label}  ${renderBar(frame, filled, empty)}  ${currentPhase.percent}%${detail}`
     } else if (currentPhase.count != null && currentPhase.count > 0) {
-      line = `${DM}${RAIL}${RST}  ${color}${glyph}${RST} ${DM}${toolName}${RST} · ${label}… ${formatNumber(currentPhase.count)} found`
+      // Format: │  ✶ label... 1,234 found
+      line = `${DM}${RAIL}${RST}  ${color}${glyph}${RST} ${label}... ${formatNumber(currentPhase.count)} found`
     } else {
-      line = `${DM}${RAIL}${RST}  ${color}${glyph}${RST} ${DM}${toolName}${RST} · ${label}…`
+      // Format: │  ✶ label...
+      line = `${DM}${RAIL}${RST}  ${color}${glyph}${RST} ${label}...`
     }
 
     writeStderr(`${CLEAR_LINE}${line}`)
@@ -138,16 +144,17 @@ export function createTerminalProgress(toolName: string): TerminalProgressHandle
       if (!currentPhase && !label) return
       const phaseLabel = label || currentPhase?.label || currentPhase?.name || ''
       writeStderr(CLEAR_LINE)
+      // Match codegraph: │  ◆ label — done
       let detail = ''
       if (currentPhase?.percent != null) detail = ` ${DM}— done${RST}`
       else if (currentPhase?.count != null && currentPhase.count > 0) detail = ` ${DM}— ${formatNumber(currentPhase.count)} found${RST}`
-      writeStderr(`${DM}${RAIL}${RST}  ${GRN}${PHASE_DONE}${RST} ${DM}${toolName}${RST} · ${phaseLabel}${detail}\n`)
+      writeStderr(`${DM}${RAIL}${RST}  ${GRN}${PHASE_DONE}${RST} ${phaseLabel}${detail}\n`)
       currentPhase = null
     },
 
     error(label: string) {
       writeStderr(CLEAR_LINE)
-      writeStderr(`${DM}${RAIL}${RST}  ${RED}${PHASE_ERR}${RST} ${DM}${toolName}${RST} · ${label}\n`)
+      writeStderr(`${DM}${RAIL}${RST}  ${RED}${PHASE_ERR}${RST} ${label}\n`)
       currentPhase = null
     },
 
