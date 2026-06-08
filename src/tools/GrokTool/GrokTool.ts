@@ -172,9 +172,9 @@ export const grokTool = buildTool({
   async call(input: Input, _context, _canUseTool, _parentMessage, _onProgress) {
     const opStart = Date.now();
     const termProgress = createTerminalProgress('Grok')
-    const sendProgress = (stage: string, progress?: number) => {
+    const sendProgress = (stage: string, progress?: number, message?: string) => {
       _onProgress?.({ toolUseID: '', data: { type: 'grok_progress', stage, progress, startTime: opStart } })
-      termProgress.update({ name: stage, label: stage, percent: progress })
+      termProgress.update({ name: stage, label: message || stage, percent: progress })
     }
 
     try {
@@ -304,7 +304,6 @@ export const grokTool = buildTool({
       // 所有操作完成时发送完成进度
       sendProgress('done')
       termProgress.finishPhase('Done')
-      termProgress.stop()
       // Yield to event loop so React can render the final progress
       // before the tool result arrives and marks the tool as resolved.
       await new Promise(resolve => setTimeout(resolve, 0))
@@ -338,7 +337,6 @@ export const grokTool = buildTool({
 
       return { data: { ok: true, operation: input.operation, result, _graphContext: graphContext } }
     } catch (error) {
-      termProgress.stop()
       logForDebugging(`[grok] error: ${error}`)
       const isGrokError = error instanceof GrokError
       const code = isGrokError ? error.code : 'UNKNOWN'
@@ -363,6 +361,8 @@ export const grokTool = buildTool({
           ...(suggestion ? { suggestion } : {}),
         },
       }
+    } finally {
+      termProgress.stop()
     }
   },
 
