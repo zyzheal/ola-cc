@@ -26,6 +26,8 @@ describe('earlyInput', () => {
       setRawMode: vi.fn(),
       setEncoding: vi.fn(),
       ref: vi.fn(),
+      pause: vi.fn(),
+      resume: vi.fn(),
       on: vi.fn(),
       removeListener: vi.fn(),
       read: vi.fn().mockReturnValue(null),

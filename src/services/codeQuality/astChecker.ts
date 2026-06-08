@@ -324,6 +324,23 @@ function checkMagicNumbers(
   return results
 }
 
+/** Check if a statement is an empty statement (`;`) */
+function isEmptyStatement(stmt: ts.Statement): boolean {
+  return stmt.kind === ts.SyntaxKind.EmptyStatement
+}
+
+/** Check if a statement is `process.exit(...)` */
+function isProcessExitCall(stmt: ts.Statement): boolean {
+  if (!ts.isExpressionStatement(stmt)) return false
+  const expr = stmt.expression
+  if (!ts.isCallExpression(expr)) return false
+  const callee = expr.expression
+  if (!ts.isPropertyAccessExpression(callee)) return false
+  return ts.isIdentifier(callee.expression) &&
+         callee.expression.text === 'process' &&
+         callee.name.text === 'exit'
+}
+
 /**
  * Check 4: Unreachable code
  * Detect code after return/throw that's not in else/if.
@@ -340,12 +357,7 @@ function checkUnreachableCode(
         const stmt = statements[i]
         // Check if this statement unconditionally terminates
         const terminates = ts.isReturnStatement(stmt) || ts.isThrowStatement(stmt) ||
-                          (ts.isExpressionStatement(stmt) &&
-                           ts.isCallExpression(stmt.expression) &&
-                           ts.isIdentifier(stmt.expression.expression) &&
-                           stmt.expression.expression.text === 'process' &&
-                           ts.isPropertyAccessExpression(stmt.expression) &&
-                           stmt.expression.name.text === 'exit')
+                          isProcessExitCall(stmt)
 
         if (terminates) {
           const nextStmt = statements[i + 1]
@@ -473,25 +485,33 @@ function matchGlob(pattern: string, filePath: string): boolean {
   const p = pattern.replace(/\\/g, '/')
   const f = filePath.replace(/\\/g, '/')
 
-  let braceCount = 0
-  const braces: string[] = []
-  let temp = p.replace(/\{([^}]+)\}/g, (_match, inner) => {
-    const replacement = `__BRACE_${braceCount}__`
-    braces.push(`(${inner.replace(/,/g, '|')})`)
-    braceCount++
-    return replacement
-  })
-
-  temp = temp.replace(/[.+?^$()[\]\\]/g, '\\$&')
-  temp = temp
-    .replace(/\*\*\//g, '(.+/)?')
-    .replace(/\*/g, '[^/]*')
-
-  for (let i = 0; i < braces.length; i++) {
-    temp = temp.replace(`__BRACE_${i}__`, braces[i])
+  // Split pattern into segments: brace groups (already regex) and non-brace (needs conversion)
+  const segments: string[] = []
+  let last = 0
+  const braceRe = /\{([^}]+)\}/g
+  let m: RegExpExecArray | null
+  while ((m = braceRe.exec(p)) !== null) {
+    if (m.index > last) {
+      segments.push(escapeGlob(p.slice(last, m.index)))
+    }
+    segments.push(`(${m[1].replace(/,/g, '|')})`)
+    last = m.index + m[0].length
+  }
+  if (last < p.length) {
+    segments.push(escapeGlob(p.slice(last)))
   }
 
-  return new RegExp(`^${temp}$`).test(f)
+  return new RegExp(`^${segments.join('')}$`).test(f)
+}
+
+/** Convert a glob segment (no braces) to regex */
+function escapeGlob(s: string): string {
+  // Escape regex metacharacters (except * and ?)
+  let r = s.replace(/[.+^$()[\]\\]/g, '\\$&')
+  r = r.replace(/\*\*\//g, '(.+/)?')
+  r = r.replace(/\*/g, '[^/]*')
+  r = r.replace(/\?/g, '[^/]')
+  return r
 }
 
 async function walkDir(dir: string): Promise<string[]> {
