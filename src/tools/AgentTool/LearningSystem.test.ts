@@ -226,3 +226,124 @@ describe('FalsePositiveRecord compatibility', () => {
     expect(records[0].issueType).toBe('syntax-error')
   })
 })
+
+describe('computeFrontierScores', () => {
+  it('should return empty array for unknown skill', () => {
+    const ls = new LearningSystem()
+    const scores = ls.computeFrontierScores('nonexistent')
+    expect(scores).toEqual([])
+  })
+
+  it('should compute frontier scores with default fields', () => {
+    const ls = new LearningSystem()
+    ls.logExecution({
+      skill: 'test', taskDescription: 't1', outcome: 'success', score: 80,
+      signal: null, edgeCases: [], timestamp: new Date(), duration_ms: 100,
+    })
+
+    const scores = ls.computeFrontierScores('test')
+    expect(scores.length).toBe(1)
+    expect(scores[0].frontierScore).toBeGreaterThan(0)
+    // Default: priority=1 → 10, age≈0 → 0, unlock=0 → 0, active=false → 0
+    expect(scores[0].breakdown.priorityComponent).toBe(10)
+    expect(scores[0].breakdown.unlockComponent).toBe(0)
+    expect(scores[0].breakdown.activeComponent).toBe(0)
+  })
+
+  it('should score active records higher', () => {
+    const ls = new LearningSystem()
+    ls.logExecution({
+      skill: 'test', taskDescription: 'inactive', outcome: 'success', score: 80,
+      signal: null, edgeCases: [], timestamp: new Date(), duration_ms: 100,
+    })
+    ls.logExecution({
+      skill: 'test', taskDescription: 'active', outcome: 'success', score: 80,
+      signal: null, edgeCases: [], timestamp: new Date(), duration_ms: 100,
+      active: true,
+    })
+
+    const scores = ls.computeFrontierScores('test')
+    // Active record should be first (highest score)
+    expect(scores[0].record.taskDescription).toBe('active')
+    expect(scores[0].breakdown.activeComponent).toBe(20)
+    expect(scores[1].breakdown.activeComponent).toBe(0)
+  })
+
+  it('should score higher priority records higher', () => {
+    const ls = new LearningSystem()
+    ls.logExecution({
+      skill: 'test', taskDescription: 'low-pri', outcome: 'success', score: 80,
+      signal: null, edgeCases: [], timestamp: new Date(), duration_ms: 100,
+      priority: 1,
+    })
+    ls.logExecution({
+      skill: 'test', taskDescription: 'high-pri', outcome: 'success', score: 80,
+      signal: null, edgeCases: [], timestamp: new Date(), duration_ms: 100,
+      priority: 3,
+    })
+
+    const scores = ls.computeFrontierScores('test')
+    expect(scores[0].record.taskDescription).toBe('high-pri')
+    expect(scores[0].breakdown.priorityComponent).toBe(30)
+    expect(scores[1].breakdown.priorityComponent).toBe(10)
+  })
+
+  it('should score records with more unlocks higher', () => {
+    const ls = new LearningSystem()
+    ls.logExecution({
+      skill: 'test', taskDescription: 'no-unlock', outcome: 'success', score: 80,
+      signal: null, edgeCases: [], timestamp: new Date(), duration_ms: 100,
+      unlockCount: 0,
+    })
+    ls.logExecution({
+      skill: 'test', taskDescription: 'unlocked-2', outcome: 'success', score: 80,
+      signal: null, edgeCases: [], timestamp: new Date(), duration_ms: 100,
+      unlockCount: 2,
+    })
+
+    const scores = ls.computeFrontierScores('test')
+    expect(scores[0].record.taskDescription).toBe('unlocked-2')
+    // P1: diminishing returns — 15*(1-exp(-2/3)) ≈ 7.3
+    expect(scores[0].breakdown.unlockComponent).toBeCloseTo(7.3, 0)
+  })
+
+  it('should add age component based on timestamp', () => {
+    const ls = new LearningSystem()
+    const twoHoursAgo = new Date(Date.now() - 2 * 60 * 60 * 1000)
+    ls.logExecution({
+      skill: 'test', taskDescription: 'old', outcome: 'success', score: 80,
+      signal: null, edgeCases: [], timestamp: twoHoursAgo, duration_ms: 100,
+    })
+
+    const scores = ls.computeFrontierScores('test')
+    // P1: logarithmic age — 20*ln(1+2)/ln(1+169) ≈ 4.28
+    expect(scores[0].breakdown.ageComponent).toBeGreaterThan(3.5)
+    expect(scores[0].breakdown.ageComponent).toBeLessThan(5.0)
+  })
+
+  it('should sort by frontier score descending', () => {
+    const ls = new LearningSystem()
+    ls.logExecution({
+      skill: 'test', taskDescription: 'medium', outcome: 'success', score: 80,
+      signal: null, edgeCases: [], timestamp: new Date(), duration_ms: 100,
+      priority: 1,
+    })
+    ls.logExecution({
+      skill: 'test', taskDescription: 'highest', outcome: 'success', score: 80,
+      signal: null, edgeCases: [], timestamp: new Date(), duration_ms: 100,
+      priority: 3, active: true, unlockCount: 1,
+    })
+    ls.logExecution({
+      skill: 'test', taskDescription: 'lowest', outcome: 'failure', score: 30,
+      signal: null, edgeCases: [], timestamp: new Date(), duration_ms: 100,
+    })
+
+    const scores = ls.computeFrontierScores('test')
+    expect(scores[0].record.taskDescription).toBe('highest')
+    expect(scores[scores.length - 1].record.taskDescription).toBe('lowest')
+    // Verify descending order
+    for (let i = 1; i < scores.length; i++) {
+      expect(scores[i].frontierScore).toBeLessThanOrEqual(scores[i - 1].frontierScore)
+    }
+  })
+})

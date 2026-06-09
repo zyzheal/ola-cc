@@ -117,6 +117,7 @@ import {
   roughTokenCountEstimationForMessages,
 } from '../tokenEstimation.js'
 import { groupMessagesByApiRound } from './grouping.js'
+import { validateCompactQuality, isCompactQualityEnabled } from './compactQuality.js'
 import {
   getCompactPrompt,
   getCompactUserSummaryMessage,
@@ -464,7 +465,7 @@ export async function compactConversation(
         )
 
     const compactPrompt = getCompactPrompt(customInstructions)
-    const summaryRequest = createUserMessage({
+    let summaryRequest = createUserMessage({
       content: compactPrompt,
     })
 
@@ -473,6 +474,8 @@ export async function compactConversation(
     let summaryResponse: AssistantMessage
     let summary: string | null
     let ptlAttempts = 0
+    let qualityAttempts = 0
+    const maxQualityRetries = 2
     logCompactDuration('stream_compact_summary_start')
     for (;;) {
       summaryResponse = await streamCompactSummary({
@@ -486,37 +489,72 @@ export async function compactConversation(
         isThirdParty,
       })
       summary = getAssistantMessageText(summaryResponse)
-      if (!summary?.startsWith(PROMPT_TOO_LONG_ERROR_MESSAGE)) break
 
       // CC-1180: compact request itself hit prompt-too-long. Truncate the
       // oldest API-round groups and retry rather than leaving the user stuck.
-      ptlAttempts++
-      const truncated =
-        ptlAttempts <= MAX_PTL_RETRIES
-          ? truncateHeadForPTLRetry(messagesToSummarize, summaryResponse)
-          : null
-      if (!truncated) {
-        logEvent('tengu_compact_failed', {
-          reason:
-            'prompt_too_long' as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
-          preCompactTokenCount,
-          promptCacheSharingEnabled,
-          ptlAttempts,
+      if (summary?.startsWith(PROMPT_TOO_LONG_ERROR_MESSAGE)) {
+        ptlAttempts++
+        const truncated =
+          ptlAttempts <= MAX_PTL_RETRIES
+            ? truncateHeadForPTLRetry(messagesToSummarize, summaryResponse)
+            : null
+        if (!truncated) {
+          logEvent('tengu_compact_failed', {
+            reason:
+              'prompt_too_long' as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
+            preCompactTokenCount,
+            promptCacheSharingEnabled,
+            ptlAttempts,
+          })
+          throw new Error(ERROR_MESSAGE_PROMPT_TOO_LONG)
+        }
+        logEvent('tengu_compact_ptl_retry', {
+          attempt: ptlAttempts,
+          droppedMessages: messagesToSummarize.length - truncated.length,
+          remainingMessages: truncated.length,
         })
-        throw new Error(ERROR_MESSAGE_PROMPT_TOO_LONG)
+        messagesToSummarize = truncated
+        retryCacheSafeParams = {
+          ...retryCacheSafeParams,
+          forkContextMessages: truncated,
+        }
+        continue
       }
-      logEvent('tengu_compact_ptl_retry', {
-        attempt: ptlAttempts,
-        droppedMessages: messagesToSummarize.length - truncated.length,
-        remainingMessages: truncated.length,
-      })
-      messagesToSummarize = truncated
-      // The forked-agent path reads from cacheSafeParams.forkContextMessages,
-      // not the messages param — thread the truncated set through both paths.
-      retryCacheSafeParams = {
-        ...retryCacheSafeParams,
-        forkContextMessages: truncated,
+
+      // C3: Quality validation — retry if summary quality is below threshold
+      if (
+        summary &&
+        !startsWithApiErrorPrefix(summary) &&
+        isCompactQualityEnabled() &&
+        qualityAttempts < maxQualityRetries
+      ) {
+        const summaryTokens = summaryResponse?.message?.usage?.output_tokens ?? 0
+        const qualityPassed = validateCompactQuality(
+          summary,
+          preCompactTokenCount,
+          summaryTokens,
+        )
+        if (!qualityPassed) {
+          qualityAttempts++
+          logEvent('tengu_compact_quality_retry', {
+            attempt: qualityAttempts,
+            summaryLength: summary.length,
+            preCompactTokenCount,
+          })
+          summaryRequest = createUserMessage({
+            content:
+              getCompactPrompt(customInstructions) +
+              '\n\nIMPORTANT: Your previous summary was too short/vague. ' +
+              'Please provide a more detailed summary preserving key information, ' +
+              'decisions, and context. Include specific file names, function names, ' +
+              'and technical details discussed.',
+          })
+          ptlAttempts = 0
+          continue
+        }
       }
+
+      break
     }
 
     if (!summary) {

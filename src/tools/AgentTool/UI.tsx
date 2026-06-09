@@ -72,11 +72,13 @@ function getSearchOrReadInfo(progressMessage: ProgressMessage<Progress>, tools: 
 
   // Check tool_use (assistant message)
   if (message.type === 'assistant') {
+    if (!message.message || !Array.isArray(message.message.content)) return null;
     return getSearchOrReadFromContent(message.message.content[0], tools);
   }
 
   // Check tool_result (user message) - find corresponding tool use from the map
   if (message.type === 'user') {
+    if (!message.message || !Array.isArray(message.message.content)) return null;
     const content = message.message.content[0];
     if (content?.type === 'tool_result') {
       const toolUse = toolUseByID.get(content.tool_use_id);
@@ -139,7 +141,7 @@ function processProgressMessages(messages: ProgressMessage<Progress>[], tools: T
   const toolUseByID = new Map<string, ToolUseBlockParam>();
   for (const msg of agentMessages) {
     // Track tool_use blocks as we see them
-    if (msg.data.message.type === 'assistant') {
+    if (msg.data.message.type === 'assistant' && msg.data.message.message && Array.isArray(msg.data.message.message.content)) {
       for (const c of msg.data.message.message.content) {
         if (c.type === 'tool_use') {
           toolUseByID.set(c.id, c as ToolUseBlockParam);
@@ -502,11 +504,12 @@ export function renderToolUseProgressMessage(progressMessages: ProgressMessage<P
         return false;
       }
       const message = msg.data.message;
+      if (!message.message || !Array.isArray(message.message.content)) return false;
       return message.message.content.some(content => content.type === 'tool_use');
     });
     const latestAssistant = progressMessages.findLast((msg): msg is ProgressMessage<AgentToolProgress> => hasProgressMessage(msg.data) && msg.data.message.type === 'assistant');
     let tokens = null;
-    if (latestAssistant?.data.message.type === 'assistant') {
+    if (latestAssistant?.data.message.type === 'assistant' && latestAssistant.data.message.message) {
       const usage = latestAssistant.data.message.message.usage;
       tokens = (usage.cache_creation_input_tokens ?? 0) + (usage.cache_read_input_tokens ?? 0) + usage.input_tokens + usage.output_tokens;
     }
@@ -550,6 +553,7 @@ export function renderToolUseProgressMessage(progressMessages: ProgressMessage<P
     if (!hasProgressMessage(data)) {
       return false;
     }
+    if (!data.message.message || !Array.isArray(data.message.message.content)) return false;
     return data.message.message.content.some(content => content.type === 'tool_use');
   });
   const firstData = progressMessages[0]?.data;
@@ -668,11 +672,11 @@ function calculateAgentStats(progressMessages: ProgressMessage<Progress>[]): {
       return false;
     }
     const message = msg.data.message;
-    return message.type === 'user' && message.message.content.some(content => content.type === 'tool_result');
+    return message.type === 'user' && message.message && Array.isArray(message.message.content) && message.message.content.some(content => content.type === 'tool_result');
   });
   const latestAssistant = progressMessages.findLast((msg): msg is ProgressMessage<AgentToolProgress> => hasProgressMessage(msg.data) && msg.data.message.type === 'assistant');
   let tokens = null;
-  if (latestAssistant?.data.message.type === 'assistant') {
+  if (latestAssistant?.data.message.type === 'assistant' && latestAssistant.data.message.message) {
     const usage = latestAssistant.data.message.message.usage;
     tokens = (usage.cache_creation_input_tokens ?? 0) + (usage.cache_read_input_tokens ?? 0) + usage.input_tokens + usage.output_tokens;
   }
@@ -841,7 +845,7 @@ export function extractLastToolInfo(progressMessages: ProgressMessage<Progress>[
     if (!hasProgressMessage(pm.data)) {
       continue;
     }
-    if (pm.data.message.type === 'assistant') {
+    if (pm.data.message.type === 'assistant' && pm.data.message.message && Array.isArray(pm.data.message.message.content)) {
       for (const c of pm.data.message.message.content) {
         if (c.type === 'tool_use') {
           toolUseByID.set(c.id, c as ToolUseBlockParam);
@@ -863,7 +867,7 @@ export function extractLastToolInfo(progressMessages: ProgressMessage<Progress>[
     const info = getSearchOrReadInfo(msg, tools, toolUseByID);
     if (info && (info.isSearch || info.isRead)) {
       // Only count tool_result messages to avoid double counting
-      if (msg.data.message.type === 'user') {
+      if (msg.data.message.type === 'user' && msg.data.message.message && Array.isArray(msg.data.message.message.content)) {
         if (info.isSearch) {
           searchCount++;
         } else if (info.isRead) {
@@ -902,9 +906,9 @@ export function extractLastToolInfo(progressMessages: ProgressMessage<Progress>[
       return false;
     }
     const message = msg.data.message;
-    return message.type === 'user' && message.message.content.some(c => c.type === 'tool_result');
+    return message.type === 'user' && !!message.message && Array.isArray(message.message.content) && message.message.content.some(c => c.type === 'tool_result');
   });
-  if (lastToolResult?.data.message.type === 'user') {
+  if (lastToolResult?.data.message.type === 'user' && lastToolResult.data.message.message && Array.isArray(lastToolResult.data.message.message.content)) {
     const toolResultBlock = lastToolResult.data.message.message.content.find(c => c.type === 'tool_result');
     if (toolResultBlock?.type === 'tool_result') {
       // Look up the corresponding tool_use — already indexed above
@@ -943,7 +947,7 @@ export function extractLastToolInfo(progressMessages: ProgressMessage<Progress>[
       continue;
     }
     const message = pm.data.message;
-    if (message.kind !== 'init_progress') {
+    if (message.kind !== 'init_progress' || !message.message || !Array.isArray(message.message.content)) {
       continue;
     }
     const textBlock = message.message.content.find(c => c.type === 'text');

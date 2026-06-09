@@ -28,6 +28,9 @@ import {
 } from '../../services/mcp/client.js'
 import { getMcpConfigByName } from '../../services/mcp/config.js'
 import { runQualityScan, type ScanResult } from '../../services/codeQuality/regexScanner.js'
+import { isLessonsInjectEnabled, loadLessonsPrompt } from './lessonsInjector.js'
+import { isEnvTruthy } from '../../utils/envUtils.js'
+import { LearningSystem } from './LearningSystem.js'
 import { runASTCheck } from '../../services/codeQuality/astChecker.js'
 import type {
   MCPServerConnection,
@@ -285,6 +288,7 @@ export async function* runAgent({
   maxTokens,
   timeoutSeconds,
   quotaManager,
+  agentClass,
 }: {
   agentDefinition: AgentDefinition
   promptMessages: Message[]
@@ -362,6 +366,8 @@ export async function* runAgent({
    * supports both per-agent and global session budgets. Falls back to raw
    * parameter checks if omitted. */
   quotaManager?: import('../../utils/quota/ResourceQuotaManager.js').ResourceQuotaManager
+  /** Agent classification for adaptive tool call budget scaling */
+  agentClass?: import('./agentClassifications.js').AgentClass
 }): AsyncGenerator<Message, void> {
   // Track subagent usage for feature discovery
   const _initStart = Date.now()
@@ -588,7 +594,8 @@ export async function* runAgent({
   )
 
   _initLog('before getAgentSystemPrompt')
-  const agentSystemPrompt = override?.systemPrompt
+  // A1: let (not const) so lessons injection can reassign
+  let agentSystemPrompt = override?.systemPrompt
     ? override.systemPrompt
     : asSystemPrompt(
         await getAgentSystemPrompt(
@@ -600,6 +607,24 @@ export async function* runAgent({
         ),
       )
   _initLog('after getAgentSystemPrompt')
+
+  // A1: Inject lessons from execution history into agent system prompt.
+  // D3 fix: inject regardless of override.systemPrompt — lessons are
+  // operational context, not part of the agent definition.
+  if (isLessonsInjectEnabled()) {
+    try {
+      const lessons = loadLessonsPrompt(agentDefinition.agentType)
+      if (lessons) {
+        if (Array.isArray(agentSystemPrompt)) {
+          agentSystemPrompt.push(lessons)
+        } else {
+          agentSystemPrompt = [agentSystemPrompt, lessons]
+        }
+      }
+    } catch {
+      // Lessons injection failure should never block agent execution
+    }
+  }
 
   // Determine abortController:
   // - Override takes precedence
@@ -859,6 +884,18 @@ export async function* runAgent({
   // Track the last assistant message text for validation gate
   let lastAssistantMessageText = ''
 
+  // A2: Action chain collector for crystallize (fire-and-forget learning)
+  const crystallizeEnabled = isEnvTruthy(process.env.OLA_CC_CRYSTALLIZE)
+  const actionChainCollector: Array<{
+    toolName: string
+    input: string
+    output: string
+    success: boolean
+    duration_ms: number
+  }> = []
+  // Pending tool uses keyed by tool_use_id, tracking start time and input
+  const pendingToolUses = new Map<string, { toolName: string; input: string; startTime: number }>()
+
   _initLog('before query() call')
   try {
     for await (const message of query({
@@ -870,7 +907,7 @@ export async function* runAgent({
       toolUseContext: agentToolUseContext,
       querySource,
       maxTurns: maxTurns ?? agentDefinition.maxTurns ?? 50,
-      maxToolCalls: getMaxToolCalls(maxToolCalls),
+      maxToolCalls: getMaxToolCalls(maxToolCalls, agentClass),
     })) {
       checkCpuHotspot('runAgent_message_yield')
       _initLog(`first query() message: type=${message.type}`)
@@ -999,6 +1036,49 @@ export async function* runAgent({
             if (textBlocks) lastAssistantMessageText = textBlocks
           }
         }
+
+        // A2: Collect action chain for crystallize
+        if (crystallizeEnabled) {
+          if (message.type === 'assistant' && message.message?.content && Array.isArray(message.message.content)) {
+            // Collect pending tool uses from assistant message
+            for (const block of message.message.content) {
+              if (block.type === 'tool_use' && block.id) {
+                pendingToolUses.set(block.id, {
+                  toolName: block.name,
+                  input: typeof block.input === 'string' ? block.input : JSON.stringify(block.input ?? ''),
+                  startTime: Date.now(),
+                })
+              }
+            }
+          } else if (message.type === 'user' && message.message?.content && Array.isArray(message.message.content)) {
+            // Match tool results with pending tool uses
+            for (const block of message.message.content) {
+              if (block.type === 'tool_result' && block.tool_use_id) {
+                const pending = pendingToolUses.get(block.tool_use_id)
+                if (pending) {
+                  pendingToolUses.delete(block.tool_use_id)
+                  const outputText = typeof block.content === 'string'
+                    ? block.content
+                    : Array.isArray(block.content)
+                      ? block.content.filter((b: { type: string }) => b.type === 'text').map((b: { text: string }) => b.text).join('\n')
+                      : ''
+                  actionChainCollector.push({
+                    toolName: pending.toolName,
+                    input: pending.input,
+                    output: outputText.slice(0, 500), // cap output for memory
+                    success: !block.is_error,
+                    duration_ms: Date.now() - pending.startTime,
+                  })
+                  // Cap collector to prevent unbounded growth in long agent runs
+                  if (actionChainCollector.length > 100) {
+                    actionChainCollector.splice(0, actionChainCollector.length - 100)
+                  }
+                }
+              }
+            }
+          }
+        }
+
         yield message
       }
     }
@@ -1011,6 +1091,14 @@ export async function* runAgent({
       // not a user cancellation. The agent's transcript is already recorded.
     } else if (agentAbortController.signal.aborted) {
       throw new AbortError()
+    }
+
+    // A2: Clean up orphaned pending tool uses (tool_use without tool_result)
+    if (crystallizeEnabled && pendingToolUses.size > 0) {
+      logForDebugging(
+        `[Agent ${agentDefinition.agentType}] ${pendingToolUses.size} orphaned tool_use(s) without results — cleared`,
+      )
+      pendingToolUses.clear()
     }
 
     // Run callback if provided (only built-in agents have callbacks)
@@ -1253,6 +1341,26 @@ export async function* runAgent({
         }
       }
     }
+
+    // A2: Crystallize action chain — fire-and-forget learning
+    if (crystallizeEnabled && actionChainCollector.length > 0) {
+      try {
+        const learningSystem = new LearningSystem({ enablePersistence: true })
+        const knowledge = learningSystem.crystallize(
+          agentDefinition.agentType,
+          actionChainCollector,
+        )
+        if (knowledge) {
+          logForDebugging(
+            `[Agent ${agentDefinition.agentType}] Crystallized ${actionChainCollector.length} tool calls: ${knowledge.slice(0, 100)}...`,
+          )
+        }
+      } catch (crystallizeError) {
+        logForDebugging(
+          `[Agent ${agentDefinition.agentType}] Crystallize failed: ${crystallizeError}`,
+        )
+      }
+    }
   } finally {
     // Clean up timeout timer if still running
     if (timeoutTimer) {
@@ -1314,12 +1422,11 @@ export function filterIncompleteToolCalls(messages: Message[]): Message[] {
   for (const message of messages) {
     if (message?.type === 'user') {
       const userMessage = message as UserMessage
+      if (!userMessage.message || !Array.isArray(userMessage.message.content)) continue
       const content = userMessage.message.content
-      if (Array.isArray(content)) {
-        for (const block of content) {
-          if (block.type === 'tool_result' && block.tool_use_id) {
-            toolUseIdsWithResults.add(block.tool_use_id)
-          }
+      for (const block of content) {
+        if (block.type === 'tool_result' && block.tool_use_id) {
+          toolUseIdsWithResults.add(block.tool_use_id)
         }
       }
     }
@@ -1329,18 +1436,17 @@ export function filterIncompleteToolCalls(messages: Message[]): Message[] {
   return messages.filter(message => {
     if (message?.type === 'assistant') {
       const assistantMessage = message as AssistantMessage
+      if (!assistantMessage.message || !Array.isArray(assistantMessage.message.content)) return true
       const content = assistantMessage.message.content
-      if (Array.isArray(content)) {
-        // Check if this assistant message has any tool uses without results
-        const hasIncompleteToolCall = content.some(
-          block =>
-            block.type === 'tool_use' &&
-            block.id &&
-            !toolUseIdsWithResults.has(block.id),
-        )
-        // Exclude messages with incomplete tool calls
-        return !hasIncompleteToolCall
-      }
+      // Check if this assistant message has any tool uses without results
+      const hasIncompleteToolCall = content.some(
+        block =>
+          block.type === 'tool_use' &&
+          block.id &&
+          !toolUseIdsWithResults.has(block.id),
+      )
+      // Exclude messages with incomplete tool calls
+      return !hasIncompleteToolCall
     }
     // Keep all non-assistant messages and assistant messages without tool calls
     return true

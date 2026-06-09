@@ -84,7 +84,8 @@ type CacheEntry = {
 }
 
 // Cache configuration using constants from constants.ts
-const URL_CACHE = new LRUCache<string, CacheEntry>({
+/** @internal - exported for testing only */
+export const URL_CACHE = new LRUCache<string, CacheEntry>({
   maxSize: CACHE.MAX_URL_CACHE_SIZE,
   ttl: CACHE.TTL_URL,
 })
@@ -93,7 +94,8 @@ const URL_CACHE = new LRUCache<string, CacheEntry>({
 // fetching two paths on the same domain triggers two identical preflight
 // HTTP round-trips to api.anthropic.com. This hostname-keyed cache avoids
 // that. Only 'allowed' is cached — blocked/failed re-check on next attempt.
-const DOMAIN_CHECK_CACHE = new LRUCache<string, true>({
+/** @internal - exported for testing only */
+export const DOMAIN_CHECK_CACHE = new LRUCache<string, true>({
   max: CACHE.MAX_DOMAIN_CACHE_SIZE,
   ttl: CACHE.TTL_DOMAIN_CHECK,
 })
@@ -213,7 +215,7 @@ export async function checkDomainBlocklist(
       const response = await axios.get(
         `${getEnvOrThrow('CLAUDE_WEB_DOMAIN_INFO_URL')}?domain=${encodeURIComponent(domain)}`,
         {
-          timeout: DOMAIN_CHECK_TIMEOUT_MS,
+          timeout: TIMEOUTS.DOMAIN_CHECK,
           headers: {
             'User-Agent': 'ola-cc-webfetch/1.0',
           },

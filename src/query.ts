@@ -1,5 +1,6 @@
 // biome-ignore-all assist/source/organizeImports: ANT-ONLY import markers must not be reordered
 import { checkCpuHotspot, logCpuDiag } from "./utils/eventLoopWatchdog.js";
+import { buildBudgetWarning, BUDGET_WARNING_THRESHOLDS } from "./tools/AgentTool/toolCallBudget.js";
 import type {
 	ToolResultBlockParam,
 	ToolUseBlock,
@@ -424,8 +425,8 @@ async function* queryLoop(
 	// If yielded before, runAgent.ts breaks out of the generator via
 	// generator.return(), and the summary injection code never executes.
 	let pendingBudgetAttachment: AttachmentMessage | null = null;
-	// Guard: prevent budget warning from being injected every turn
-	let budgetWarningInjected = false;
+	// Progressive warning: tracks which tier was last fired (from agentmemory-headroom)
+	let lastBudgetWarningTier = -1;
 
 	// Expose remaining budget for fork subagent inheritance
 	if (maxToolCalls) {
@@ -2235,17 +2236,19 @@ async function* queryLoop(
 			// just before the return.
 		}
 
-		// Budget warning: inject into messages so the MODEL sees it (not just yield to caller).
-		// Guard prevents repeated injection across turns.
-		if (maxToolCalls && totalToolCalls >= maxToolCalls * 0.8 && totalToolCalls < maxToolCalls && !budgetWarningInjected && !forcedSummaryInjected) {
-			budgetWarningInjected = true
-			const remaining = maxToolCalls - totalToolCalls
-			const warningMsg = createUserMessage({
-				content: `[Budget Warning] You have ${remaining} tool calls remaining out of ${maxToolCalls}. Please prioritize completing the task efficiently and prepare a final summary.`,
-				isMeta: true,
-			})
-			yield warningMsg
-			toolResults.push(warningMsg)
+		// Progressive budget warning: inject efficiency hints at 50%, 70%, 90% (from agentmemory-headroom)
+		if (maxToolCalls && totalToolCalls < maxToolCalls && !forcedSummaryInjected) {
+			for (let i = BUDGET_WARNING_THRESHOLDS.length - 1; i >= 0; i--) {
+				const threshold = BUDGET_WARNING_THRESHOLDS[i]!
+				if (totalToolCalls >= maxToolCalls * threshold && i > lastBudgetWarningTier) {
+					lastBudgetWarningTier = i
+					yield createUserMessage({
+						content: buildBudgetWarning(totalToolCalls, maxToolCalls, threshold),
+						isMeta: true,
+					});
+					break;
+				}
+			}
 		}
 
 		// Dispatch tool_completed events for goal runtime tracking

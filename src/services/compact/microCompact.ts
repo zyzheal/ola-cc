@@ -24,6 +24,7 @@ import {
   clearCompactWarningSuppression,
   suppressCompactWarning,
 } from './compactWarningState.js'
+import { containsImportantContent } from './lineImportance.js'
 import {
   getTimeBasedMCConfig,
   type TimeBasedMCConfig,
@@ -36,6 +37,24 @@ import {
 export const TIME_BASED_MC_CLEARED_MESSAGE = '[Old tool result content cleared]'
 
 const IMAGE_MAX_TOKEN_SIZE = 2000
+
+/**
+ * Detect if the current model is a Claude-family model.
+ * Used for model-aware token padding in estimateMessageTokens.
+ */
+function isClaudeModel(): boolean {
+  try {
+    const model = getMainLoopModel().toLowerCase()
+    return (
+      model.includes('claude') ||
+      model.includes('sonnet') ||
+      model.includes('opus') ||
+      model.includes('haiku')
+    )
+  } catch {
+    return false
+  }
+}
 
 // Only compact these tools
 const COMPACTABLE_TOOLS = new Set<string>([
@@ -72,33 +91,6 @@ const SOURCE_CODE_EXTENSIONS = new Set([
   '.vue', '.svelte',
 ])
 
-// Error indicators in Bash/PowerShell output that signal critical debugging
-// context. Losing these results would make it harder to diagnose issues.
-const BASH_ERROR_INDICATORS = [
-  'Error',
-  'error',
-  'ERROR',
-  'panic',
-  'PANIC',
-  'failed',
-  'FAILED',
-  'failure',
-  'FAILURE',
-  'stack trace',
-  'Stack trace',
-  'exception',
-  'Exception',
-  'EXCEPTION',
-  'FATAL',
-  'fatal',
-  'Segmentation fault',
-  'core dumped',
-  'Traceback',
-  'Traceback (most recent call last)',
-  'fatal error',
-  'unrecoverable',
-]
-
 /**
  * Check if a tool result should be protected from Micro-Compact clearing.
  *
@@ -109,8 +101,10 @@ const BASH_ERROR_INDICATORS = [
  *
  * 1. FileRead results for source code files (.ts, .py, .go, etc.) — these
  *    are expensive to re-read and critical for maintaining code context.
- * 2. Bash/PowerShell results that contain error indicators — error context
- *    is needed for debugging and understanding what went wrong.
+ * 2. Shell results containing important content — uses TieredDetector
+ *    (KeywordDetector + PatternDetector) to identify errors, security
+ *    concerns, warnings, and structural markers with word-boundary
+ *    awareness and confidence-based escalation.
  *
  * Non-protected results (ls output, simple glob/grep results, web search
  * results) continue to be cleared as before.
@@ -133,12 +127,12 @@ function shouldProtectToolResult(
     }
   }
 
-  // Protect Bash/PowerShell results that contain error indicators
+  // Protect shell results containing important content
+  // Uses TieredDetector: PatternDetector (stack traces, HTTP errors, security
+  // patterns) + KeywordDetector (word-boundary-aware, 5 categories)
   if (SHELL_TOOL_NAMES.includes(toolName)) {
-    for (const indicator of BASH_ERROR_INDICATORS) {
-      if (toolResultContent.includes(indicator)) {
-        return true
-      }
+    if (containsImportantContent(toolResultContent)) {
+      return true
     }
   }
 
@@ -335,8 +329,12 @@ export function estimateMessageTokens(messages: Message[]): number {
     }
   }
 
-  // Pad estimate by 4/3 to be conservative since we're approximating
-  return Math.ceil(totalTokens * (4 / 3))
+  // Model-aware padding: Claude models use 3.5 cpt, generic 4.0 cpt.
+  // The 4/3 multiplier was calibrated for 4.0 cpt; for Claude we use a
+  // tighter 1.15x since the base estimation is already more accurate.
+  // This prevents over-estimating token usage and triggering compaction too early.
+  const paddingFactor = isClaudeModel() ? 1.15 : 4 / 3
+  return Math.ceil(totalTokens * paddingFactor)
 }
 
 export type PendingCacheEdits = {
@@ -389,6 +387,8 @@ export async function microcompactMessages(
   messages: Message[],
   toolUseContext?: ToolUseContext,
   querySource?: QuerySource,
+  /** C2: number of frozen messages (cache prefix) to skip in time-based MC */
+  frozenCount?: number,
 ): Promise<MicrocompactResult> {
   // Clear suppression flag at start of new microcompact attempt
   clearCompactWarningSuppression()
@@ -399,7 +399,7 @@ export async function microcompactMessages(
   // tool results now, before the request, to shrink what gets rewritten.
   // Cached MC (cache-editing) is skipped when this fires: editing assumes a
   // warm cache, and we just established it's cold.
-  const timeBasedResult = maybeTimeBasedMicrocompact(messages, querySource)
+  const timeBasedResult = maybeTimeBasedMicrocompact(messages, querySource, frozenCount)
   if (timeBasedResult) {
     return timeBasedResult
   }
@@ -581,6 +581,8 @@ export function evaluateTimeBasedTrigger(
 function maybeTimeBasedMicrocompact(
   messages: Message[],
   querySource: QuerySource | undefined,
+  /** C2: skip messages at indices < frozenCount (cache prefix protection) */
+  frozenCount?: number,
 ): MicrocompactResult | null {
   const trigger = evaluateTimeBasedTrigger(messages, querySource)
   if (!trigger) {
@@ -595,6 +597,22 @@ function maybeTimeBasedMicrocompact(
   // context. Neither degenerate is sensible — always keep at least the last.
   const keepRecent = Math.max(1, config.keepRecent)
   const keepSet = new Set(compactableIds.slice(-keepRecent))
+
+  // C2: Collect tool IDs from frozen zone (cache prefix) — these must
+  // never be cleared as they would break the prompt cache.
+  const frozenIds = new Set<string>()
+  if (frozenCount && frozenCount > 0) {
+    const frozenMessages = messages.slice(0, Math.min(frozenCount, messages.length))
+    for (const message of frozenMessages) {
+      if (message.type === 'user' && Array.isArray(message.message.content)) {
+        for (const block of message.message.content) {
+          if (block.type === 'tool_result') {
+            frozenIds.add(block.tool_use_id)
+          }
+        }
+      }
+    }
+  }
 
   // Build tool use info map for content-aware protection checks
   const toolUseInfoMap = buildToolUseInfoMap(messages)
@@ -619,10 +637,10 @@ function maybeTimeBasedMicrocompact(
     }
   }
 
-  // ClearSet excludes both recent (keepSet) and protected (protectedIds) tool results
+  // ClearSet excludes recent, protected, and frozen tool results
   const clearSet = new Set(
     compactableIds.filter(
-      id => !keepSet.has(id) && !protectedIds.has(id),
+      id => !keepSet.has(id) && !protectedIds.has(id) && !frozenIds.has(id),
     ),
   )
 
@@ -665,12 +683,14 @@ function maybeTimeBasedMicrocompact(
     toolsCleared: clearSet.size,
     toolsKept: keepSet.size,
     toolsProtected: protectedIds.size,
+    toolsFrozen: frozenIds.size,
     keepRecent: config.keepRecent,
+    frozenCount: frozenCount ?? 0,
     tokensSaved,
   })
 
   logForDebugging(
-    `[TIME-BASED MC] gap ${Math.round(gapMinutes)}min > ${config.gapThresholdMinutes}min, cleared ${clearSet.size} tool results (~${tokensSaved} tokens), kept last ${keepSet.size}, protected ${protectedIds.size} (content-aware)`,
+    `[TIME-BASED MC] gap ${Math.round(gapMinutes)}min > ${config.gapThresholdMinutes}min, cleared ${clearSet.size} tool results (~${tokensSaved} tokens), kept last ${keepSet.size}, protected ${protectedIds.size} (content-aware), frozen ${frozenIds.size}`,
   )
 
   suppressCompactWarning()

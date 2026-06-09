@@ -41,6 +41,22 @@ export interface ExecutionRecord {
   edgeCases: string[]
   timestamp: Date
   duration_ms: number
+  // A3: Dependency-aware priority fields
+  priority?: number                      // task priority weight (default 1)
+  unlockCount?: number                   // dependencies unblocked (default 0)
+  active?: boolean                       // current active task (default false)
+}
+
+/** Frontier score result for dependency-aware prioritization */
+export interface FrontierScore {
+  record: ExecutionRecord
+  frontierScore: number
+  breakdown: {
+    priorityComponent: number
+    ageComponent: number
+    unlockComponent: number
+    activeComponent: number
+  }
 }
 
 // 误报记录类型（保留向后兼容）
@@ -288,6 +304,72 @@ export class LearningSystem {
   }
 
   // ============================================
+  // A3: Dependency-Aware Frontier Scoring
+  // ============================================
+
+  /**
+   * Compute frontier scores for execution records.
+   *
+   * P1 fix: logarithmic age (bounded), diminishing returns for unlocks.
+   *
+   * Formula:
+   *   priority*10 + AGE_WEIGHT*ln(1+ageHours)/ln(1+AGE_HALF_LIFE_HOURS)
+   *   + UNLOCK_WEIGHT*(1-exp(-unlockCount/UNLOCK_DECAY)) + ACTIVE_BONUS
+   *
+   * @param skill - The skill/agent type
+   * @param limit - Max records to score (default 50)
+   * @returns Sorted array of FrontierScore (highest first)
+   */
+  computeFrontierScores(skill: string, limit = 50): FrontierScore[] {
+    // Frontier scoring constants
+    const AGE_WEIGHT = 20           // max age bonus at half-life
+    const AGE_HALF_LIFE_HOURS = 169 // 7 days — ln(1+169)/ln(1+169) = 1.0
+    const UNLOCK_WEIGHT = 15        // max unlock bonus (asymptote)
+    const UNLOCK_DECAY = 3          // diminishing returns half-point
+    const ACTIVE_BONUS = 20         // flat bonus for active tasks
+
+    const records = this.executionHistory
+      .filter(r => r.skill === skill)
+      .slice(-limit)
+
+    const now = Date.now()
+
+    const scores: FrontierScore[] = records.map(record => {
+      const priority = record.priority ?? 1
+      const unlockCount = record.unlockCount ?? 0
+      const active = record.active ?? false
+
+      // Age in hours since record creation
+      const ageMs = now - record.timestamp.getTime()
+      const ageHours = ageMs / (1000 * 60 * 60)
+
+      const priorityComponent = priority * 10
+      // P1: logarithmic age — bounded, ~20 at 7 days
+      const ageComponent = AGE_WEIGHT * Math.log(1 + ageHours) / Math.log(1 + AGE_HALF_LIFE_HOURS)
+      // P1: diminishing returns — saturates at UNLOCK_WEIGHT
+      const unlockComponent = UNLOCK_WEIGHT * (1 - Math.exp(-unlockCount / UNLOCK_DECAY))
+      const activeComponent = active ? ACTIVE_BONUS : 0
+
+      const frontierScore = priorityComponent + ageComponent + unlockComponent + activeComponent
+
+      return {
+        record,
+        frontierScore,
+        breakdown: {
+          priorityComponent,
+          ageComponent,
+          unlockComponent,
+          activeComponent,
+        },
+      }
+    })
+
+    // Sort by frontier score descending
+    scores.sort((a, b) => b.frontierScore - a.frontierScore)
+    return scores
+  }
+
+  // ============================================
   // 原有误报记录方法（向后兼容）
   // ============================================
 
@@ -361,6 +443,82 @@ export class LearningSystem {
    */
   clearRecords(): void {
     this.records = []
+  }
+
+  // ============================================
+  // A2: 行动链结晶 — 结构化经验提取
+  // ============================================
+
+  /**
+   * Crystallize an action chain into structured, reusable knowledge.
+   *
+   * Analyzes a sequence of tool calls to extract:
+   * - Key patterns (what worked / what didn't)
+   * - Tool usage sequences
+   * - Error recovery strategies
+   *
+   * @param skill - The skill/agent type
+   * @param actionChain - Sequence of tool call results from the agent execution
+   * @returns Crystallized knowledge text, or empty string if insufficient data
+   */
+  crystallize(
+    skill: string,
+    actionChain: Array<{
+      toolName: string
+      input: string
+      output: string
+      success: boolean
+      duration_ms: number
+    }>,
+  ): string {
+    if (actionChain.length === 0) return ''
+
+    // Extract patterns from the action chain
+    const toolSequence = actionChain.map(a => a.toolName)
+    const failures = actionChain.filter(a => !a.success)
+    const successes = actionChain.filter(a => a.success)
+
+    // Build structured knowledge
+    const parts: string[] = []
+
+    // Tool usage pattern
+    const uniqueTools = [...new Set(toolSequence)]
+    parts.push(`Tools used: ${uniqueTools.join(', ')}`)
+
+    // Success/failure ratio
+    const successRate =
+      actionChain.length > 0
+        ? ((successes.length / actionChain.length) * 100).toFixed(0)
+        : '0'
+    parts.push(`Success rate: ${successRate}% (${successes.length}/${actionChain.length})`)
+
+    // Error patterns
+    if (failures.length > 0) {
+      const errorTools = [...new Set(failures.map(f => f.toolName))]
+      parts.push(`Failed tools: ${errorTools.join(', ')}`)
+
+      // Extract error messages (first 100 chars of each)
+      const errorMessages = failures
+        .map(f => `${f.toolName}: ${f.output.slice(0, 100)}`)
+        .slice(0, 3)
+      parts.push(`Error patterns:\n${errorMessages.map(m => `- ${m}`).join('\n')}`)
+    }
+
+    // Duration analysis
+    const totalDuration = actionChain.reduce((s, a) => s + a.duration_ms, 0)
+    const avgDuration =
+      actionChain.length > 0 ? Math.round(totalDuration / actionChain.length) : 0
+    parts.push(`Avg tool duration: ${avgDuration}ms`)
+
+    // Sequence pattern (first 5 tools)
+    const seqPattern = toolSequence.slice(0, 5).join(' → ')
+    if (toolSequence.length > 5) {
+      parts.push(`Sequence: ${seqPattern} → ...`)
+    } else {
+      parts.push(`Sequence: ${seqPattern}`)
+    }
+
+    return parts.join('\n')
   }
 }
 

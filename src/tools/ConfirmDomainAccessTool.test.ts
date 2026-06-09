@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { ConfirmDomainAccessTool } from './ConfirmDomainAccessTool.js'
-import { USER_ACTIONS } from './tools/WebFetchTool/constants.js'
+import { USER_ACTIONS } from './WebFetchTool/constants.js'
 
 describe('ConfirmDomainAccessTool', () => {
   describe('Input Validation', () => {
@@ -118,14 +118,15 @@ describe('ConfirmDomainAccessTool', () => {
 })
 
 describe('ConfirmDomainAccessTool Edge Cases', () => {
-  it('should handle malformed URLs gracefully', async () => {
+  it('should handle malformed URLs gracefully', () => {
     const input = {
       url: 'https://',
       action: USER_ACTIONS.ALLOW,
     }
 
-    // This should not throw due to pre-validation
-    expect(() => ConfirmDomainAccessTool.inputSchema.safeParse(input)).toThrow()
+    // safeParse returns { success: false } for invalid URLs, does not throw
+    const result = ConfirmDomainAccessTool.inputSchema.safeParse(input)
+    expect(result.success).toBe(false)
   })
 
   it('should preserve original URL in response', async () => {
