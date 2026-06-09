@@ -61,6 +61,8 @@ import { getTokenCountFromUsage } from '../../utils/tokens.js'
 import { EXIT_PLAN_MODE_V2_TOOL_NAME } from '../ExitPlanModeTool/constants.js'
 import { AGENT_TOOL_NAME, LEGACY_AGENT_TOOL_NAME } from './constants.js'
 import type { AgentDefinition } from './loadAgentsDir.js'
+import { countToolUses, buildToolUseSummary, resolveTerminationReason } from './agentToolUtilsPure.js'
+export { countToolUses, buildToolUseSummary }
 
 /**
  * Normalize an agent type string for case- and separator-insensitive comparison.
@@ -258,6 +260,9 @@ export const agentToolResultSchema = lazySchema(() =>
     totalToolUseCount: z.number(),
     totalDurationMs: z.number(),
     totalTokens: z.number(),
+    // Why the agent terminated: 'completed' (normal), 'budget_exhausted' (tool limit),
+    // 'timeout', 'cancelled', or undefined for legacy sessions.
+    terminationReason: z.enum(['completed', 'budget_exhausted', 'timeout', 'cancelled']).optional(),
     usage: z.object({
       input_tokens: z.number(),
       output_tokens: z.number(),
@@ -282,24 +287,6 @@ export const agentToolResultSchema = lazySchema(() =>
 
 export type AgentToolResult = z.input<ReturnType<typeof agentToolResultSchema>>
 
-export function countToolUses(messages: MessageType[]): number {
-  let count = 0
-  for (const m of messages) {
-    if (m.type === 'assistant') {
-      // Defensive check: message property may be undefined for some assistant messages
-      if (!m.message || !Array.isArray(m.message.content)) {
-        continue;
-      }
-      for (const block of m.message.content) {
-        if (block.type === 'tool_use') {
-          count++
-        }
-      }
-    }
-  }
-  return count
-}
-
 export function finalizeAgentTool(
   agentMessages: MessageType[],
   agentId: string,
@@ -310,6 +297,7 @@ export function finalizeAgentTool(
     startTime: number
     agentType: string
     isAsync: boolean
+    terminationReason?: 'completed' | 'budget_exhausted' | 'timeout' | 'cancelled'
   },
 ): AgentToolResult {
   const {
@@ -319,6 +307,7 @@ export function finalizeAgentTool(
     startTime,
     agentType,
     isAsync,
+    terminationReason,
   } = metadata
 
   const lastAssistantMessage = getLastAssistantMessage(agentMessages)
@@ -339,6 +328,7 @@ export function finalizeAgentTool(
       totalDurationMs: Date.now() - startTime,
       totalTokens: 0,
       totalToolUseCount,
+      terminationReason,
       usage: { input_tokens: 0, output_tokens: 0, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 },
     }
   }
@@ -348,6 +338,7 @@ export function finalizeAgentTool(
   let content = lastAssistantMessage.message.content.filter(
     _ => _.type === 'text',
   )
+  let usedFallback = false
   if (content.length === 0) {
     for (let i = agentMessages.length - 1; i >= 0; i--) {
       const m = agentMessages[i]!
@@ -361,6 +352,40 @@ export function finalizeAgentTool(
       }
     }
   }
+
+  // Fallback 2: If still no text content, try thinking blocks from any assistant message.
+  // This handles the case where the agent was terminated mid-turn (budget exhausted)
+  // and the last response was pure tool_use with a thinking block.
+  if (content.length === 0) {
+    for (let i = agentMessages.length - 1; i >= 0; i--) {
+      const m = agentMessages[i]!
+      if (m.type !== 'assistant') continue
+      if (!m.message || !Array.isArray(m.message.content)) continue
+      const thinkingBlocks = m.message.content.filter(_ => _.type === 'thinking')
+      if (thinkingBlocks.length > 0) {
+        content = thinkingBlocks.map(b => ({
+          type: 'text' as const,
+          text: `[Agent Thinking] ${String('thinking' in b ? b.thinking : '')}`.trim(),
+        })).filter(b => b.text.length > 16) // skip empty thinking
+        if (content.length > 0) {
+          usedFallback = true
+          break
+        }
+      }
+    }
+  }
+
+  // Fallback 3: If still no content, construct a summary from tool use history.
+  // This is the last resort for agents that hit budget with pure tool_use messages.
+  if (content.length === 0) {
+    const toolSummary = buildToolUseSummary(agentMessages)
+    if (toolSummary) {
+      content = [{ type: 'text', text: toolSummary }]
+      usedFallback = true
+    }
+  }
+
+  const resolvedTerminationReason = resolveTerminationReason(agentMessages, usedFallback, terminationReason)
 
   const totalTokens = getTokenCountFromUsage(lastAssistantMessage.message.usage)
   const totalToolUseCount = countToolUses(agentMessages)
@@ -398,6 +423,7 @@ export function finalizeAgentTool(
     totalDurationMs: Date.now() - startTime,
     totalTokens,
     totalToolUseCount,
+    terminationReason: resolvedTerminationReason,
     usage: lastAssistantMessage.message.usage,
   }
 }

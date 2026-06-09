@@ -964,6 +964,10 @@ export async function* runAgent({
           logForDebugging(
             `[Agent: ${agentDefinition.agentType}] Reached max tool calls limit (${message.attachment.maxToolCalls})`,
           )
+          agentBudgetExceeded = true
+          // Yield the attachment so it's recorded in agentMessages.
+          // finalizeAgentTool uses this to set terminationReason = 'budget_exhausted'.
+          yield message
           break
         }
         yield message
