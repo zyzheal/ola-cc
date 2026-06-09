@@ -172,7 +172,7 @@ export function getLastSyncAge(projectRoot: string): number | null {
  * Ensure codegraph database is ready.
  * If not initialized, runs full extraction + persist.
  */
-export async function ensureReady(projectRoot: string): Promise<{ initialized: boolean }> {
+export async function ensureReady(projectRoot: string, onProgress?: (progress: import('../../services/graph/extraction/index.js').IndexProgress) => void): Promise<{ initialized: boolean }> {
   if (!isCodegraphInitialized(projectRoot)) {
     // Per-project flight lock: prevent concurrent init for same project
     const existing = _initPromises.get(projectRoot)
@@ -187,10 +187,12 @@ export async function ensureReady(projectRoot: string): Promise<{ initialized: b
       const writer = await getWriter(projectRoot)
 
       writer.createDatabase()
-      const result = await orchestrator.indexAll()
+      const result = await orchestrator.indexAll(onProgress)
 
       if (result.filesIndexed > 0) {
+        onProgress?.({ phase: 'storing', current: result.filesIndexed, total: result.filesIndexed, currentFile: 'Loading graph...' })
         await store.load()
+        onProgress?.({ phase: 'storing', current: result.filesIndexed, total: result.filesIndexed, currentFile: 'Persisting to database...' })
         writer.persist(store)
         lastSyncTimes.set(projectRoot, Date.now())
         logInfo(`Init complete: ${result.filesIndexed} files, ${result.nodesCreated} nodes, ${result.edgesCreated} edges in ${result.durationMs}ms`)
@@ -209,14 +211,14 @@ export async function ensureReady(projectRoot: string): Promise<{ initialized: b
 /**
  * Initialize project: extract all files and persist to codegraph.db.
  */
-export async function initProject(projectRoot: string): Promise<CodegraphResult> {
+export async function initProject(projectRoot: string, onProgress?: (progress: import('../../services/graph/extraction/index.js').IndexProgress) => void): Promise<CodegraphResult> {
   try {
     const store = await getStore(projectRoot)
     const orchestrator = await getOrchestrator(projectRoot, store)
     const writer = await getWriter(projectRoot)
 
     writer.createDatabase()
-    const result = await orchestrator.indexAll()
+    const result = await orchestrator.indexAll(onProgress)
 
     if (result.filesIndexed > 0) {
       await store.load()
@@ -579,13 +581,13 @@ export async function getFiles(projectRoot: string, options?: { maxDepth?: numbe
 /**
  * Sync: detect changed files and update codegraph.db incrementally.
  */
-export async function sync(projectRoot: string): Promise<CodegraphResult> {
+export async function sync(projectRoot: string, onProgress?: (progress: import('../../services/graph/extraction/index.js').IndexProgress) => void): Promise<CodegraphResult> {
   try {
     const store = await getStore(projectRoot)
     const orchestrator = await getOrchestrator(projectRoot, store)
     const writer = await getWriter(projectRoot)
 
-    const result = await orchestrator.sync()
+    const result = await orchestrator.sync(onProgress)
 
     if (result.changedFilePaths && result.changedFilePaths.length > 0) {
       await store.load()

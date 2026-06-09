@@ -114,6 +114,7 @@ export class GraphStore {
   private needsReloadFlag = false
   private loadingPromise: Promise<GraphData> | null = null
   private _loadedAt = 0
+  private _cachedSize: { nodes: number; edges: number } | null = null
 
   private constructor(private readonly projectRoot: string) {}
 
@@ -203,10 +204,10 @@ export class GraphStore {
     loader.loadParsers()
 
     // Re-export chain tracking: derive 'exports' edges from imports + export metadata
-    loader.extractReExports()
+    await loader.extractReExports()
 
     // Build name/qualified_name → nodeId index
-    loader.buildNameIndex(this.nameIndex, this.ambiguousNames)
+    await loader.buildNameIndex(this.nameIndex, this.ambiguousNames)
 
     this.loaded = true
     this.needsReloadFlag = false
@@ -232,6 +233,7 @@ export class GraphStore {
     this.loaded = false
     this.needsReloadFlag = true
     this.loadingPromise = null
+    this._cachedSize = null
   }
 
   /**
@@ -292,6 +294,7 @@ export class GraphStore {
     this.nodeCache.clear()
     this.nameIndex.clear()
     this.ambiguousNames.clear()
+    this.suffixIndex = null
   }
 
   // ----------------------------------------------------------
@@ -306,7 +309,7 @@ export class GraphStore {
    *
    * 在 doLoad() 的两个数据源加载完毕后调用。
    */
-  extractReExports(): void {
+  async extractReExports(): Promise<void> {
     const loader = new GraphLoader(
       this.projectRoot,
       this.nodeMeta,
@@ -314,7 +317,7 @@ export class GraphStore {
       this.reverse,
       this.fileRecords,
     )
-    loader.extractReExports()
+    await loader.extractReExports()
   }
 
   // ----------------------------------------------------------
@@ -324,6 +327,7 @@ export class GraphStore {
   /** 添加边（公开给 CallbackSynthesizer 等内部模块使用） */
   addEdge(from: string, to: string, type: EdgeType, weight: number, confidence?: EdgeConfidence): void {
     addEdgeToMaps(this.adjacency, this.reverse, from, to, type, weight, confidence)
+    this._cachedSize = null
   }
 
   /**
@@ -354,6 +358,17 @@ export class GraphStore {
       this.nodeCache.set(nodeId, node)
     }
     return node
+  }
+
+  /**
+   * 更新节点的 domain 字段（用于 enrichGraph 内存同步）
+   */
+  updateNodeDomain(nodeId: string, domain: string): void {
+    const node = this.nodeMeta.get(nodeId)
+    if (node) {
+      node.domain = domain
+      this.nodeCache.delete(nodeId) // 清除 LRU 缓存以反映更新
+    }
   }
 
   /**
@@ -389,6 +404,83 @@ export class GraphStore {
     if (!entry) return []
     if (Array.isArray(entry)) return entry
     return [entry]
+  }
+
+  // ----------------------------------------------------------
+  // 节点引用解析（支持多种格式：全ID、name、file:name、basename:name）
+  // ----------------------------------------------------------
+
+  /** 懒构建的路径后缀索引：suffix:name → nodeId（歧义时为 __AMBIGUOUS__） */
+  private suffixIndex: Map<string, string> | null = null
+
+  private buildSuffixIndex(): Map<string, string> {
+    if (this.suffixIndex) return this.suffixIndex
+    const index = new Map<string, string>()
+    const ambiguous = new Set<string>()
+
+    for (const [id, meta] of this.nodeMeta) {
+      // 注册全路径
+      const fullKey = `${meta.file}:${meta.name}`
+      if (!index.has(fullKey)) index.set(fullKey, id)
+
+      // 注册路径后缀（最多 3 级）
+      const parts = meta.file.split('/')
+      for (let i = 1; i <= Math.min(parts.length, 3); i++) {
+        const suffix = parts.slice(-i).join('/')
+        const key = `${suffix}:${meta.name}`
+        if (index.has(key) && index.get(key) !== id) {
+          ambiguous.add(key)
+        } else {
+          index.set(key, id)
+        }
+      }
+    }
+
+    // 标记歧义键
+    for (const key of ambiguous) {
+      index.set(key, '__AMBIGUOUS__')
+    }
+
+    this.suffixIndex = index
+    return index
+  }
+
+  /**
+   * 解析节点引用 — 支持多种格式
+   * - 精确 ID: "src/auth.ts:login"
+   * - 名称: "login"（唯一时匹配）
+   * - file:name: "auth.ts:login"（路径后缀匹配）
+   * @returns nodeId 或 null（无法解析时）
+   */
+  resolveNodeReference(ref: string): string | null {
+    if (!ref) return null
+
+    // 1. 精确 ID
+    if (this.nodeMeta.has(ref)) return ref
+
+    // 2. 名称索引（name / qualified_name）
+    if (!this.ambiguousNames.has(ref)) {
+      const entry = this.nameIndex.get(ref)
+      if (typeof entry === 'string') return entry
+    }
+
+    // 3. file:name 路径后缀匹配
+    const suffixIndex = this.buildSuffixIndex()
+    const bySuffix = suffixIndex.get(ref)
+    if (bySuffix && bySuffix !== '__AMBIGUOUS__') return bySuffix
+
+    // 4. 唯一名称回退
+    const nameEntry = this.nameIndex.get(ref)
+    if (Array.isArray(nameEntry) && nameEntry.length === 1) return nameEntry[0]
+
+    return null
+  }
+
+  /**
+   * 使后缀索引失效（nodeMeta 变更后调用）
+   */
+  invalidateSuffixIndex(): void {
+    this.suffixIndex = null
   }
 
   /**
@@ -515,13 +607,15 @@ export class GraphStore {
    * 图规模
    */
   get size(): { nodes: number; edges: number } {
+    if (this._cachedSize) return this._cachedSize
     let edgeCount = 0
     for (const map of this.adjacency.values()) {
       for (const edges of map.values()) {
         edgeCount += edges.length
       }
     }
-    return { nodes: this.nodeMeta.size, edges: edgeCount }
+    this._cachedSize = { nodes: this.nodeMeta.size, edges: edgeCount }
+    return this._cachedSize
   }
 
   /**

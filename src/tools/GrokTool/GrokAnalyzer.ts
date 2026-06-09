@@ -2,6 +2,7 @@
 // File discovery + LLM batch analysis + two-phase optimization
 
 import { existsSync, mkdirSync, readFileSync, readdirSync, realpathSync } from 'fs'
+import { readdir } from 'fs/promises'
 import { homedir } from 'os'
 import { extname, join, resolve } from 'path'
 import Anthropic from '@anthropic-ai/sdk'
@@ -173,24 +174,25 @@ export class GrokAnalyzer {
   }
 
   /**
-   * 轻量级 Agent 调用 — 直接使用 Anthropic SDK
+   * 轻量级 Agent 调用 — 使用流式 API 减少首字节等待时间
    */
   private async callAgent(prompt: string, systemPrompt: string, modelOverride?: string): Promise<string> {
     const client = this.getClient()
     const model = modelOverride || this.model
 
     try {
-      const response = await client.messages.create({
+      const stream = client.messages.stream({
         model,
         max_tokens: 4096,
         system: systemPrompt,
         messages: [{ role: 'user', content: prompt }],
       })
 
+      const response = await stream.finalMessage()
       const textBlock = response.content.find(block => block.type === 'text')
       return textBlock ? textBlock.text : ''
     } catch (error) {
-      if (error instanceof Error && error.message.includes('429')) {
+      if (error instanceof Error && (error.message.includes('429') || /\brate[\s_-]?limit/i.test(error.message))) {
         throw new GrokError(
           'LLM_RATE_LIMIT',
           'agent',
@@ -227,6 +229,7 @@ export class GrokAnalyzer {
           this.callAgent(prompt, systemPrompt, modelOverride),
           timeoutPromise,
         ])
+        if (timer) clearTimeout(timer)
         return result
       } catch (error) {
         lastError = error instanceof Error ? error : new Error(String(error))
@@ -273,6 +276,9 @@ export class GrokAnalyzer {
     const EXCLUDE_DIRS = new Set([
       'node_modules', '.git', '.understand-anything', 'dist', 'build',
       '.next', '__pycache__', '.cache', 'vendor', '.turbo', '.nx',
+      'test', 'tests', '__tests__', 'spec', 'specs', 'e2e',
+      'fixtures', 'mocks', '__mocks__', 'stories', '.storybook',
+      'coverage', '.nyc_output', 'tmp', 'temp',
     ])
     const INCLUDE_EXTS = new Set([
       '.ts', '.tsx', '.js', '.jsx', '.py', '.go', '.rs', '.java',
@@ -281,15 +287,15 @@ export class GrokAnalyzer {
     ])
 
     const files: string[] = []
-    const walk = (dir: string, depth: number = 0) => {
+    const walk = async (dir: string, depth: number = 0): Promise<void> => {
       if (depth > 20) return
       try {
-        const entries = readdirSync(dir, { withFileTypes: true })
+        const entries = await readdir(dir, { withFileTypes: true })
         for (const entry of entries) {
           if (EXCLUDE_DIRS.has(entry.name)) continue
           const fullPath = resolve(dir, entry.name)
           if (entry.isDirectory()) {
-            walk(fullPath, depth + 1)
+            await walk(fullPath, depth + 1)
           } else if (INCLUDE_EXTS.has(extname(entry.name).toLowerCase())) {
             files.push(fullPath)
           }
@@ -299,7 +305,7 @@ export class GrokAnalyzer {
         logForDebugging(`[grok] Skipping directory (permission denied): ${dir} — ${e instanceof Error ? e.message : String(e)}`)
       }
     }
-    walk(basePath)
+    await walk(basePath)
     logForDebugging(`[grok] Discovered ${files.length} files in ${basePath}`)
     return files
   }
@@ -364,9 +370,20 @@ export class GrokAnalyzer {
    */
   async analyzeFilesBatch(
     files: string[],
-    batchSize: number = 25,
-    maxParallel: number = 5
+    batchSize: number = 10,
+    maxParallel: number = 3,
+    onProgress?: (progress: number) => void
   ): Promise<Record<string, unknown>[]> {
+    // Two-phase optimization: use AST metadata from GraphStore when available
+    const useMetadata = this.graphStore !== null
+    if (useMetadata) {
+      logForDebugging(`[grok] Using two-phase optimization: AST metadata → LLM`)
+      // Metadata mode sends ~300 bytes/file instead of full source — use larger batches
+      // Only boost if user hasn't customized (default batchSize is 10)
+      if (batchSize <= 10) batchSize = 50
+      if (maxParallel <= 2) maxParallel = 5
+    }
+
     // 内联 chunkArray
     const batches: string[][] = []
     for (let i = 0; i < files.length; i += batchSize) {
@@ -374,29 +391,51 @@ export class GrokAnalyzer {
     }
 
     const results: Record<string, unknown>[] = []
+    const totalBatches = batches.length
+    let completedBatches = 0
+    let nextBatchIndex = 0
+    let currentConcurrency = maxParallel
+    let consecutiveRateLimits = 0
 
-    // Two-phase optimization: use AST metadata from GraphStore when available
-    const useMetadata = this.graphStore !== null
-    if (useMetadata) {
-      logForDebugging(`[grok] Using two-phase optimization: AST metadata → LLM`)
+    // Producer-consumer queue with adaptive concurrency
+    const processBatch = async (batch: string[]): Promise<void> => {
+      try {
+        const prompt = useMetadata ? this.buildMetadataPrompt(batch) : this.buildFileAnalyzerPrompt(batch)
+        const result = await this.callAgentWithTimeout(prompt, AGENT_SYSTEM_PROMPTS.analyzer)
+        results.push(...this.parseAnalysisResult(result))
+        consecutiveRateLimits = 0
+        // Gradually restore concurrency on success
+        if (currentConcurrency < maxParallel) {
+          currentConcurrency = Math.min(currentConcurrency + 1, maxParallel)
+        }
+      } catch (error) {
+        const isRateLimit = error instanceof GrokError && error.code === 'LLM_RATE_LIMIT'
+        if (isRateLimit) {
+          consecutiveRateLimits++
+          // Back off concurrency on rate limits
+          currentConcurrency = Math.max(1, Math.floor(currentConcurrency * 0.5))
+          logForDebugging(`[grok] Rate limited, reducing concurrency to ${currentConcurrency}`)
+        } else {
+          logForDebugging(`[grok] Batch analysis failed: ${error}`)
+        }
+      }
+      completedBatches++
+      onProgress?.(Math.round((completedBatches / totalBatches) * 100))
     }
 
-    for (let i = 0; i < batches.length; i += maxParallel) {
-      const parallelBatches = batches.slice(i, i + maxParallel)
-      const batchResults = await Promise.allSettled(
-        parallelBatches.map(batch =>
-          this.callAgentWithTimeout(
-            useMetadata ? this.buildMetadataPrompt(batch) : this.buildFileAnalyzerPrompt(batch),
-            AGENT_SYSTEM_PROMPTS.analyzer
-          )
-        )
-      )
-      for (const result of batchResults) {
-        if (result.status === 'fulfilled') {
-          results.push(...this.parseAnalysisResult(result.value))
-        } else {
-          logForDebugging(`[grok] Batch analysis failed: ${result.reason}`)
-        }
+    // Run batches with adaptive concurrency
+    while (nextBatchIndex < totalBatches) {
+      const activeBatches: Promise<void>[] = []
+      for (let j = 0; j < currentConcurrency && nextBatchIndex < totalBatches; j++) {
+        activeBatches.push(processBatch(batches[nextBatchIndex++]))
+      }
+      await Promise.allSettled(activeBatches)
+
+      // If rate limited, wait before next wave
+      if (consecutiveRateLimits > 0) {
+        const backoffMs = Math.min(2000 * consecutiveRateLimits, 10000)
+        logForDebugging(`[grok] Rate limit backoff: waiting ${backoffMs}ms`)
+        await new Promise(resolve => setTimeout(resolve, backoffMs))
       }
     }
 
@@ -537,18 +576,57 @@ Output JSON array of analysis results.`
    */
   parseAnalysisResult(result: string): Record<string, unknown>[] {
     try {
-      // Strip leading code fence (handles ```json, ```JSON, ``` json, with \r\n)
-      let cleaned = result.trim()
-      cleaned = cleaned.replace(/^```(?:\s*(?:json|JSON))?[\s\r\n]*/, '')
-      // Strip trailing code fence
+      // Strip BOM, leading/trailing whitespace
+      let cleaned = result.replace(/^\uFEFF/, '').trim()
+      // Strip ALL code fences (opening and closing, anywhere in the string)
+      // Handles ```json, ```JSON, ``` json, plain ```, with \r\n
+      cleaned = cleaned.replace(/^```(?:\s*(?:json|JSON|Json))?[\s\r\n]*/i, '')
       cleaned = cleaned.replace(/[\s\r\n]*```[\s\S]*$/, '')
       cleaned = cleaned.trim()
-      const parsed = JSON.parse(cleaned)
-      return Array.isArray(parsed) ? parsed : [parsed]
+
+      if (!cleaned) return []
+
+      // Try direct parse first
+      try {
+        const parsed = JSON.parse(cleaned)
+        return Array.isArray(parsed) ? parsed : [parsed]
+      } catch {
+        // Fallback: extract first JSON array (non-greedy) from the response
+        const arrayMatch = cleaned.match(/(\[[\s\S]*\])/)
+        if (arrayMatch) {
+          try {
+            const parsed = JSON.parse(arrayMatch[1]!)
+            return Array.isArray(parsed) ? parsed : [parsed]
+          } catch { /* fall through */ }
+        }
+        // Fallback: extract first JSON object (non-greedy)
+        const objMatch = cleaned.match(/(\{[\s\S]*\})/)
+        if (objMatch) {
+          try {
+            const parsed = JSON.parse(objMatch[1]!)
+            return Array.isArray(parsed) ? parsed : [parsed]
+          } catch { /* fall through */ }
+        }
+        // Last resort: try to fix common truncation (missing closing brackets)
+        const fixable = cleaned.replace(/,\s*$/, '').replace(/(\{|\[)[\s\S]*$/, (m) => {
+          // Close any unclosed brackets
+          let depth = 0
+          for (const ch of m) {
+            if (ch === '{' || ch === '[') depth++
+            if (ch === '}' || ch === ']') depth--
+          }
+          return m + (depth > 0 ? ']'.repeat(Math.ceil(depth / 2)) : '')
+        })
+        try {
+          const parsed = JSON.parse(fixable)
+          return Array.isArray(parsed) ? parsed : [parsed]
+        } catch { /* give up */ }
+
+        throw new Error('No valid JSON found')
+      }
     } catch {
       const preview = result.slice(0, 200)
       logForDebugging(`[grok] Failed to parse analysis result: ${preview}`)
-      console.warn(`[grok] Warning: LLM returned non-JSON response, skipping batch. Preview: ${preview}`)
       return []
     }
   }
@@ -570,12 +648,21 @@ Output JSON array of analysis results.`
   ): Promise<Record<string, unknown>> {
     reportProgress(stage, 0)
     const modelOverride = taskType ? this.getModelForTask(taskType) : undefined
+    // Periodic progress ticks during LLM call — send incrementing progress
+    // so the ProgressBar renders visually (0% = dots animation, >0% = bar)
+    let tickProgress = 0
+    const tickInterval = setInterval(() => {
+      tickProgress = Math.min(tickProgress + 5, 95)
+      reportProgress(stage, tickProgress)
+    }, 2000)
     try {
       const response = await this.callAgentWithTimeout(prompt, systemPrompt, 2, modelOverride)
+      clearInterval(tickInterval)
       const result = this.parseAnalysisResult(response)[0] || {}
       reportProgress(stage, 100)
       return result
     } catch (error) {
+      clearInterval(tickInterval)
       const code = `${stage.toUpperCase()}_FAILED`
       errors.push(error instanceof GrokError ? error : new GrokError(code, stage, String(error), true))
       reportProgress(stage, 100)

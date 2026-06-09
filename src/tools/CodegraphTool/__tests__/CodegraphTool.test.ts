@@ -52,29 +52,29 @@ describe('CodegraphTool — Operation Schema', () => {
       expect(OPERATION_TIERS.advanced).toBeDefined()
     })
 
-    it('should classify 5 core operations: scc, toposort, pagerank, search, status', () => {
-      expect(OPERATION_TIERS.core).toContain('codegraph_scc')
-      expect(OPERATION_TIERS.core).toContain('codegraph_toposort')
-      expect(OPERATION_TIERS.core).toContain('codegraph_pagerank')
+    it('should classify 4 core operations: search, status, callers, callees', () => {
       expect(OPERATION_TIERS.core).toContain('codegraph_search')
       expect(OPERATION_TIERS.core).toContain('codegraph_status')
-      expect(OPERATION_TIERS.core.length).toBe(5)
+      expect(OPERATION_TIERS.core).toContain('codegraph_callers')
+      expect(OPERATION_TIERS.core).toContain('codegraph_callees')
+      expect(OPERATION_TIERS.core.length).toBe(4)
     })
 
-    it('should classify 4 analysis operations: community, roles, impact, centrality', () => {
-      expect(OPERATION_TIERS.analysis).toContain('codegraph_community')
-      expect(OPERATION_TIERS.analysis).toContain('codegraph_roles')
+    it('should classify 3 analysis operations: impact, trace, context', () => {
       expect(OPERATION_TIERS.analysis).toContain('codegraph_impact')
-      expect(OPERATION_TIERS.analysis).toContain('codegraph_centrality')
-      expect(OPERATION_TIERS.analysis.length).toBe(4)
+      expect(OPERATION_TIERS.analysis).toContain('codegraph_trace')
+      expect(OPERATION_TIERS.analysis).toContain('codegraph_context')
+      expect(OPERATION_TIERS.analysis.length).toBe(3)
     })
 
-    it('should classify remaining 13 operations as advanced', () => {
-      expect(OPERATION_TIERS.advanced.length).toBe(13)
-      expect(OPERATION_TIERS.advanced).toContain('codegraph_context')
-      expect(OPERATION_TIERS.advanced).toContain('codegraph_callers')
-      expect(OPERATION_TIERS.advanced).toContain('codegraph_callees')
-      expect(OPERATION_TIERS.advanced).toContain('codegraph_trace')
+    it('should classify remaining 15 operations as advanced (including CPU-intensive graph algorithms)', () => {
+      expect(OPERATION_TIERS.advanced.length).toBe(15)
+      expect(OPERATION_TIERS.advanced).toContain('codegraph_pagerank')
+      expect(OPERATION_TIERS.advanced).toContain('codegraph_community')
+      expect(OPERATION_TIERS.advanced).toContain('codegraph_roles')
+      expect(OPERATION_TIERS.advanced).toContain('codegraph_centrality')
+      expect(OPERATION_TIERS.advanced).toContain('codegraph_scc')
+      expect(OPERATION_TIERS.advanced).toContain('codegraph_toposort')
       expect(OPERATION_TIERS.advanced).toContain('codegraph_init')
       expect(OPERATION_TIERS.advanced).toContain('codegraph_files')
       expect(OPERATION_TIERS.advanced).toContain('codegraph_sync')

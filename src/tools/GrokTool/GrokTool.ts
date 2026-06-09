@@ -90,7 +90,7 @@ const STAGE_LABELS: Record<string, string> = {
 
 export const grokTool = buildTool({
   name: 'grok',
-  searchHint: 'knowledge graph code understanding semantic analysis architecture community hotspots',
+  searchHint: 'knowledge graph architecture analysis',
   maxResultSizeChars: 50_000,
   inputSchema,
   renderToolUseMessage(input: Record<string, unknown>) {

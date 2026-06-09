@@ -9,6 +9,7 @@ import { Database } from 'bun:sqlite'
 import { mkdirSync, writeFileSync, statSync } from 'fs'
 import { resolve, dirname } from 'path'
 import type { GraphStore, NodeMetadata, EdgeMeta, EdgeType } from './GraphStore.js'
+import { logForDebugging } from '../../utils/debug.js'
 
 // ============================================================
 // Reverse edge type mapping (EdgeType → codegraph kind string)
@@ -143,12 +144,65 @@ CREATE TRIGGER IF NOT EXISTS nodes_fts_au AFTER UPDATE ON nodes_fts_content BEGI
 END`
 
 // ============================================================
+// Build artifact detection
+// ============================================================
+
+/** Default directory segments that indicate build artifacts */
+const DEFAULT_ARTIFACT_DIRS = new Set([
+  'dist-mf', 'dist', 'build', '.next', 'out', '.output',
+  'target', 'bin', 'obj', '.gradle', '.maven',
+  '__pycache__', '.turbo', '.nx', '.parcel-cache',
+])
+
+/** Max nodes per file before it's considered a bundled artifact */
+const DEFAULT_NODE_DENSITY_THRESHOLD = 1000
+
+export interface BuildArtifactFilter {
+  /** Directory segments to treat as build artifacts (override defaults if provided) */
+  artifactDirs?: Set<string>
+  /** Additional directory segments to add to defaults */
+  extraArtifactDirs?: Set<string>
+  /** Node density threshold — files with more nodes are considered bundled */
+  nodeDensityThreshold?: number
+  /** Completely disable filtering */
+  disabled?: boolean
+}
+
+/**
+ * Detect whether a file is a build artifact using path heuristics.
+ * Non-destructive: returns true if the file should be EXCLUDED from codegraph.db.
+ */
+export function isBuildArtifact(
+  filePath: string,
+  nodeCount: number,
+  options?: BuildArtifactFilter,
+): boolean {
+  if (options?.disabled) return false
+
+  const threshold = options?.nodeDensityThreshold ?? DEFAULT_NODE_DENSITY_THRESHOLD
+
+  // Check node density first (most reliable signal for bundled files)
+  if (nodeCount > threshold) return true
+
+  // Check path segments
+  const dirs = options?.artifactDirs ?? DEFAULT_ARTIFACT_DIRS
+  const allDirs = options?.extraArtifactDirs
+    ? new Set([...dirs, ...options.extraArtifactDirs])
+    : dirs
+
+  const segments = filePath.split('/')
+  return segments.some(seg => allDirs.has(seg))
+}
+
+// ============================================================
 // Types
 // ============================================================
 
 export interface PersistResult {
   nodesWritten: number
   edgesWritten: number
+  edgesSkipped: number
+  filesSkipped: number
   durationMs: number
 }
 
@@ -159,10 +213,12 @@ export interface PersistResult {
 export class CodegraphWriter {
   private dbPath: string
   private mtimePath: string
+  private filterOptions?: BuildArtifactFilter
 
-  constructor(private readonly projectRoot: string) {
+  constructor(private readonly projectRoot: string, filterOptions?: BuildArtifactFilter) {
     this.dbPath = resolve(projectRoot, '.codegraph', 'codegraph.db')
     this.mtimePath = resolve(projectRoot, '.codegraph', 'db.mtime')
+    this.filterOptions = filterOptions
   }
 
   /**
@@ -237,9 +293,40 @@ export class CodegraphWriter {
 
       let nodesWritten = 0
       let edgesWritten = 0
+      let edgesSkipped = 0
+
+      // Pre-compute: count nodes per file for density-based artifact detection
+      const fileNodeCounts = new Map<string, number>()
+      for (const [, meta] of store.nodeMeta) {
+        fileNodeCounts.set(meta.file, (fileNodeCounts.get(meta.file) ?? 0) + 1)
+      }
+
+      // Identify build artifact files
+      const artifactFiles = new Set<string>()
+      for (const [file, count] of fileNodeCounts) {
+        if (isBuildArtifact(file, count, this.filterOptions)) {
+          artifactFiles.add(file)
+        }
+      }
+      if (artifactFiles.size > 0) {
+        logForDebugging(`[codegraph] Filtering ${artifactFiles.size} build artifact files from persist`)
+      }
+
+      // Build set of artifact node IDs for edge filtering
+      const artifactNodeIds = new Set<string>()
+      for (const [id, meta] of store.nodeMeta) {
+        if (artifactFiles.has(meta.file)) {
+          artifactNodeIds.add(id)
+        }
+      }
 
       const doPersist = db.transaction(() => {
         for (const [, meta] of store.nodeMeta) {
+          // Skip build artifact files
+          if (artifactFiles.has(meta.file)) {
+            continue
+          }
+
           insertNode.run(
             meta.id, meta.kind, meta.name,
             meta.qualified_name ?? '', meta.file, meta.line,
@@ -261,7 +348,19 @@ export class CodegraphWriter {
         }
 
         for (const [sourceId, targets] of store.adjacency) {
+          // Skip edges from artifact nodes
+          if (artifactNodeIds.has(sourceId)) {
+            for (const [, edges] of targets) {
+              edgesSkipped += edges.length
+            }
+            continue
+          }
           for (const [targetId, edges] of targets) {
+            // Skip edges to artifact nodes
+            if (artifactNodeIds.has(targetId)) {
+              edgesSkipped += edges.length
+              continue
+            }
             for (const edge of edges) {
               const kind = EDGE_TYPE_TO_KIND[edge.type] ?? edge.type
               insertEdge.run(sourceId, targetId, kind)
@@ -284,7 +383,7 @@ export class CodegraphWriter {
       // Write mtime for freshness tracking
       writeFileSync(this.mtimePath, String(Date.now()), 'utf-8')
 
-      return { nodesWritten, edgesWritten, durationMs: Date.now() - start }
+      return { nodesWritten, edgesWritten, edgesSkipped, filesSkipped: artifactFiles.size, durationMs: Date.now() - start }
     } finally {
       db.close()
     }
@@ -328,9 +427,44 @@ export class CodegraphWriter {
 
       let nodesWritten = 0
       let edgesWritten = 0
+      let edgesSkipped = 0
+      let filesSkipped = 0
+
+      // Pre-compute node counts for artifact detection
+      const fileNodeCounts = new Map<string, number>()
+      for (const [, meta] of store.nodeMeta) {
+        fileNodeCounts.set(meta.file, (fileNodeCounts.get(meta.file) ?? 0) + 1)
+      }
+
+      // Build reverse index: sourceFile → Array<{sourceId, targetId, edges}>
+      // Avoids O(files × E) full adjacency scan per file
+      const sourceFileEdges = new Map<string, Array<{ sourceId: string; targetId: string; edges: EdgeMeta[] }>>()
+      for (const [sourceId, targets] of store.adjacency) {
+        const sourceNode = store.getNode(sourceId)
+        if (!sourceNode) continue
+        let entries = sourceFileEdges.get(sourceNode.file)
+        if (!entries) {
+          entries = []
+          sourceFileEdges.set(sourceNode.file, entries)
+        }
+        for (const [targetId, edges] of targets) {
+          entries.push({ sourceId, targetId, edges })
+        }
+      }
 
       const doUpdate = db.transaction(() => {
         for (const filePath of filePaths) {
+          // Skip build artifact files
+          const nodeCount = fileNodeCounts.get(filePath) ?? 0
+          if (isBuildArtifact(filePath, nodeCount, this.filterOptions)) {
+            // Still delete old data for artifact files (cleanup)
+            deleteEdgesByFile.run(filePath, filePath)
+            deleteFtsByFile.run(filePath)
+            deleteNodesByFile.run(filePath)
+            filesSkipped++
+            continue
+          }
+
           // Delete old data for this file
           deleteEdgesByFile.run(filePath, filePath)
           deleteFtsByFile.run(filePath)
@@ -359,11 +493,16 @@ export class CodegraphWriter {
             nodesWritten++
           }
 
-          // Insert edges where source is in this file
-          for (const [sourceId, targets] of store.adjacency) {
-            const sourceNode = store.getNode(sourceId)
-            if (!sourceNode || sourceNode.file !== filePath) continue
-            for (const [targetId, edges] of targets) {
+          // Insert edges where source is in this file (O(1) lookup via reverse index)
+          const fileEdges = sourceFileEdges.get(filePath)
+          if (fileEdges) {
+            for (const { sourceId, targetId, edges } of fileEdges) {
+              // Skip edges to artifact nodes
+              const targetNode = store.getNode(targetId)
+              if (targetNode && isBuildArtifact(targetNode.file, fileNodeCounts.get(targetNode.file) ?? 0, this.filterOptions)) {
+                edgesSkipped += edges.length
+                continue
+              }
               for (const edge of edges) {
                 const kind = EDGE_TYPE_TO_KIND[edge.type] ?? edge.type
                 insertEdge.run(sourceId, targetId, kind)
@@ -387,7 +526,7 @@ export class CodegraphWriter {
       // Update mtime
       writeFileSync(this.mtimePath, String(Date.now()), 'utf-8')
 
-      return { nodesWritten, edgesWritten, durationMs: Date.now() - start }
+      return { nodesWritten, edgesWritten, edgesSkipped, filesSkipped, durationMs: Date.now() - start }
     } finally {
       db.close()
     }
@@ -418,8 +557,21 @@ export class CodegraphWriter {
         VALUES (?, ?, ?, ?, ?, ?, ?, ?)
       `)
 
+      // Pre-compute: filter build artifacts
+      const fileNodeCounts = new Map<string, number>()
+      for (const [, meta] of store.nodeMeta) {
+        fileNodeCounts.set(meta.file, (fileNodeCounts.get(meta.file) ?? 0) + 1)
+      }
+      const artifactFiles = new Set<string>()
+      for (const [file, count] of fileNodeCounts) {
+        if (isBuildArtifact(file, count, this.filterOptions)) {
+          artifactFiles.add(file)
+        }
+      }
+
       const doRebuild = db.transaction(() => {
         for (const [, meta] of store.nodeMeta) {
+          if (artifactFiles.has(meta.file)) continue
           insertFts.run(
             meta.id, meta.name, meta.qualified_name ?? '',
             meta.signature ?? '', meta.docstring ?? '',

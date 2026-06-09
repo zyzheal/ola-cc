@@ -155,7 +155,7 @@ function parseCodegraphStderr(line: string): { stage: string; progress: number |
 
 export const codegraphTool = buildTool({
   name: 'codegraph',
-  searchHint: 'code graph AST callers callees impact trace scc toposort pagerank roles coupling community centrality temporal slice delta',
+  searchHint: 'code graph dependency call impact structure',
   maxResultSizeChars: 50_000,
   inputSchema,
   renderToolUseMessage(input: Record<string, unknown>) {
@@ -466,23 +466,25 @@ export const codegraphTool = buildTool({
  */
 export const OPERATION_TIERS = {
   core: [
-    'codegraph_scc',
-    'codegraph_toposort',
-    'codegraph_pagerank',
     'codegraph_search',
     'codegraph_status',
-  ],
-  analysis: [
-    'codegraph_community',
-    'codegraph_roles',
-    'codegraph_impact',
-    'codegraph_centrality',
-  ],
-  advanced: [
-    'codegraph_context',
     'codegraph_callers',
     'codegraph_callees',
+  ],
+  analysis: [
+    'codegraph_impact',
     'codegraph_trace',
+    'codegraph_context',
+  ],
+  advanced: [
+    // CPU-intensive graph algorithms — deferred to prevent frequent invocation
+    'codegraph_pagerank',
+    'codegraph_community',
+    'codegraph_roles',
+    'codegraph_centrality',
+    'codegraph_scc',
+    'codegraph_toposort',
+    // Infrequent operations
     'codegraph_init',
     'codegraph_files',
     'codegraph_sync',
