@@ -537,15 +537,20 @@ export class GraphEngine {
       let danglingSum = 0
 
       // 计算悬挂节点的概率质量
+      let danglingCount = 0
       for (const node of nodes) {
+        if (++danglingCount % 5000 === 0 && Date.now() > deadline) break
         if (outDeg.get(node) === 0) {
           danglingSum += pr.get(node)!
         }
       }
+      if (Date.now() > deadline) break
 
       let l1Norm = 0
+      let vCount = 0
 
       for (const v of nodes) {
+        if (++vCount % 5000 === 0 && Date.now() > deadline) break
         let incomingSum = 0
         const inEdges = this.store.getInEdges(v)
         for (const [u, edges] of inEdges) {
@@ -1321,6 +1326,8 @@ export class GraphEngine {
 
     let level = 0
     while (level < maxLevels) {
+      if (Date.now() > deadline) break
+
       // Compute modularity before Phase 1
       const prevQ = this.computeModularity(currentNodes, currentCommunity, currentAdjMap, totalWeight, resolution)
 
@@ -1611,8 +1618,11 @@ export class GraphEngine {
       if (Date.now() > deadline) break
 
       let moved = false
+      let nodeCount = 0
 
       for (const node of nodes) {
+        // Check timeout every 1000 nodes to avoid blocking for the entire pass
+        if (++nodeCount % 1000 === 0 && Date.now() > deadline) break
         const currentCommunity = community.get(node)!
         const nodeDeg = degree.get(node) ?? 0
 
