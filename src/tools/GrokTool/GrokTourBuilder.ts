@@ -46,17 +46,65 @@ export class GrokTourBuilder {
   }
 
   /**
+   * 中文文本分词：bigram 切分 + 去标点
+   */
+  private tokenizeChinese(text: string): string[] {
+    // CJK 标点和常见符号
+    const CJK_PUNCT = /[\u3000-\u303F\uFF00-\uFFEF\u2000-\u206F.,;:!?()[\]{}'"`~@#$%^&*+=|\\/<>—–·…「」『』【】《》（）、，。；：！？\-]/
+    const CJK_RANGE = /[\u4E00-\u9FFF\u3400-\u4DBF]/
+    const tokens: string[] = []
+
+    // 提取连续中文片段
+    let buf = ''
+    for (const ch of text) {
+      if (CJK_RANGE.test(ch)) {
+        buf += ch
+      } else {
+        if (buf.length >= 2) {
+          // bigram 切分
+          for (let i = 0; i <= buf.length - 2; i++) {
+            tokens.push(buf.slice(i, i + 2))
+          }
+          // 也保留完整片段（3字以上）
+          if (buf.length >= 3) {
+            tokens.push(buf)
+          }
+        }
+        buf = ''
+      }
+    }
+    // 处理末尾片段
+    if (buf.length >= 2) {
+      for (let i = 0; i <= buf.length - 2; i++) {
+        tokens.push(buf.slice(i, i + 2))
+      }
+      if (buf.length >= 3) {
+        tokens.push(buf)
+      }
+    }
+
+    return tokens
+  }
+
+  /**
    * 查询已生成的知识图谱（RAG 检索 + LLM 回答）
    */
   async queryGraph(question: string, graph: GraphData): Promise<GrokChatResult> {
-    // 从问题中提取关键词，支持 camelCase/snake_case 拆分
-    const rawKeywords = question.split(/\s+/).filter(w => w.length > 1)
+    // 从问题中提取关键词，支持中英文混合查询
     const keywords = new Set<string>()
+
+    // 英文：按空格拆分 + camelCase/snake_case token 化
+    const rawKeywords = question.split(/\s+/).filter(w => w.length > 1)
     for (const kw of rawKeywords) {
       keywords.add(kw.toLowerCase())
       for (const token of this.tokenizeIdentifier(kw)) {
         keywords.add(token)
       }
+    }
+
+    // 中文：bigram 切分
+    for (const token of this.tokenizeChinese(question)) {
+      keywords.add(token)
     }
 
     // 匹配节点并计算相关性分数

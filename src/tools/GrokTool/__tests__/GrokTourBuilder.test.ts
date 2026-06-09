@@ -7,7 +7,7 @@
 import { describe, it, expect, beforeEach } from 'bun:test'
 import { GrokTourBuilder } from '../GrokTourBuilder.js'
 import type { GrokAnalyzer } from '../GrokAnalyzer.js'
-import type { GraphData } from '../GrokManager.js'
+import type { GraphData } from '../GrokTypes.js'
 import { createFixture } from '../../../services/graph/__tests__/testHelpers.js'
 
 // Mock analyzer with callAgentWithTimeout
@@ -164,6 +164,47 @@ describe('queryGraph', () => {
 
     const userServiceSource = result.sources.find(s => s.file === 'src/user.ts')
     expect(userServiceSource).toBeDefined()
+  })
+
+  it('should handle Chinese queries without errors', async () => {
+    const mockAnalyzer = createMockAnalyzer()
+    const builder = new GrokTourBuilder(mockAnalyzer)
+    const graph = createTestGraph()
+
+    // Chinese query should not throw, even with no matching nodes
+    const result = await builder.queryGraph('核心对话流程是怎样的？', graph)
+    expect(result.answer).toBeDefined()
+    expect(result.sources).toBeDefined()
+  })
+
+  it('should extract Chinese bigram keywords', () => {
+    const mockAnalyzer = createMockAnalyzer()
+    const builder = new GrokTourBuilder(mockAnalyzer)
+
+    // Access private method for testing
+    const tokens = (builder as any).tokenizeChinese('用户认证流程') as string[]
+    expect(tokens).toContain('用户')
+    expect(tokens).toContain('认证')
+    expect(tokens).toContain('流程')
+    expect(tokens).toContain('用户认证流程')
+  })
+
+  it('should match Chinese keywords in node summaries', async () => {
+    const mockAnalyzer = createMockAnalyzer()
+    const builder = new GrokTourBuilder(mockAnalyzer)
+    const graph: GraphData = {
+      nodes: [
+        { id: 'auth', name: 'login', kind: 'function', file: 'src/auth.ts', line: 10, summary: '用户认证登录', layer: 'API', domain: 'auth' },
+        { id: 'db', name: 'query', kind: 'function', file: 'src/db.ts', line: 5, summary: '数据库查询', layer: 'Data', domain: 'database' },
+      ],
+      edges: [],
+      metadata: {} as any,
+    }
+
+    const result = await builder.queryGraph('用户认证', graph)
+    // "用户" and "认证" bigrams should match the auth node
+    expect(result.sources.length).toBeGreaterThan(0)
+    expect(result.sources[0].file).toBe('src/auth.ts')
   })
 })
 
