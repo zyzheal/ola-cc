@@ -106,8 +106,9 @@ export function SpinnerAnimationRow({
   effortSuffix,
   agentActive = false,
 }: SpinnerAnimationRowProps): React.ReactNode {
-  // PROFILING: measure spinner render body time
-  const _rStart = performance.now();
+  // PROFILING: measure spinner render body time (sampled every 50 renders)
+  const _profRc = (globalThis as any).__spinnerRenderCount = ((globalThis as any).__spinnerRenderCount ?? 0) + 1;
+  const _rStart = _profRc % 50 === 0 ? performance.now() : 0;
   // 200ms animation interval: spinner glyph rotation at 5fps is visually
   // smooth enough while reducing React commit frequency by 4x vs 50ms.
   // Each commit triggers resetAfterCommit → scheduleRender → onRender,
@@ -241,10 +242,8 @@ export function SpinnerAnimationRow({
           <Text dimColor>(working…)</Text>
         </> : null;
   // PROFILING: store spinner render body time (sampled every 50 renders)
-  const _rBodyMs = performance.now() - _rStart;
-  const _profRc = (globalThis as any).__spinnerRenderCount = ((globalThis as any).__spinnerRenderCount ?? 0) + 1;
   if (_profRc % 50 === 0) {
-    (globalThis as any).__lastSpinnerBodyMs = _rBodyMs;
+    (globalThis as any).__lastSpinnerBodyMs = performance.now() - _rStart;
   }
   return <Box ref={viewportRef} flexDirection="row" marginTop={1} width="100%">
       <SpinnerGlyph frame={frame} messageColor={messageColor} stalledIntensity={overrideColor ? 0 : stalledIntensity} reducedMotion={reducedMotion} time={time} />

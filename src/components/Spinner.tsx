@@ -159,14 +159,13 @@ function SpinnerWithVerbInner({
       }
     } else if (thinkingStartRef.current !== null) {
       // Stopped thinking - calculate duration and ensure 2s minimum display
-      const duration = Date.now() - thinkingStartRef.current;
       const elapsed = Date.now() - thinkingStartRef.current;
       const remainingThinkingTime = Math.max(0, 2000 - elapsed);
       thinkingStartRef.current = null;
 
       // Show "thinking..." for remaining time if < 2s elapsed, then show duration
       const showDuration = (): void => {
-        setThinkingStatus(duration);
+        setThinkingStatus(elapsed);
         // Clear after 2s
         clearStatusTimer = setTimeout(setThinkingStatus, 2000, null);
       };
