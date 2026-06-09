@@ -460,9 +460,9 @@ export const codegraphTool = buildTool({
 
 /**
  * Operation tier classification for progressive disclosure.
- * - Core (5): Always visible, short descriptions
- * - Analysis (4): Visible after core, medium descriptions
- * - Advanced (11): Deferred via ToolSearch, detailed descriptions
+ * - Core (4): Always visible, short descriptions
+ * - Analysis (3): Visible after core, medium descriptions
+ * - Advanced (15): Deferred via ToolSearch, detailed descriptions
  */
 export const OPERATION_TIERS = {
   core: [

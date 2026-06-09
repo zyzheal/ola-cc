@@ -1,7 +1,7 @@
 // src/tools/GrokTool/GrokAnalyzer.ts
 // File discovery + LLM batch analysis + two-phase optimization
 
-import { existsSync, mkdirSync, readFileSync, readdirSync, realpathSync } from 'fs'
+import { existsSync, mkdirSync, realpathSync } from 'fs'
 import { readdir } from 'fs/promises'
 import { homedir } from 'os'
 import { extname, join, resolve } from 'path'

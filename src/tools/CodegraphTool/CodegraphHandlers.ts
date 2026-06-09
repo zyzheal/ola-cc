@@ -292,18 +292,16 @@ export async function handleDelta(ctx: HandlerContext, input: { maxNodes?: numbe
     }
   }
 
-  // Create a fresh instance for "new" state (avoids markDirty on shared singleton)
-  GraphStore.deleteInstance(ctx.projectRoot)
-  const freshStore = GraphStore.getInstance(ctx.projectRoot)
-  await freshStore.load()
+  // Reload store to get fresh state (snapshot already captured in oldNodeIds/oldEdgeSet)
+  await store.reload()
 
   // Compute diff directly from flat structures
-  const currNodeIds = new Set(freshStore.nodeMeta.keys())
+  const currNodeIds = new Set(store.nodeMeta.keys())
   const added = [...currNodeIds].filter(n => !oldNodeIds.has(n))
   const removed = [...oldNodeIds].filter(n => !currNodeIds.has(n))
 
   const currEdgeSet = new Map<string, { from: string; to: string; type: string }>()
-  for (const [from, outMap] of freshStore.adjacency) {
+  for (const [from, outMap] of store.adjacency) {
     for (const [to, edgeArray] of outMap) {
       for (const edge of edgeArray) {
         currEdgeSet.set(`${from}→${to}:${edge.type}`, { from, to, type: edge.type })
