@@ -416,6 +416,16 @@ async function* queryLoop(
 	// Standalone let (NOT on State) to survive compact/reset where state = {...}
 	// would lose the count.
 	let totalToolCalls = 0;
+	// Flag: when budget is exhausted, inject one final summary turn with no tools
+	// instead of returning immediately. This ensures the model always produces
+	// a text summary before the agent exits.
+	let forcedSummaryInjected = false;
+	// Deferred attachment: yielded AFTER the summary turn, not before.
+	// If yielded before, runAgent.ts breaks out of the generator via
+	// generator.return(), and the summary injection code never executes.
+	let pendingBudgetAttachment: AttachmentMessage | null = null;
+	// Guard: prevent budget warning from being injected every turn
+	let budgetWarningInjected = false;
 
 	// Expose remaining budget for fork subagent inheritance
 	if (maxToolCalls) {
@@ -1804,6 +1814,10 @@ async function* queryLoop(
 				// → retry → error → … (the hook injects more tokens each cycle).
 				yield lastMessage;
 				void executeStopFailureHooks(lastMessage, toolUseContext);
+				if (pendingBudgetAttachment) {
+					yield pendingBudgetAttachment;
+					pendingBudgetAttachment = null;
+				}
 				return { reason: isWithheldMedia ? "image_error" : "prompt_too_long" };
 			} else if (feature("CONTEXT_COLLAPSE") && isWithheld413) {
 				// reactiveCompact compiled out but contextCollapse withheld and
@@ -1811,6 +1825,10 @@ async function* queryLoop(
 				// early-return rationale — don't fall through to stop hooks.
 				yield lastMessage;
 				void executeStopFailureHooks(lastMessage, toolUseContext);
+				if (pendingBudgetAttachment) {
+					yield pendingBudgetAttachment;
+					pendingBudgetAttachment = null;
+				}
 				return { reason: "prompt_too_long" };
 			}
 
@@ -1896,6 +1914,14 @@ async function* queryLoop(
 					`[QUERY LOOP] exit: API error message, reason=completed`,
 				);
 				void executeStopFailureHooks(lastMessage, toolUseContext);
+				// Yield deferred budget attachment if set. The agent hit budget
+				// but the forced summary turn failed with an API error (e.g., rate
+				// limit). terminationReason will still be 'budget_exhausted' via
+				// hasBudgetAttachment detection in finalizeAgentTool.
+				if (pendingBudgetAttachment) {
+					yield pendingBudgetAttachment;
+					pendingBudgetAttachment = null;
+				}
 				return { reason: "completed" };
 			}
 
@@ -1915,6 +1941,10 @@ async function* queryLoop(
 
 			if (stopHookResult.preventContinuation) {
 				logForDebugging?.(`[QUERY LOOP] exit: stop_hook_prevented`);
+				if (pendingBudgetAttachment) {
+					yield pendingBudgetAttachment;
+					pendingBudgetAttachment = null;
+				}
 				return { reason: "stop_hook_prevented" };
 			}
 
@@ -2068,6 +2098,10 @@ async function* queryLoop(
 							maxTurns,
 							turnCount: nextTurnCount,
 						});
+						if (pendingBudgetAttachment) {
+							yield pendingBudgetAttachment;
+							pendingBudgetAttachment = null;
+						}
 						return { reason: "max_turns", turnCount: nextTurnCount };
 					}
 					logForDebugging(
@@ -2087,6 +2121,13 @@ async function* queryLoop(
 					};
 					continue;
 				}
+			}
+			// Yield deferred budget attachment (from forced summary turn).
+			// Must be yielded AFTER the summary text so consumers see the
+			// text first, then the budget-exhausted signal.
+			if (pendingBudgetAttachment) {
+				yield pendingBudgetAttachment;
+				pendingBudgetAttachment = null;
 			}
 			return { reason: "completed" };
 		}
@@ -2141,24 +2182,70 @@ async function* queryLoop(
 		}
 		queryCheckpoint("query_tool_execution_end");
 
-		// ToolCallBudget check: after all tools in current turn complete, before next API call
+		// ToolCallBudget check: after all tools in current turn complete, before next API call.
+		// Note: budget check is per-turn granularity — a turn with multiple tool calls may
+		// overshoot by up to (toolsPerTurn - 1). This is acceptable; per-call checking would
+		// require interrupting mid-turn tool execution which is not feasible.
 		totalToolCalls += toolUseBlocks.length
-		if (maxToolCalls && totalToolCalls >= maxToolCalls) {
-			yield createAttachmentMessage({
+		if (maxToolCalls && totalToolCalls > maxToolCalls) {
+			logForDebugging?.(
+				`[QUERY LOOP] budget overshoot: ${totalToolCalls} > ${maxToolCalls} (turn had ${toolUseBlocks.length} tool_use blocks)`,
+			);
+			// Cap reported count to maxToolCalls — the actual execution already
+			// happened, but the attachment and summary should report the budget
+			// limit, not the overshoot count.
+			totalToolCalls = maxToolCalls;
+		}
+		if (maxToolCalls && totalToolCalls >= maxToolCalls && !forcedSummaryInjected) {
+			forcedSummaryInjected = true;
+
+			// IMPORTANT: Do NOT yield the attachment here. If we yield,
+			// runAgent.ts breaks out of the for-await loop, which calls
+			// generator.return() on this generator — all code after the
+			// yield (summary injection, tools clearing) becomes dead code.
+			// Instead, save the attachment and yield it AFTER the summary turn.
+			pendingBudgetAttachment = createAttachmentMessage({
 				type: "max_tool_calls_reached" as const,
 				totalToolCalls,
 				maxToolCalls,
 			});
-			return { reason: "max_tool_calls", totalToolCalls };
-		}
 
-		// Budget warning: inject hint when approaching limit (80%)
-		if (maxToolCalls && totalToolCalls >= maxToolCalls * 0.8 && totalToolCalls < maxToolCalls) {
-			const remaining = maxToolCalls - totalToolCalls
-			yield createUserMessage({
-				content: `[Budget Warning] You have ${remaining} tool calls remaining out of ${maxToolCalls}. Please prioritize completing the task efficiently.`,
+			// Inject forced summary request — the model MUST produce a text
+			// response before the agent exits. Without this, agents that hit
+			// the tool call budget end with pure tool_use messages and
+			// finalizeAgentTool returns empty content.
+			const summaryRequest = createUserMessage({
+				content: `[Budget Exhausted] You have used all ${maxToolCalls} tool calls. You MUST now provide a comprehensive final summary of your findings and work completed so far. Do NOT attempt any more tool calls — all tools have been disabled for this final turn.`,
 				isMeta: true,
 			});
+			toolResults.push(summaryRequest);
+
+			// Clear tools for the final text-only turn
+			updatedToolUseContext = {
+				...updatedToolUseContext,
+				options: {
+					...updatedToolUseContext.options,
+					tools: [],
+				},
+			};
+
+			// Don't return — let the loop continue for one more text-only turn.
+			// The model will produce a summary, then the loop exits naturally
+			// via the !needsFollowUp path. The pending attachment is yielded
+			// just before the return.
+		}
+
+		// Budget warning: inject into messages so the MODEL sees it (not just yield to caller).
+		// Guard prevents repeated injection across turns.
+		if (maxToolCalls && totalToolCalls >= maxToolCalls * 0.8 && totalToolCalls < maxToolCalls && !budgetWarningInjected && !forcedSummaryInjected) {
+			budgetWarningInjected = true
+			const remaining = maxToolCalls - totalToolCalls
+			const warningMsg = createUserMessage({
+				content: `[Budget Warning] You have ${remaining} tool calls remaining out of ${maxToolCalls}. Please prioritize completing the task efficiently and prepare a final summary.`,
+				isMeta: true,
+			})
+			yield warningMsg
+			toolResults.push(warningMsg)
 		}
 
 		// Dispatch tool_completed events for goal runtime tracking
@@ -2487,8 +2574,10 @@ async function* queryLoop(
 			queryDepth: queryTracking.depth,
 		});
 
-		// Refresh tools between turns so newly-connected MCP servers become available
-		if (updatedToolUseContext.options.refreshTools) {
+		// Refresh tools between turns so newly-connected MCP servers become available.
+		// Skip when forced summary is active — restoring tools would let the model
+		// make more tool calls, defeating the budget enforcement.
+		if (updatedToolUseContext.options.refreshTools && !forcedSummaryInjected) {
 			const refreshedTools = updatedToolUseContext.options.refreshTools();
 			if (refreshedTools !== updatedToolUseContext.options.tools) {
 				updatedToolUseContext = {
