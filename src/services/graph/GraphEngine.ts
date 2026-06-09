@@ -538,11 +538,11 @@ export class GraphEngine {
       if (Date.now() > deadline) break
       const newPr = new Map<string, number>()
       let danglingSum = 0
-      let danglingCount = 0
+      let checkCounter = 0
 
       // 计算悬挂节点的概率质量（每 5000 节点检查 timeout）
       for (const node of nodes) {
-        if (++danglingCount % 5000 === 0 && Date.now() > deadline) break
+        if (++checkCounter % 5000 === 0 && Date.now() > deadline) break
         if (outDeg.get(node) === 0) {
           danglingSum += pr.get(node)!
         }
@@ -608,8 +608,10 @@ export class GraphEngine {
     let changed = true
     let iterations = 0
     const maxIterations = reachable.nodes.length * 2
+    let totalIntersectSteps = 0
+    const maxTotalIntersectSteps = 1_000_000
 
-    while (changed && iterations < maxIterations) {
+    while (changed && iterations < maxIterations && totalIntersectSteps < maxTotalIntersectSteps) {
       iterations++
       changed = false
 
@@ -631,6 +633,7 @@ export class GraphEngine {
           } else {
             // 找 idom 和 pred 的公共支配者
             idom = this.intersectDominators(idom, pred, dominated)
+            totalIntersectSteps += 10000 // budget per intersect call
           }
         }
 
@@ -699,7 +702,7 @@ export class GraphEngine {
    */
   classifyRoles(opts?: RoleOpts): Map<string, RoleType> {
     // Cache check: return cached result if options match (avoids redundant PageRank ~2.8s)
-    const cacheKey = JSON.stringify(opts ?? {})
+    const cacheKey = JSON.stringify({ ...opts, _size: this.store.size })
     if (this._rolesCache && this._rolesCacheKey === cacheKey) {
       return new Map(this._rolesCache)
     }
@@ -1129,7 +1132,7 @@ export class GraphEngine {
 
       if (methods.length === 0 || fields.length === 0) continue
       // Skip classes with too many methods to avoid O(m²) blowup
-      if (methods.length > 200) continue
+      if (methods.length > 200) { logForDebugging(`[couplingMetrics] Skipping ${meta.name}: ${methods.length} methods (>200)`); continue }
 
       // 计算方法间共享字段数
       let sharedPairs = 0
@@ -1173,24 +1176,23 @@ export class GraphEngine {
     const N = nodes.length
     if (N === 0) return { scores: [] }
 
-    // Auto-compute alpha from max in-degree if not specified
-    let maxInDeg = 0
+    // Auto-compute alpha from max degree if not specified
+    let maxDeg = 0
     if (opts?.alpha === undefined) {
       for (const node of nodes) {
-        let deg = 0
+        let inDeg = 0, outDeg = 0
         for (const [, edges] of this.store.getInEdges(node)) {
-          for (const _ of edges) deg++
+          for (const _ of edges) inDeg++
         }
-        if (deg > maxInDeg) maxInDeg = deg
+        for (const [, edges] of this.store.getOutEdges(node)) {
+          for (const _ of edges) outDeg++
+        }
+        maxDeg = Math.max(maxDeg, inDeg, outDeg)
       }
     }
-    // Auto-alpha: 0.9/sqrt(maxInDeg) is a conservative heuristic for α < 1/ρ(A).
-    // For directed graphs ρ(A) ≤ sqrt(maxInDeg * maxOutDeg), so this is safe when
-    // maxInDeg ≈ maxOutDeg. For highly asymmetric graphs (e.g., many sinks with no
-    // out-edges), the true spectral radius may be smaller, making this slightly
-    // over-conservative. Pass an explicit `alpha` to override if convergence is too slow.
-    // Convergence requires alpha < 1/rho(A); use 0.9/maxInDeg as conservative estimate
-    const alpha = opts?.alpha ?? (maxInDeg > 0 ? 0.9 / maxInDeg : 0.1)
+    // Convergence requires alpha < 1/ρ(A). For adjacency matrices ρ(A) ≤ maxDegree,
+    // so 0.9/maxDegree is conservative. Pass an explicit `alpha` to override.
+    const alpha = opts?.alpha ?? (maxDeg > 0 ? 0.9 / maxDeg : 0.1)
 
     const x = new Map<string, number>()
     for (const node of nodes) x.set(node, 1)
@@ -1228,11 +1230,12 @@ export class GraphEngine {
    * Betweenness Centrality — 采样近似 (Brandes)
    * sampleSize 控制采样节点数
    */
-  betweennessCentrality(sampleSize = 200): CentralityResult {
+  betweennessCentrality(sampleSize = 200, timeoutMs = 30000): CentralityResult {
     const nodes = this.getAllNodeIds()
     const N = nodes.length
     if (N === 0) return { scores: [] }
 
+    const deadline = Date.now() + timeoutMs
     const bc = new Map<string, number>()
     for (const node of nodes) bc.set(node, 0)
 
@@ -1240,6 +1243,7 @@ export class GraphEngine {
     const sampled = this.sampleNodes(nodes, Math.min(sampleSize, N))
 
     for (const s of sampled) {
+      if (Date.now() > deadline) break
       const stack: string[] = []
       const predecessors = new Map<string, string[]>()
       const sigma = new Map<string, number>()
@@ -1414,7 +1418,7 @@ export class GraphEngine {
 
     const { stdout: gitLog } = await execFileAsync(
       'git', ['log', '--name-only', `--max-count=${maxCommits}`, '--pretty=format:COMMIT:%H', `--since=${sinceValue}`],
-      { cwd: projectRoot, timeout: 30000 }
+      { cwd: projectRoot, timeout: 30000, encoding: 'utf-8' }
     )
 
     // Parse commits and their changed files
@@ -1506,8 +1510,13 @@ export class GraphEngine {
       }
 
       if (Date.now() < deadline) {
-        const scc = this.tarjanSCC()
-        nonTrivialSCCs = scc.filter(s => !s.isTrivial).length
+        // tarjanSCC is O(V+E), skip if less than 2s remaining (based on node count heuristic)
+        const remainingMs = deadline - Date.now()
+        const estimatedMs = totalNodes * 0.01 // ~0.01ms per node for O(V+E)
+        if (remainingMs > Math.max(2000, estimatedMs)) {
+          const scc = this.tarjanSCC()
+          nonTrivialSCCs = scc.filter(s => !s.isTrivial).length
+        }
       }
     }
 

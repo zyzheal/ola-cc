@@ -218,17 +218,11 @@ export class GraphStore {
       this.loadGrokTo(grokJsonPath, tmpAdj, tmpRev, tmpMeta)
     }
 
-    // 原子交换：先替换引用，再清除旧数据
-    const oldAdj = this.adjacency
-    const oldRev = this.reverse
-    const oldMeta = this.nodeMeta
-
-    oldAdj.clear()
-    oldRev.clear()
-    oldMeta.clear()
-    for (const [k, v] of tmpAdj) oldAdj.set(k, v)
-    for (const [k, v] of tmpRev) oldRev.set(k, v)
-    for (const [k, v] of tmpMeta) oldMeta.set(k, v)
+    // Copy-on-write: 替换引用（JS 单线程下引用赋值是瞬时的）
+    // 并发算法持有的旧 Map 引用不受影响，直到它们重新读取 this.adjacency
+    ;(this as { adjacency: typeof this.adjacency }).adjacency = tmpAdj
+    ;(this as { reverse: typeof this.reverse }).reverse = tmpRev
+    ;(this as { nodeMeta: typeof this.nodeMeta }).nodeMeta = tmpMeta
 
     this.loaded = true
     this._cachedSize = null

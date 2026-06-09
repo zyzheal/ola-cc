@@ -16,7 +16,10 @@ import type { ProgressMessage, ToolProgressData } from '../../types/tools.js'
 import { grokManager, GrokError, ERROR_SUGGESTIONS } from './GrokManager.js'
 import { GraphStore } from '../../services/graph/GraphStore.js'
 import { GraphEngine } from '../../services/graph/GraphEngine.js'
-import { execSync } from 'child_process'
+import { execFile } from 'child_process'
+import { promisify } from 'util'
+
+const execFileAsync = promisify(execFile)
 
 // ============================================================
 // Schema
@@ -378,9 +381,11 @@ export const grokTool = buildTool({
           let temporalPairs: Array<{ a: string; b: string; score: number; coChanges: number }> = []
           let totalCommits = 0
           try {
-            const sinceArg = input.since ? `--since="${input.since}"` : '--since="30 days"'
-            const gitLog = execSync(
-              `git log --name-only --pretty=format:"COMMIT:%H" ${sinceArg}`,
+            const sinceArgs = ['--name-only', '--pretty=format:COMMIT:%H']
+            if (input.since) sinceArgs.push(`--since=${input.since}`)
+            else sinceArgs.push('--since=30 days')
+            const { stdout: gitLog } = await execFileAsync(
+              'git', ['log', ...sinceArgs],
               { cwd: projectRoot, encoding: 'utf-8', timeout: 30000 }
             )
             const commits = gitLog.split(/^COMMIT:/m).filter(Boolean)

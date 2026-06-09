@@ -244,6 +244,7 @@ function loadGrokConfig(): GrokConfig {
 
 export class GrokManager {
   private pipelineLock: Promise<void> | null = null
+  private pipelineLockCreatedAt = 0
   private _projectRoot: string | null
   private vendorDir: string
   private config: GrokConfig
@@ -1303,12 +1304,21 @@ ${JSON_OUTPUT_INSTRUCTION}`
   async runAgentPipeline(options: GrokGenerateOptions): Promise<GrokGenerateResult> {
     // 原子化互斥锁：先捕获当前锁，再创建新锁，确保 check-and-set 原子性
     const prevLock = this.pipelineLock
+    const prevLockCreatedAt = this.pipelineLockCreatedAt
     let releaseLock!: () => void
     const myLock = new Promise<void>(resolve => { releaseLock = resolve })
     this.pipelineLock = myLock
+    this.pipelineLockCreatedAt = Date.now()
 
     // 等待上一次 pipeline 完成（如果有的话），带超时保护
     if (prevLock) {
+      // Stale lock detection: if previous lock held > 15 min, force-reset
+      const STALE_LOCK_MS = 15 * 60 * 1000
+      if (prevLockCreatedAt > 0 && Date.now() - prevLockCreatedAt > STALE_LOCK_MS) {
+        logForDebugging('[grok] Stale pipeline lock detected (>15min), force-resetting')
+        this.pipelineLock = null
+        this.pipelineLockCreatedAt = 0
+      } else {
       logForDebugging('[grok] Pipeline already running, waiting...')
       const PIPELINE_LOCK_TIMEOUT_MS = 600_000 // 10 分钟
       let timer: ReturnType<typeof setTimeout> | undefined
@@ -1328,6 +1338,7 @@ ${JSON_OUTPUT_INSTRUCTION}`
       } finally {
         if (timer) clearTimeout(timer)
       }
+      }
     }
 
     try {
@@ -1336,6 +1347,7 @@ ${JSON_OUTPUT_INSTRUCTION}`
       // 只清除自己的锁，不覆盖后续调用者设置的锁
       if (this.pipelineLock === myLock) {
         this.pipelineLock = null
+        this.pipelineLockCreatedAt = 0
       }
       releaseLock!()
     }

@@ -54,9 +54,21 @@ const GRAPH_OPS = new Set([
   'codegraph_slice', 'codegraph_coupling', 'codegraph_temporal',
 ])
 
-let lastGraphOpTime = 0
-let circuitBreakerFailures = 0
-let circuitBreakerDisabledUntil = 0
+interface CircuitBreakerState {
+  lastGraphOpTime: number
+  failures: number
+  disabledUntil: number
+}
+const circuitBreakers = new Map<string, CircuitBreakerState>()
+
+function getCircuitBreaker(projectRoot: string): CircuitBreakerState {
+  let cb = circuitBreakers.get(projectRoot)
+  if (!cb) {
+    cb = { lastGraphOpTime: 0, failures: 0, disabledUntil: 0 }
+    circuitBreakers.set(projectRoot, cb)
+  }
+  return cb
+}
 
 // ============================================================
 // Schema
@@ -311,15 +323,16 @@ export const codegraphTool = buildTool({
 
     // Rate limiting: 5s cooldown between graph-heavy ops
     if (GRAPH_OPS.has(input.operation)) {
+      const cb = getCircuitBreaker(projectRoot)
       const now = Date.now()
       // Circuit breaker: 3 failures → 60s disable
-      if (now < circuitBreakerDisabledUntil) {
+      if (now < cb.disabledUntil) {
         return { data: { error: true, message: 'Graph operations temporarily disabled due to repeated failures. Try again in a minute.' } }
       }
-      if (now - lastGraphOpTime < 5000) {
+      if (now - cb.lastGraphOpTime < 5000) {
         return { data: { error: true, message: 'Graph operation rate limited, please wait a few seconds before retrying.' } }
       }
-      lastGraphOpTime = now
+      cb.lastGraphOpTime = now
     }
 
     try {
@@ -383,7 +396,7 @@ export const codegraphTool = buildTool({
 
       // Reset circuit breaker on successful graph op
       if (GRAPH_OPS.has(input.operation)) {
-        circuitBreakerFailures = 0
+        getCircuitBreaker(projectRoot).failures = 0
       }
 
       // 所有操作完成时发送完成进度
@@ -427,13 +440,20 @@ export const codegraphTool = buildTool({
       if (e instanceof ValidationError) {
         return { data: { error: true, message: e.message } };
       }
+      // GraphStoreError: use suggestion for user-friendly message
+      if (e instanceof GraphStoreError) {
+        const userMsg = e.suggestion ? `${e.message} (${e.suggestion})` : e.message
+        logForDebugging(`[codegraph] GraphStoreError: ${e.code}`)
+        return { data: { error: true, operation: input.operation, message: userMsg } }
+      }
       logForDebugging(`[codegraph] error: ${e}`);
       // Circuit breaker: track failures for graph-heavy ops
       if (GRAPH_OPS.has(input.operation)) {
-        circuitBreakerFailures++
-        if (circuitBreakerFailures >= 3) {
-          circuitBreakerDisabledUntil = Date.now() + 60000
-          circuitBreakerFailures = 0
+        const cb = getCircuitBreaker(projectRoot)
+        cb.failures++
+        if (cb.failures >= 3) {
+          cb.disabledUntil = Date.now() + 60000
+          cb.failures = 0
         }
       }
       // PostToolUse: record failed usage
