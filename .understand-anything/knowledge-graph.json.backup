@@ -1,0 +1,342 @@
+{
+  "nodes": [
+    {
+      "id": "/Users/heal/ola-cc/src/tools/GrokTool/GrokSkill.ts:GrokSkillResult",
+      "name": "GrokSkillResult",
+      "kind": "interface",
+      "file": "/Users/heal/ola-cc/src/tools/GrokTool/GrokSkill.ts",
+      "line": 4,
+      "signature": "interface GrokSkillResult { formatted: string; raw: unknown }",
+      "summary": "Interface representing the result of formatting Grok output for terminal display",
+      "layer": "Utility",
+      "domain": ""
+    },
+    {
+      "id": "/Users/heal/ola-cc/src/tools/GrokTool/GrokSkill.ts:formatGrokError",
+      "name": "formatGrokError",
+      "kind": "function",
+      "file": "/Users/heal/ola-cc/src/tools/GrokTool/GrokSkill.ts",
+      "line": 12,
+      "signature": "function formatGrokError(error: unknown): string",
+      "summary": "Formats Grok errors into user-friendly messages with error codes, recoverability indicators, and suggestions",
+      "layer": "Utility",
+      "domain": ""
+    },
+    {
+      "id": "/Users/heal/ola-cc/src/tools/GrokTool/GrokSkill.ts:formatGrokResult",
+      "name": "formatGrokResult",
+      "kind": "function",
+      "file": "/Users/heal/ola-cc/src/tools/GrokTool/GrokSkill.ts",
+      "line": 31,
+      "signature": "function formatGrokResult(operation: string, result: unknown): GrokSkillResult",
+      "summary": "Formats various Grok operation results into terminal-friendly output with Chinese labels and visual formatting",
+      "layer": "Utility",
+      "domain": ""
+    },
+    {
+      "id": "/Users/heal/ola-cc/src/tools/GrokTool/GrokManager.ts:GrokGenerateOptions",
+      "name": "GrokGenerateOptions",
+      "kind": "interface",
+      "file": "/Users/heal/ola-cc/src/tools/GrokTool/GrokManager.ts",
+      "line": 19,
+      "signature": "interface GrokGenerateOptions { path?: string; language?: string; scope?: string; incremental?: boolean; onProgress?: (stage: string, progress: number) => void }",
+      "summary": "Configuration options for generating knowledge graphs including scan path, language, scope, and progress callbacks",
+      "layer": "Service",
+      "domain": ""
+    },
+    {
+      "id": "/Users/heal/ola-cc/src/tools/GrokTool/GrokManager.ts:GrokGenerateResult",
+      "name": "GrokGenerateResult",
+      "kind": "interface",
+      "file": "/Users/heal/ola-cc/src/tools/GrokTool/GrokManager.ts",
+      "line": 27,
+      "signature": "interface GrokGenerateResult { status: 'success' | 'partial' | 'failed'; nodeCount: number; edgeCount: number; domainCount: number; filePath: string; errors?: GrokError[] }",
+      "summary": "Result structure from knowledge graph generation with status counts and error handling",
+      "layer": "Service",
+      "domain": ""
+    },
+    {
+      "id": "/Users/heal/ola-cc/src/tools/GrokTool/GrokManager.ts:GrokChatResult",
+      "name": "GrokChatResult",
+      "kind": "interface",
+      "file": "/Users/heal/ola-cc/src/tools/GrokTool/GrokManager.ts",
+      "line": 36,
+      "signature": "interface GrokChatResult { answer: string; sources: { file: string; line: number; relevance: number }[] }",
+      "summary": "Result from Grok chat queries with answer text and source references with relevance scores",
+      "layer": "Service",
+      "domain": ""
+    },
+    {
+      "id": "/Users/heal/ola-cc/src/tools/GrokTool/GrokManager.ts:GrokGraphStatus",
+      "name": "GrokGraphStatus",
+      "kind": "interface",
+      "file": "/Users/heal/ola-cc/src/tools/GrokTool/GrokManager.ts",
+      "line": 41,
+      "signature": "interface GrokGraphStatus { exists: boolean; nodeCount?: number; edgeCount?: number; lastUpdated?: string; stale?: boolean }",
+      "summary": "Status information about the knowledge graph including existence, counts, and staleness indicators",
+      "layer": "Service",
+      "domain": ""
+    },
+    {
+      "id": "/Users/heal/ola-cc/src/tools/GrokTool/GrokManager.ts:GraphNode",
+      "name": "GraphNode",
+      "kind": "interface",
+      "file": "/Users/heal/ola-cc/src/tools/GrokTool/GrokManager.ts",
+      "line": 48,
+      "signature": "interface GraphNode { id: string; name: string; kind: string; file: string; line: number; signature: string; summary: string; layer: string; domain: string }",
+      "summary": "Represents a node in the knowledge graph with detailed code symbol information and categorization",
+      "layer": "Service",
+      "domain": ""
+    },
+    {
+      "id": "/Users/heal/ola-cc/src/tools/GrokTool/GrokManager.ts:GraphEdge",
+      "name": "GraphEdge",
+      "kind": "interface",
+      "file": "/Users/heal/ola-cc/src/tools/GrokTool/GrokManager.ts",
+      "line": 59,
+      "signature": "interface GraphEdge { from: string; to: string; type: string }",
+      "summary": "Represents a relationship edge between two nodes in the knowledge graph",
+      "layer": "Service",
+      "domain": ""
+    },
+    {
+      "id": "/Users/heal/ola-cc/src/tools/GrokTool/GrokManager.ts:GraphData",
+      "name": "GraphData",
+      "kind": "interface",
+      "file": "/Users/heal/ola-cc/src/tools/GrokTool/GrokManager.ts",
+      "line": 64,
+      "signature": "interface GraphData { nodes: GraphNode[]; edges: GraphEdge[]; metadata: { ... } }",
+      "summary": "Complete knowledge graph data structure with nodes, edges, and comprehensive metadata",
+      "layer": "Service",
+      "domain": ""
+    },
+    {
+      "id": "/Users/heal/ola-cc/src/tools/GrokTool/GrokManager.ts:GrokError",
+      "name": "GrokError",
+      "kind": "class",
+      "file": "/Users/heal/ola-cc/src/tools/GrokTool/GrokManager.ts",
+      "line": 78,
+      "signature": "class GrokError extends Error { constructor(public code: string, public stage: string, message: string, public recoverable: boolean, public suggestion?: string) }",
+      "summary": "Custom error class for Grok operations with error codes, stages, recoverability flags, and suggestions",
+      "layer": "Service",
+      "domain": ""
+    },
+    {
+      "id": "/Users/heal/ola-cc/src/tools/GrokTool/GrokManager.ts:ERROR_SUGGESTIONS",
+      "name": "ERROR_SUGGESTIONS",
+      "kind": "constant",
+      "file": "/Users/heal/ola-cc/src/tools/GrokTool/GrokManager.ts",
+      "line": 91,
+      "signature": "const ERROR_SUGGESTIONS: Record<string, string>",
+      "summary": "Mapping of error codes to human-readable suggestions for troubleshooting Grok operations",
+      "layer": "Service",
+      "domain": ""
+    },
+    {
+      "id": "/Users/heal/ola-cc/src/tools/GrokTool/GrokManager.ts:loadGrokConfig",
+      "name": "loadGrokConfig",
+      "kind": "function",
+      "file": "/Users/heal/ola-cc/src/tools/GrokTool/GrokManager.ts",
+      "line": 143,
+      "signature": "function loadGrokConfig(): GrokConfig",
+      "summary": "Loads and validates Grok configuration from environment variables using Zod schema validation",
+      "layer": "Service",
+      "domain": ""
+    },
+    {
+      "id": "/Users/heal/ola-cc/src/tools/GrokTool/GrokManager.ts:GrokManager",
+      "name": "GrokManager",
+      "kind": "class",
+      "file": "/Users/heal/ola-cc/src/tools/GrokTool/GrokManager.ts",
+      "line": 170,
+      "signature": "class GrokManager { ... }",
+      "summary": "Main manager class for Grok knowledge graph operations including generation, querying, and dashboard functionality",
+      "layer": "Service",
+      "domain": ""
+    },
+    {
+      "id": "/Users/heal/ola-cc/src/tools/GrokTool/GrokTool.ts:operationEnum",
+      "name": "operationEnum",
+      "kind": "variable",
+      "file": "/Users/heal/ola-cc/src/tools/GrokTool/GrokTool.ts",
+      "line": 14,
+      "signature": "const operationEnum = z.enum([...])",
+      "summary": "Zod enum defining all available Grok operations including generate, chat, explain, domain, tour, diff, status, dashboard, architecture, and hotspots",
+      "layer": "Service",
+      "domain": ""
+    },
+    {
+      "id": "/Users/heal/ola-cc/src/tools/GrokTool/GrokTool.ts:inputSchema",
+      "name": "inputSchema",
+      "kind": "variable",
+      "file": "/Users/heal/ola-cc/src/tools/GrokTool/GrokTool.ts",
+      "line": 26,
+      "signature": "const inputSchema = z.object({ ... })",
+      "summary": "Zod schema defining input parameters for all Grok tool operations with validation rules",
+      "layer": "Service",
+      "domain": ""
+    },
+    {
+      "id": "/Users/heal/ola-cc/src/tools/GrokTool/GrokTool.ts:grokTool",
+      "name": "grokTool",
+      "kind": "constant",
+      "file": "/Users/heal/ola-cc/src/tools/GrokTool/GrokTool.ts",
+      "line": 64,
+      "signature": "export const grokTool = buildTool({ ... })",
+      "summary": "Main Grok tool definition with operation handlers, progress rendering, and integration with GrokManager",
+      "layer": "Service",
+      "domain": ""
+    },
+    {
+      "id": "/Users/heal/ola-cc/src/tools/GrokTool/__tests__/grok-graph-ops.test.ts:TEST_ADJ",
+      "name": "TEST_ADJ",
+      "kind": "constant",
+      "file": "/Users/heal/ola-cc/src/tools/GrokTool/__tests__/grok-graph-ops.test.ts",
+      "line": 0,
+      "signature": "const TEST_ADJ: { AuthService: string[]; UserController: { to: string; type: 'data' }[]; Database: string[]; Logger: never[] }",
+      "summary": "Test adjacency matrix representing a graph structure with nodes AuthService, UserController, Database, and Logger.",
+      "layer": "",
+      "domain": ""
+    },
+    {
+      "id": "/Users/heal/ola-cc/src/tools/GrokTool/__tests__/grok-graph-ops.test.ts:TEST_NODES",
+      "name": "TEST_NODES",
+      "kind": "constant",
+      "file": "/Users/heal/ola-cc/src/tools/GrokTool/__tests__/grok-graph-ops.test.ts",
+      "line": 0,
+      "signature": "const TEST_NODES: Record<string, { file: string; line: number }>",
+      "summary": "Mapping of node names to file locations and line numbers for test graph nodes.",
+      "layer": "",
+      "domain": ""
+    },
+    {
+      "id": "/Users/heal/ola-cc/src/tools/GrokTool/__tests__/grok-graph-ops.test.ts:makeTestStore",
+      "name": "makeTestStore",
+      "kind": "function",
+      "file": "/Users/heal/ola-cc/src/tools/GrokTool/__tests__/grok-graph-ops.test.ts",
+      "line": 0,
+      "signature": "function makeTestStore(): GraphStore",
+      "summary": "Creates a GraphStore instance using test adjacency data and overrides node metadata with test file locations.",
+      "layer": "",
+      "domain": ""
+    },
+    {
+      "id": "/Users/heal/ola-cc/src/tools/GrokTool/__tests__/GrokManager.test.ts:TEST_DIR",
+      "name": "TEST_DIR",
+      "kind": "constant",
+      "file": "/Users/heal/ola-cc/src/tools/GrokTool/__tests__/GrokManager.test.ts",
+      "line": 0,
+      "signature": "const TEST_DIR: string",
+      "summary": "Temporary directory path used for GrokManager test fixtures, created and cleaned up before/after each test.",
+      "layer": "",
+      "domain": ""
+    },
+    {
+      "id": "/Users/heal/ola-cc/src/tools/GrokTool/__tests__/GrokTool.test.ts:mockGraphStatus",
+      "name": "mockGraphStatus",
+      "kind": "variable",
+      "file": "/Users/heal/ola-cc/src/tools/GrokTool/__tests__/GrokTool.test.ts",
+      "line": 0,
+      "signature": "let mockGraphStatus: any",
+      "summary": "Mock object representing the status of the knowledge graph, used to control test scenarios for GrokTool operations.",
+      "layer": "",
+      "domain": ""
+    }
+  ],
+  "edges": [],
+  "metadata": {
+    "lastUpdated": "2026-06-09T03:35:39.784Z",
+    "fileCount": 7,
+    "languages": [
+      "TypeScript"
+    ],
+    "frameworks": [
+      "Jest"
+    ],
+    "layers": [
+      "Service",
+      "Utility"
+    ],
+    "uncovered": 1,
+    "tour": [
+      {
+        "name": "Grok System Fundamentals",
+        "description": "A guided tour exploring the Grok codebase, ordered from foundational utilities to higher-level services.",
+        "steps": [
+          {
+            "file": "GrokSkill.ts",
+            "description": "Core utility module providing essential skills and functions used across the system.",
+            "estimatedMinutes": 10
+          },
+          {
+            "file": "GrokTool.ts",
+            "description": "Tool module implementing specific functionalities that leverage GrokSkill.",
+            "estimatedMinutes": 15
+          },
+          {
+            "file": "GrokManager.ts",
+            "description": "Manager module orchestrating and managing GrokTool instances for complex operations.",
+            "estimatedMinutes": 20
+          }
+        ]
+      }
+    ],
+    "review": {
+      "valid": false,
+      "issues": [
+        {
+          "type": "incomplete_node_specification",
+          "location": "nodes",
+          "message": "Node count is 22, but only 3 modules are listed in the layers, leaving 19 nodes unspecified."
+        },
+        {
+          "type": "incomplete_edge_specification",
+          "location": "edges",
+          "message": "Edge count is 7, but no details are provided about the connections between nodes, making it impossible to verify relationships."
+        },
+        {
+          "type": "missing_layer_relationships",
+          "location": "layers",
+          "message": "No edges are defined between the Service and Utility layers, which may indicate missing dependencies or interactions in the architecture."
+        }
+      ],
+      "suggestions": [
+        "Provide a complete list of all 22 nodes with their identifiers or attributes.",
+        "Define all 7 edges with source nodes, target nodes, and relationship types to ensure consistency.",
+        "Add relationships between layers, such as dependencies from Service to Utility modules, to improve graph completeness."
+      ]
+    },
+    "language": "zh",
+    "errors": [],
+    "fingerprints": {
+      "/Users/heal/ola-cc/src/tools/GrokTool/GrokSkill.ts": {
+        "hash": "056231073b0bc006",
+        "size": 5376
+      },
+      "/Users/heal/ola-cc/src/tools/GrokTool/GrokManager.ts": {
+        "hash": "4e93cb07a4e1a6a5",
+        "size": 73960
+      },
+      "/Users/heal/ola-cc/src/tools/GrokTool/GrokTool.ts": {
+        "hash": "4b85d2e6fbd3404c",
+        "size": 19694
+      },
+      "/Users/heal/ola-cc/src/tools/GrokTool/__tests__/grok-graph-ops.test.ts": {
+        "hash": "d08eb091ef0daab1",
+        "size": 7192
+      },
+      "/Users/heal/ola-cc/src/tools/GrokTool/__tests__/GrokManager.test.ts": {
+        "hash": "e68811be49ebb7bb",
+        "size": 8860
+      },
+      "/Users/heal/ola-cc/src/tools/GrokTool/__tests__/GrokTool.test.ts": {
+        "hash": "ccb904c5c90b2177",
+        "size": 5335
+      },
+      "/Users/heal/ola-cc/src/tools/GrokTool/__tests__/GrokSkill.test.ts": {
+        "hash": "dbe282f3731f8c24",
+        "size": 3986
+      }
+    }
+  }
+}

@@ -37,17 +37,11 @@ import { getCurrentTurnTokenBudget, getTurnOutputTokens } from '../bootstrap/sta
 import { TeammateSpinnerTree } from './Spinner/TeammateSpinnerTree.js';
 import { useAnimationFrame } from '../ink.js';
 import { getGlobalConfig } from '../utils/config.js';
+import { renderShimmerBar } from '../utils/shimmer.js';
 export type { SpinnerMode } from './Spinner/index.js';
 const DEFAULT_CHARACTERS = getDefaultCharacters();
 const SPINNER_FRAMES = [...DEFAULT_CHARACTERS, ...[...DEFAULT_CHARACTERS].reverse()];
 
-// 进度条渲染函数
-function renderProgressBar(progress: number, width: number = 20): string {
-  const clampedProgress = Math.max(0, Math.min(100, progress))
-  const filled = Math.round((clampedProgress / 100) * width)
-  const empty = width - filled
-  return '█'.repeat(filled) + '░'.repeat(empty)
-}
 type Props = {
   mode: SpinnerMode;
   loadingStartTimeRef: React.RefObject<number>;
@@ -121,6 +115,11 @@ function SpinnerWithVerbInner({
   // it is not on the animation clock. All `time`-derived values
   // (frame, glimmer, stalled intensity, token counter, thinking shimmer,
   // elapsed-time timer) are computed inside the child.
+  //
+  // Exception: progress shimmer needs its own animation clock when
+  // progress !== null (compact progress bar).
+  const [, progressTime] = useAnimationFrame(progress !== null && !reducedMotion ? 100 : null)
+  const progressFrame = Math.floor(progressTime / 100)
 
   const viewingAgentTaskId = useAppState(s_0 => s_0.viewingAgentTaskId);
   const expandedView = useAppState(s_1 => s_1.expandedView);
@@ -339,7 +338,7 @@ function SpinnerWithVerbInner({
             <Text dimColor> {message || '压缩中...'}</Text>
           </Box>
           <Box marginTop={0}>
-            <Text dimColor>{renderProgressBar(progress, Math.min(columns - 4, 30))}</Text>
+            <Text>{renderShimmerBar(progressFrame, progress, Math.min(columns - 4, 30))}</Text>
           </Box>
         </Box>
       ) : (
