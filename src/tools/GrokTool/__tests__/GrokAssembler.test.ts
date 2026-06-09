@@ -9,8 +9,8 @@ import { mkdirSync, writeFileSync, rmSync, existsSync, readFileSync } from 'fs'
 import { resolve } from 'path'
 import { GrokAssembler, computeFileFingerprint, normalizeKind, validateGraphNode, validateGraphEdge, validateGraphData } from '../GrokAssembler.js'
 import type { ReviewResult } from '../GrokAssembler.js'
-import type { GraphNode, GraphEdge, GraphData } from '../GrokManager.js'
-import { GrokError } from '../GrokManager.js'
+import type { GraphNode, GraphEdge, GraphData } from '../GrokTypes.js'
+import { GrokError } from '../GrokTypes.js'
 
 const TEST_DIR = resolve('/tmp', `grok-assembler-test-${Date.now()}`)
 
@@ -334,10 +334,10 @@ describe('assembleGraph', () => {
     const tourResult = { tours: [] }
     const reviewResult = { valid: true, issues: [], suggestions: [] }
 
-    const result = assembler.assembleGraph(
-      [testFile], scannerResult, analysisResults, archResult,
-      tourResult, reviewResult, 'en', []
-    )
+    const result = assembler.assembleGraph({
+      files: [testFile], scannerResult, analysisResults, architectureResult: archResult,
+      tourResult, reviewResult, language: 'en', errors: []
+    })
 
     expect(result.status).toBe('success')
     expect(result.nodeCount).toBe(1)
@@ -352,10 +352,11 @@ describe('assembleGraph', () => {
   })
 
   it('should return partial status when errors present', () => {
-    const result = assembler.assembleGraph(
-      [], {}, [], {}, {}, {}, 'en',
-      [new GrokError('TEST', 'test', 'test error', true)]
-    )
+    const result = assembler.assembleGraph({
+      files: [], scannerResult: {}, analysisResults: [], architectureResult: {},
+      tourResult: {}, reviewResult: {}, language: 'en',
+      errors: [new GrokError('TEST', 'test', 'test error', true)]
+    })
 
     expect(result.status).toBe('partial')
     expect(result.errors).toBeDefined()
@@ -387,10 +388,11 @@ describe('assembleGraph', () => {
       { symbols: [{ name: 'new', kind: 'fn', file: 'old.ts', line: 1, signature: '', summary: '' }], relationships: [] },
     ]
 
-    const result = assembler.assembleGraph(
-      ['old.ts'], {}, analysisResults, {}, {}, {}, 'en', [],
+    const result = assembler.assembleGraph({
+      files: ['old.ts'], scannerResult: {}, analysisResults, architectureResult: {},
+      tourResult: {}, reviewResult: {}, language: 'en', errors: [],
       existingGraph, changes
-    )
+    })
 
     expect(result.status).toBe('success')
     expect(result.nodeCount).toBe(1)
@@ -625,10 +627,10 @@ describe('assembleReview', () => {
     expect(review.normalizedIds).toBe(2)
   })
 
-  it('should remove duplicate nodes by {file, name} keeping latest', () => {
+  it('should remove duplicate nodes by {file, name} preferring richer metadata', () => {
     const nodes: GraphNode[] = [
       { id: 'a.ts:foo', name: 'foo', kind: 'function', file: 'a.ts', line: 1, signature: 'old', summary: 'old', layer: '', domain: '' },
-      { id: 'a.ts:foo', name: 'foo', kind: 'method', file: 'a.ts', line: 10, signature: 'new', summary: 'new', layer: '', domain: '' },
+      { id: 'a.ts:foo', name: 'foo', kind: 'method', file: 'a.ts', line: 10, signature: 'new', summary: 'new', layer: 'service', domain: 'auth' },
     ]
     const edges: GraphEdge[] = []
 
@@ -636,6 +638,7 @@ describe('assembleReview', () => {
 
     expect(result.length).toBe(1)
     expect(result[0].signature).toBe('new')
+    expect(result[0].layer).toBe('service')
     expect(review.duplicatesRemoved).toBe(1)
     expect(review.beforeNodes).toBe(2)
     expect(review.afterNodes).toBe(1)
@@ -703,5 +706,55 @@ describe('assembleReview', () => {
     expect(review.duplicatesRemoved).toBe(0)
     expect(review.danglingEdgesRemoved).toBe(0)
     expect(review.normalizedIds).toBe(0)
+  })
+
+  it('should remap edge endpoints when dedup removes nodes (regression: 0 edges bug)', () => {
+    // Simulates the real scenario: GraphStore node + LLM node for same file:name
+    // LLM edges reference the LLM node ID, but dedup keeps GraphStore node (better metadata)
+    const nodes: GraphNode[] = [
+      // GraphStore node (has layer/domain — higher score)
+      { id: 'src/svc/user.ts:createUser', name: 'createUser', kind: 'function', file: 'src/svc/user.ts', line: 10, signature: '(): User', summary: 'Creates a user', layer: 'service', domain: 'auth' },
+      // LLM node (no layer/domain — lower score, will be deduped)
+      { id: 'src/svc/user.ts:createUser#1', name: 'createUser', kind: 'function', file: 'src/svc/user.ts', line: 10, signature: '', summary: '', layer: '', domain: '' },
+      // Target node
+      { id: 'src/svc/db.ts:saveUser', name: 'saveUser', kind: 'function', file: 'src/svc/db.ts', line: 20, signature: '(): void', summary: '', layer: 'data', domain: '' },
+    ]
+    // Edge references the LLM node ID (will be removed by dedup)
+    const edges: GraphEdge[] = [
+      { from: 'src/svc/user.ts:createUser#1', to: 'src/svc/db.ts:saveUser', type: 'calls' },
+    ]
+
+    const { nodes: resultNodes, edges: resultEdges, review } = assembler.assembleReview(nodes, edges)
+
+    // Dedup should keep the richer node
+    expect(resultNodes.length).toBe(2)
+    expect(resultNodes.find(n => n.id === 'src/svc/user.ts:createUser')?.layer).toBe('service')
+
+    // Edge should be remapped to the kept node — NOT dropped as dangling
+    expect(resultEdges.length).toBe(1)
+    expect(resultEdges[0].from).toBe('src/svc/user.ts:createUser')
+    expect(resultEdges[0].to).toBe('src/svc/db.ts:saveUser')
+    expect(review.duplicatesRemoved).toBe(1)
+    expect(review.danglingEdgesRemoved).toBe(0)
+  })
+
+  it('should resolve short name references in deduplicateEdges', () => {
+    const nodes: GraphNode[] = [
+      { id: 'src/a.ts:foo', name: 'foo', kind: 'function', file: 'src/a.ts', line: 1, signature: '', summary: '', layer: '', domain: '' },
+      { id: 'src/b.ts:bar', name: 'bar', kind: 'function', file: 'src/b.ts', line: 1, signature: '', summary: '', layer: '', domain: '' },
+    ]
+    // Edges use short names (as LLM often returns)
+    const edges: GraphEdge[] = [
+      { from: 'foo', to: 'bar', type: 'calls' },
+      { from: 'a.ts:foo', to: 'b.ts:bar', type: 'imports' },
+    ]
+
+    const result = assembler.deduplicateEdges(nodes, edges)
+
+    expect(result.length).toBe(2)
+    expect(result[0].from).toBe('src/a.ts:foo')
+    expect(result[0].to).toBe('src/b.ts:bar')
+    expect(result[1].from).toBe('src/a.ts:foo')
+    expect(result[1].to).toBe('src/b.ts:bar')
   })
 })

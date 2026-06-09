@@ -357,6 +357,10 @@ export class ExtractionOrchestrator {
         if (signal?.aborted) break
 
         onProgress?.({ phase: 'parsing', current: processed, total, currentFile: filePath })
+        // Yield every 10 files so React can render progress updates
+        if (processed > 0 && processed % 10 === 0) {
+          await new Promise(resolve => setTimeout(resolve, 0))
+        }
 
         if (error || content === null) {
           processed++
@@ -554,8 +558,11 @@ export class ExtractionOrchestrator {
     const changedFilePaths: string[] = []
 
     onProgress?.({ phase: 'scanning', current: 0, total: 0 })
+    await new Promise(resolve => setTimeout(resolve, 0))
 
-    const currentFiles = scanDirectory(this.rootDir)
+    const currentFiles = await scanDirectoryAsync(this.rootDir, (current, file) => {
+      onProgress?.({ phase: 'scanning', current, total: 0, currentFile: file })
+    })
     filesChecked = currentFiles.length
 
     // Detect changed files by comparing with existing nodeMeta
@@ -614,6 +621,10 @@ export class ExtractionOrchestrator {
     for (let i = 0; i < filesToIndex.length; i++) {
       const filePath = filesToIndex[i]!
       onProgress?.({ phase: 'parsing', current: i + 1, total, currentFile: filePath })
+      // Yield every 10 files so React can render progress updates
+      if (i > 0 && i % 10 === 0) {
+        await new Promise(resolve => setTimeout(resolve, 0))
+      }
 
       const result = await this.indexFile(filePath)
       nodesUpdated += result.nodes.length

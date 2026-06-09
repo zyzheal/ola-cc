@@ -465,7 +465,7 @@ export * from './utils'
 
     const store = GraphStore.getInstance(tmpDir)
     await store.load()
-    store.extractReExports()
+    await store.extractReExports()
 
     // index should re-export utils' symbols
     const indexExports = store.getAllOutEdges('index:file').filter(e => e.edge.type === 'exports')
@@ -498,7 +498,7 @@ export { formatDate as fmtDate } from './helpers'
 
     const store = GraphStore.getInstance(tmpDir)
     await store.load()
-    store.extractReExports()
+    await store.extractReExports()
 
     const indexExports = store.getAllOutEdges('index:file').filter(e => e.edge.type === 'exports')
     const exportTargets = indexExports.map(e => e.target)

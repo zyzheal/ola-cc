@@ -1,5 +1,5 @@
-import { chmodSync, existsSync, mkdirSync, rmSync } from 'fs'
-import { dirname } from 'path'
+import { chmodSync, copyFileSync, existsSync, mkdirSync, readdirSync, rmSync } from 'fs'
+import { dirname, join } from 'path'
 
 const pkg = await Bun.file(new URL('../package.json', import.meta.url)).json() as {
   name: string
@@ -293,6 +293,30 @@ globalThis.feature = globalThis.feature || __BUN_FEATURE_FALLBACK__;
 
 if (existsSync(outfile)) {
   chmodSync(outfile, 0o755)
+
+  // Copy tree-sitter WASM grammars next to the binary for compiled mode
+  if (!publish) {
+    const outDir = dirname(outfile)
+    const wasmDir = join(outDir, 'wasm')
+    mkdirSync(wasmDir, { recursive: true })
+
+    // Copy parser runtime WASM
+    const parserWasm = join(process.cwd(), 'node_modules/web-tree-sitter/tree-sitter.wasm')
+    if (existsSync(parserWasm)) {
+      copyFileSync(parserWasm, join(wasmDir, 'tree-sitter.wasm'))
+    }
+
+    // Copy language grammars from tree-sitter-wasms
+    const wasmsPkg = join(process.cwd(), 'node_modules/tree-sitter-wasms/out')
+    if (existsSync(wasmsPkg)) {
+      for (const file of readdirSync(wasmsPkg)) {
+        if (file.endsWith('.wasm')) {
+          copyFileSync(join(wasmsPkg, file), join(wasmDir, file))
+        }
+      }
+      console.log(`Copied ${readdirSync(wasmDir).length} WASM grammars to ${wasmDir}`)
+    }
+  }
 }
 
 console.log(`Built ${outfile}`)

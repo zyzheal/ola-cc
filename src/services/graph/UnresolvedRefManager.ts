@@ -80,7 +80,7 @@ export class UnresolvedRefManager {
   /**
    * Scan graph edges for unresolved targets (nodes referenced but not in nodeMeta).
    */
-  private loadFromEdges(): void {
+  loadFromEdges(): void {
     for (const [fromId, outMap] of this.store.adjacency) {
       const fromMeta = this.store.getNode(fromId)
       if (!fromMeta) continue

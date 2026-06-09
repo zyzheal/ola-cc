@@ -10,6 +10,7 @@
 
 import { Database } from 'bun:sqlite'
 import { readFileSync } from 'fs'
+import { readFile } from 'fs/promises'
 import { join } from 'path'
 import { logForDebugging } from '../../utils/debug.js'
 import { createDefaultRegistry } from './parsers/index.js'
@@ -237,7 +238,8 @@ export class GraphLoader {
 
       const nodes = db!.query(`SELECT ${selectClause} FROM nodes`).all() as Array<Record<string, unknown>>
 
-      for (const row of nodes) {
+      for (let i = 0; i < nodes.length; i++) {
+        const row = nodes[i]
         const id = row.id as string
         const meta: NodeMetadata = {
           id,
@@ -271,6 +273,11 @@ export class GraphLoader {
         // Build file:name → codegraph id index
         const fileKey = `${meta.file}:${meta.name}`
         fileKeyToId.set(fileKey, id)
+
+        // Yield every 5000 nodes to prevent TUI freeze
+        if (i % 5000 === 0 && i > 0) {
+          await new Promise(resolve => setTimeout(resolve, 0))
+        }
       }
 
       // 加载 edges
@@ -280,9 +287,15 @@ export class GraphLoader {
         kind: string
       }>
 
-      for (const edge of edges) {
+      for (let i = 0; i < edges.length; i++) {
+        const edge = edges[i]
         const edgeType = mapCodegraphEdgeKind(edge.kind)
         this.addEdge(edge.source, edge.target, edgeType, 1, 'EXTRACTED')
+
+        // Yield every 10000 edges to prevent TUI freeze
+        if (i % 10000 === 0 && i > 0) {
+          await new Promise(resolve => setTimeout(resolve, 0))
+        }
       }
 
       // F-54: Build fileRecords from node data
@@ -416,7 +429,7 @@ export class GraphLoader {
    * 规则: 若节点 A 有 imports 边指向 B，且 B 的 is_exported=true 或 kind 包含 'export'，
    *       则创建 exports 边 A→B（A re-export 了 B 的符号）。
    */
-  extractReExports(): void {
+  async extractReExports(): Promise<void> {
     let reExportCount = 0
 
     // Pass 1: adjacency-based derivation (original logic)
@@ -478,14 +491,21 @@ export class GraphLoader {
       }
     }
 
+    let fileIdx = 0
     for (const [filePath, record] of this.fileRecords) {
       const language = record.language
       if (!language) continue
 
+      // Yield every 100 files to prevent TUI freeze
+      fileIdx++
+      if (fileIdx % 100 === 0) {
+        await new Promise(resolve => setTimeout(resolve, 0))
+      }
+
       let content: string
       try {
         const absPath = join(this.projectRoot, filePath)
-        content = readFileSync(absPath, 'utf-8')
+        content = await readFile(absPath, 'utf-8')
       } catch {
         continue
       }
@@ -571,14 +591,19 @@ export class GraphLoader {
   /**
    * 构建 name/qualified_name → nodeId(s) 索引，检测同名冲突
    */
-  buildNameIndex(nameIndex: Map<string, string | string[]>, ambiguousNames: Set<string>): void {
+  async buildNameIndex(nameIndex: Map<string, string | string[]>, ambiguousNames: Set<string>): Promise<void> {
     // Phase 1: 收集每个短名称对应的所有节点
     const nameToIds = new Map<string, string[]>()
+    let count = 0
     for (const [nodeId, meta] of this.nodeMeta) {
       if (meta.name) {
         const ids = nameToIds.get(meta.name)
         if (ids) ids.push(nodeId)
         else nameToIds.set(meta.name, [nodeId])
+      }
+      // Yield every 10K nodes to prevent TUI freeze
+      if (++count % 10000 === 0) {
+        await new Promise(resolve => setTimeout(resolve, 0))
       }
     }
     // Phase 2: 标记冲突的短名称，并存储冲突数组到索引
@@ -591,9 +616,13 @@ export class GraphLoader {
       }
     }
     // Phase 3: 构建 qualified_name 索引（始终精确）
+    count = 0
     for (const [nodeId, meta] of this.nodeMeta) {
       if (meta.qualified_name && !nameIndex.has(meta.qualified_name)) {
         nameIndex.set(meta.qualified_name, nodeId)
+      }
+      if (++count % 10000 === 0) {
+        await new Promise(resolve => setTimeout(resolve, 0))
       }
     }
   }

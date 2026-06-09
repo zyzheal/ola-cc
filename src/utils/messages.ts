@@ -1402,6 +1402,15 @@ interface IncrementalLookupState {
   pendingOrphanIDs: Set<string>
 }
 
+/** Inline check to avoid circular dependency with sessionStorage.ts */
+const EPHEMERAL_PROGRESS_TYPES_INLINE = new Set([
+  'bash_progress', 'powershell_progress', 'mcp_progress',
+  'codegraph_progress', 'grok_progress', 'sleep_progress',
+])
+function isEphemeralProgressType(dataType: unknown): boolean {
+  return typeof dataType === 'string' && EPHEMERAL_PROGRESS_TYPES_INLINE.has(dataType)
+}
+
 let incrementalState: IncrementalLookupState | null = null
 
 /**
@@ -1449,11 +1458,33 @@ export function buildMessageLookupsIncremental(
 
   const state = incrementalState
 
-  // No new messages since last call → return cached
+  // No new messages since last call → check for ephemeral progress replacement
   if (
     currentNormLen === state.oldNormalizedLen &&
     currentMsgLen === state.oldMessagesLen
   ) {
+    // Ephemeral progress messages (codegraph_progress, grok_progress, etc.)
+    // are replaced in-place without changing array length. Detect this by
+    // checking if the last normalized message is a progress message — if so,
+    // update the lookup and return a NEW lookups object so React re-renders.
+    const lastNorm = normalizedMessages[currentNormLen - 1]
+    if (lastNorm?.type === 'progress' && isEphemeralProgressType(lastNorm.data.type)) {
+      const toolUseID = lastNorm.parentToolUseID
+      const existing = state.lookups.progressMessagesByToolUseID.get(toolUseID)
+      if (existing && existing.length > 0) {
+        // Create NEW array reference — React memo checks referential equality
+        state.lookups.progressMessagesByToolUseID.set(toolUseID, [...existing.slice(0, -1), lastNorm])
+      } else {
+        state.lookups.progressMessagesByToolUseID.set(toolUseID, [lastNorm])
+      }
+      // Return new lookups object so useMemo detects the change
+      const newLookups: MessageLookups = {
+        ...state.lookups,
+        progressMessagesByToolUseID: new Map(state.lookups.progressMessagesByToolUseID),
+      }
+      state.lookups = newLookups
+      return newLookups
+    }
     return state.lookups
   }
 
