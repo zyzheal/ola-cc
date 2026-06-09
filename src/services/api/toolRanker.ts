@@ -43,8 +43,6 @@ const ALWAYS_INCLUDE_TOOLS = [
   'Write',
   'Glob',
   'Grep',
-  'codegraph',
-  'grok',
 ]
 
 // -- Tokenization
