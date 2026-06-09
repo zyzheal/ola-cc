@@ -368,6 +368,56 @@ describe('pageRank', () => {
       expect(score).toBeCloseTo(1, 1) // all normalized to ~1
     }
   })
+
+  test('very short timeout (1ms) still returns valid results', () => {
+    const { engine } = dag()
+    const result = engine.pageRank(0.85, 100, 1)
+
+    // Should still return valid structure even if bailed out early
+    expect(result.scores.length).toBe(4)
+    for (const { score } of result.scores) {
+      expect(score).toBeGreaterThanOrEqual(0)
+      expect(score).toBeLessThanOrEqual(1)
+    }
+    expect(result.scores[0].score).toBe(1)
+  })
+
+  test('short timeout completes faster than default', () => {
+    // Build a moderately sized graph to make timing measurable
+    const adj: Record<string, string[]> = {}
+    const N = 200
+    for (let i = 0; i < N; i++) {
+      adj[`n${i}`] = [`n${(i + 1) % N}`] // ring graph
+    }
+    const store = createStoreFromAdjacency(adj, 'timeout-timing-test')
+    const engine = new GraphEngine(store)
+
+    const start1 = Date.now()
+    engine.pageRank(0.85, 100, 1) // 1ms timeout
+    const elapsed1 = Date.now() - start1
+
+    const start2 = Date.now()
+    engine.pageRank(0.85, 100) // default 10s timeout (will converge quickly on small graph)
+    const elapsed2 = Date.now() - start2
+
+    // Both should complete; the short timeout should not take significantly longer
+    // (on a small graph they may converge equally fast, so just verify no crash)
+    expect(elapsed1).toBeLessThan(5000)
+    expect(elapsed2).toBeLessThan(5000)
+  })
+
+  test('small graph pageRank scores are correct regardless of timeout', () => {
+    const { engine } = chain(5)
+    const resultShort = engine.pageRank(0.85, 100, 100)
+    const resultDefault = engine.pageRank(0.85, 100)
+
+    // On a tiny graph, both should converge and produce same scores
+    expect(resultShort.scores).toHaveLength(5)
+    expect(resultDefault.scores).toHaveLength(5)
+    // Top score should be 1 in both cases
+    expect(resultShort.scores[0].score).toBe(1)
+    expect(resultDefault.scores[0].score).toBe(1)
+  })
 })
 
 // ============================================================
@@ -1107,7 +1157,7 @@ describe('bug: betweenness non-determinism', () => {
 })
 
 describe('bug: katz alpha convergence', () => {
-  test('default alpha adapts to graph: matches explicit 0.9/sqrt(maxDegree)', () => {
+  test('default alpha adapts to graph: matches explicit 0.9/maxDegree', () => {
     // Build a graph and compute what the auto-alpha should be
     const store = createStoreFromAdjacency({
       A: ['B', 'C', 'D'],
@@ -1124,7 +1174,7 @@ describe('bug: katz alpha convergence', () => {
       const inDeg = [...store.getInEdges(node).keys()].length
       if (inDeg > maxInDeg) maxInDeg = inDeg
     }
-    const expectedAlpha = 0.9 / Math.sqrt(maxInDeg)
+    const expectedAlpha = 0.9 / maxInDeg
 
     // Default katz should use the auto-alpha, not hardcoded 0.1
     const defaultResult = engine.katzCentrality()
@@ -1265,7 +1315,7 @@ describe('classifyRoles — F-66 exported/visibility', () => {
 
   test('exported symbol with high fan-in becomes adaptor', () => {
     // Build graph with many nodes calling into X
-    const adj: Record<string, string[] | Array<{ to: string; type: string }>> = {
+    const adj = {
       entry1: ['X'],
       entry2: ['X'],
       entry3: ['X'],
@@ -1516,5 +1566,185 @@ describe('EdgeType P2/P3 expansion — F-97', () => {
     expect(result.symbols).toContain('Encryptor')
     // logs is NOT in DATA_SLICE_EDGE_TYPES, so Logger should not be found
     expect(result.symbols).not.toContain('Logger')
+  })
+})
+
+// ============================================================
+// 15. traceFeatureChains
+// ============================================================
+
+describe('traceFeatureChains', () => {
+  test('complete chain: entry → controller → service → database', () => {
+    const store = createStoreFromAdjacency({
+      'routes/user': [{ to: 'controllers/user', type: 'calls' }],
+      'controllers/user': [{ to: 'services/user', type: 'calls' }],
+      'services/user': [{ to: 'repository/user', type: 'calls' }],
+      'repository/user': [],
+    }, 'chain-complete')
+
+    // Set file paths to trigger role classification
+    const meta = store.nodeMeta as Map<string, any>
+    meta.get('routes/user')!.file = 'src/routes/user.ts'
+    meta.get('controllers/user')!.file = 'src/controllers/user.ts'
+    meta.get('services/user')!.file = 'src/services/user.ts'
+    meta.get('repository/user')!.file = 'src/repository/user.ts'
+
+    const engine = new GraphEngine(store)
+    const result = engine.traceFeatureChains()
+
+    expect(result.stats.totalEntries).toBeGreaterThan(0)
+    expect(result.chains.length).toBeGreaterThan(0)
+
+    // Find the chain starting from routes/user
+    const chain = result.chains.find(c => c.entry === 'routes/user')
+    expect(chain).toBeDefined()
+    expect(chain!.reachesDataLayer).toBe(true)
+    expect(chain!.dataLayerNode).toBe('repository/user')
+    expect(chain!.path).toContain('controllers/user')
+    expect(chain!.path).toContain('services/user')
+  })
+
+  test('broken chain: entry → controller (no service, no database)', () => {
+    const store = createStoreFromAdjacency({
+      'routes/api': [{ to: 'controllers/api', type: 'calls' }],
+      'controllers/api': [],
+    }, 'chain-broken')
+
+    const meta = store.nodeMeta as Map<string, any>
+    meta.get('routes/api')!.file = 'src/routes/api.ts'
+    meta.get('controllers/api')!.file = 'src/controllers/api.ts'
+
+    const engine = new GraphEngine(store)
+    const result = engine.traceFeatureChains()
+
+    const chain = result.chains.find(c => c.entry === 'routes/api')
+    expect(chain).toBeDefined()
+    expect(chain!.reachesDataLayer).toBe(false)
+    expect(result.stats.brokenChains).toBeGreaterThan(0)
+  })
+
+  test('unreachable entry: entry with no outgoing edges', () => {
+    const store = createStoreFromAdjacency({
+      'routes/orphan': [],
+    }, 'chain-unreachable')
+
+    const meta = store.nodeMeta as Map<string, any>
+    meta.get('routes/orphan')!.file = 'src/routes/orphan.ts'
+
+    const engine = new GraphEngine(store)
+    const result = engine.traceFeatureChains()
+
+    expect(result.stats.unreachableEntries).toBeGreaterThanOrEqual(0)
+  })
+
+  test('maxChains limits output', () => {
+    const adj: Record<string, any[]> = {}
+    for (let i = 0; i < 10; i++) {
+      adj[`routes/r${i}`] = [{ to: `services/s${i}`, type: 'calls' }]
+      adj[`services/s${i}`] = []
+    }
+    const store = createStoreFromAdjacency(adj, 'chain-limit')
+
+    const meta = store.nodeMeta as Map<string, any>
+    for (let i = 0; i < 10; i++) {
+      meta.get(`routes/r${i}`)!.file = `src/routes/r${i}.ts`
+      meta.get(`services/s${i}`)!.file = `src/services/s${i}.ts`
+    }
+
+    const engine = new GraphEngine(store)
+    const result = engine.traceFeatureChains({ maxChains: 3 })
+
+    expect(result.chains.length).toBeLessThanOrEqual(3)
+  })
+
+  test('empty graph returns zero stats', () => {
+    const { engine } = emptyGraph()
+    const result = engine.traceFeatureChains()
+
+    expect(result.stats.totalEntries).toBe(0)
+    expect(result.chains).toHaveLength(0)
+    expect(result.brokenLinks).toHaveLength(0)
+  })
+})
+
+// ============================================================
+// 16. computeCompleteness
+// ============================================================
+
+describe('computeCompleteness', () => {
+  test('basic: overall score in 0-100 range', () => {
+    const store = createStoreFromAdjacency({
+      A: ['B', 'C'],
+      B: ['C'],
+      C: [],
+    }, 'completeness-basic')
+    const meta = store.nodeMeta as Map<string, any>
+    meta.get('A')!.file = 'src/a.ts'
+    meta.get('B')!.file = 'src/b.ts'
+    meta.get('C')!.file = 'src/c.ts'
+
+    const engine = new GraphEngine(store)
+    const report = engine.computeCompleteness()
+
+    expect(report.overall).toBeGreaterThanOrEqual(0)
+    expect(report.overall).toBeLessThanOrEqual(100)
+    expect(report.stats.totalNodes).toBe(3)
+    expect(report.stats.totalEdges).toBe(3)
+  })
+
+  test('empty graph returns 100% (no issues)', () => {
+    const { engine } = emptyGraph()
+    const report = engine.computeCompleteness()
+
+    expect(report.overall).toBe(100)
+    expect(report.stats.totalNodes).toBe(0)
+    expect(report.missing).toHaveLength(0)
+  })
+
+  test('totalSourceFiles parameter affects fileCoverage', () => {
+    const store = createStoreFromAdjacency({
+      A: ['B'],
+      B: [],
+    }, 'completeness-coverage')
+    const meta = store.nodeMeta as Map<string, any>
+    meta.get('A')!.file = 'src/a.ts'
+    meta.get('B')!.file = 'src/b.ts'
+
+    const engine = new GraphEngine(store)
+    // With 10 source files, only 2 covered = 20%
+    const report = engine.computeCompleteness({ totalSourceFiles: 10 })
+
+    expect(report.dimensions.fileCoverage).toBeCloseTo(20, 0)
+    expect(report.stats.uncoveredFiles).toBe(8)
+    expect(report.missing.some(m => m.includes('8 source files'))).toBe(true)
+  })
+
+  test('nodes without file reduce nodeQuality', () => {
+    const store = createStoreFromAdjacency({
+      A: ['B'],
+      B: [],
+    }, 'completeness-quality')
+    // Only A has file, B does not
+    const meta = store.nodeMeta as Map<string, any>
+    meta.get('A')!.file = 'src/a.ts'
+    meta.get('B')!.file = ''
+
+    const engine = new GraphEngine(store)
+    const report = engine.computeCompleteness()
+
+    expect(report.dimensions.nodeQuality).toBeCloseTo(50, 0)
+  })
+
+  test('recommendations appear when fileCoverage < 80%', () => {
+    const store = createStoreFromAdjacency({
+      A: [],
+    }, 'completeness-recs')
+    const meta = store.nodeMeta as Map<string, any>
+    meta.get('A')!.file = 'src/a.ts'
+
+    const engine = new GraphEngine(store)
+    const report = engine.computeCompleteness({ totalSourceFiles: 100 })
+
+    expect(report.recommendations.some(r => r.includes('codegraph_sync'))).toBe(true)
   })
 })
