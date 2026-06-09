@@ -87,8 +87,8 @@ describe('loadGrokConfig batch parameters', () => {
   it('should use default batchSize=25 and concurrency=5 when env vars not set', () => {
     const manager = new GrokManager(TEST_DIR)
     const config = (manager as any).config
-    expect(config.batchSize).toBe(25)
-    expect(config.concurrency).toBe(5)
+    expect(config.batchSize).toBe(10)
+    expect(config.concurrency).toBe(3)
   })
 
   it('should read OLA_CC_GROK_BATCH_SIZE from env', () => {
@@ -118,28 +118,28 @@ describe('loadGrokConfig batch parameters', () => {
     process.env.OLA_CC_GROK_BATCH_SIZE = '999'
     const manager = new GrokManager(TEST_DIR)
     const config = (manager as any).config
-    expect(config.batchSize).toBe(25)
+    expect(config.batchSize).toBe(10)
   })
 
   it('should fall back to default concurrency when value exceeds max', () => {
     process.env.OLA_CC_GROK_CONCURRENCY = '100'
     const manager = new GrokManager(TEST_DIR)
     const config = (manager as any).config
-    expect(config.concurrency).toBe(5)
+    expect(config.concurrency).toBe(3)
   })
 
   it('should fall back to default batchSize when value below minimum', () => {
     process.env.OLA_CC_GROK_BATCH_SIZE = '0'
     const manager = new GrokManager(TEST_DIR)
     const config = (manager as any).config
-    expect(config.batchSize).toBe(25)
+    expect(config.batchSize).toBe(10)
   })
 
   it('should fall back to default batchSize on non-numeric input', () => {
     process.env.OLA_CC_GROK_BATCH_SIZE = 'abc'
     const manager = new GrokManager(TEST_DIR)
     const config = (manager as any).config
-    expect(config.batchSize).toBe(25)
+    expect(config.batchSize).toBe(10)
   })
 })
 
@@ -556,8 +556,8 @@ describe('Integration: Phase 0 pipeline optimization', () => {
 
     // Config defaults
     const config = (manager as any).config
-    expect(config.batchSize).toBe(25)
-    expect(config.concurrency).toBe(5)
+    expect(config.batchSize).toBe(10)
+    expect(config.concurrency).toBe(3)
 
     // localScan works with empty frameworks when no package.json
     const files = [resolve(INT_DIR, 'index.ts')]

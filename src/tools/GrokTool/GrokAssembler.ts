@@ -2,12 +2,33 @@
 // Graph assembly + Zod validation + incremental merge
 
 import { createHash } from 'crypto'
-import { existsSync, mkdirSync, copyFileSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'fs'
+import { readFileSync } from 'fs'
 import { resolve } from 'path'
 import { z } from 'zod/v4'
 import { logForDebugging } from '../../utils/debug.js'
 import type { GraphNode, GraphEdge, GraphData, GrokGenerateResult } from './GrokTypes.js'
 import { GrokError } from './GrokTypes.js'
+import { saveKnowledgeGraph } from './atomicSave.js'
+import type { GraphStore } from '../../services/graph/GraphStore.js'
+
+/**
+ * assembleGraph 参数接口（替代 11 个平铺参数）
+ */
+export interface AssembleGraphOptions {
+  files: string[]
+  scannerResult: Record<string, unknown>
+  analysisResults: Record<string, unknown>[]
+  architectureResult: Record<string, unknown>
+  tourResult: Record<string, unknown>
+  reviewResult: Record<string, unknown>
+  language: string
+  errors: GrokError[]
+  existingGraph?: GraphData
+  changes?: { changed: string[]; added: string[]; removed: string[] }
+  graphStructure?: { nodes: GraphNode[]; edges: GraphEdge[] }
+  skipSave?: boolean
+  store?: GraphStore
+}
 
 // ============================================================
 // Kind normalization: map LLM variants to canonical forms
@@ -249,7 +270,8 @@ export class GrokAssembler {
    */
   extractNewNodes(
     analysisResults: Record<string, unknown>[],
-    existingNodeIds: Set<string>
+    existingNodeIds: Set<string>,
+    existingFileKeys?: Set<string>,
   ): { newNodes: GraphNode[]; newEdges: GraphEdge[] } {
     const newNodes: GraphNode[] = []
     const newEdges: GraphEdge[] = []
@@ -257,11 +279,14 @@ export class GrokAssembler {
     for (const result of analysisResults) {
       const symbols = (result.symbols as Record<string, unknown>[]) || []
       for (const sym of symbols) {
-        const id = `${sym.file || 'unknown'}:${sym.name || 'unknown'}`
-        let finalId = id
+        const fileKey = `${sym.file || 'unknown'}:${sym.name || 'unknown'}`
+        // Skip nodes already present from GraphStore (different ID format, same file:name)
+        if (existingFileKeys?.has(fileKey)) continue
+
+        let finalId = fileKey
         let counter = 1
         while (existingNodeIds.has(finalId)) {
-          finalId = `${id}#${counter++}`
+          finalId = `${fileKey}#${counter++}`
         }
         existingNodeIds.add(finalId)
         newNodes.push({
@@ -304,7 +329,11 @@ export class GrokAssembler {
       const layerName = String(layer.name || 'unknown')
       const layerModules = (layer.modules as string[]) || []
       for (const node of nodes) {
-        if (layerModules.some((m: string) => node.file?.includes(m))) {
+        if (layerModules.some((m: string) => {
+          const file = node.file ?? ''
+          // Path segment matching: "services" matches "src/services/user.ts" but not "src/services-v2/user.ts"
+          return file === m || file.startsWith(m + '/') || file.includes('/' + m + '/')
+        })) {
           node.layer = layerName
         }
       }
@@ -320,57 +349,111 @@ export class GrokAssembler {
   }
 
   /**
-   * 去重边 + 验证两端节点存在
+   * 构建边端点 ID 解析索引
+   * 支持多种引用格式: 全ID, name, file:name, basename:name
    */
-  deduplicateEdges(nodes: GraphNode[], edges: GraphEdge[]): GraphEdge[] {
-    const nodeIdSet = new Set(nodes.map((n: GraphNode) => n.id))
-    const edgeKeys = new Set<string>()
-    return edges.filter(e => {
-      if (!e.from || !e.to) return false
-      if (!nodeIdSet.has(e.from) || !nodeIdSet.has(e.to)) return false
-      const key = `${e.from}->${e.to}:${e.type}`
-      if (edgeKeys.has(key)) return false
-      edgeKeys.add(key)
-      return true
-    })
+  private buildEdgeIdResolver(nodes: GraphNode[]): (ref: string) => string | null {
+    // index 1: exact ID match
+    const byId = new Map<string, string>()
+    // index 2: name → [ids] (for unique-name resolution)
+    const byName = new Map<string, string[]>()
+    // index 3: file:name → id (with various path suffixes)
+    const byFileKey = new Map<string, string>()
+    // Track ambiguous short-path keys (multiple nodes with same suffix:name)
+    const ambiguousKeys = new Set<string>()
+
+    for (const n of nodes) {
+      byId.set(n.id, n.id)
+      const nameList = byName.get(n.name) || []
+      nameList.push(n.id)
+      byName.set(n.name, nameList)
+      // Register multiple path variants: full path, basename, and suffixes
+      byFileKey.set(`${n.file}:${n.name}`, n.id)
+      const parts = n.file.split('/')
+      for (let i = 1; i <= Math.min(parts.length, 3); i++) {
+        const suffix = parts.slice(-i).join('/')
+        const key = `${suffix}:${n.name}`
+        if (byFileKey.has(key) && byFileKey.get(key) !== n.id) {
+          // Collision: multiple nodes share the same short path suffix
+          ambiguousKeys.add(key)
+        } else {
+          byFileKey.set(key, n.id)
+        }
+      }
+    }
+
+    // Log ambiguous names that will cause edges to be dropped
+    const ambiguousNames = [...byName.entries()].filter(([, ids]) => ids.length > 1)
+    if (ambiguousNames.length > 0) {
+      logForDebugging(`[GrokAssembler] ${ambiguousNames.length} ambiguous names (edges using short names will be dropped): ${ambiguousNames.slice(0, 5).map(([n, ids]) => `${n}(${ids.length})`).join(', ')}`)
+    }
+
+    return (ref: string): string | null => {
+      if (!ref) return null
+      // 1. Exact ID
+      const exact = byId.get(ref)
+      if (exact) return exact
+      // 2. file:name variants (skip ambiguous keys)
+      if (!ambiguousKeys.has(ref)) {
+        const byFile = byFileKey.get(ref)
+        if (byFile) return byFile
+      }
+      // 3. Unique name match
+      const nameMatches = byName.get(ref)
+      if (nameMatches && nameMatches.length === 1) return nameMatches[0]
+      return null
+    }
   }
 
   /**
-   * 原子写入图谱文件（先写临时文件，再 rename）
+   * 去重边 + 端点 ID 解析 + 验证两端节点存在
+   * @param store — 可选 GraphStore，优先使用其 resolveNodeReference
+   */
+  deduplicateEdges(nodes: GraphNode[], edges: GraphEdge[], store?: GraphStore): GraphEdge[] {
+    const localResolve = this.buildEdgeIdResolver(nodes)
+    const resolve = store
+      ? (ref: string) => store.resolveNodeReference(ref) ?? localResolve(ref)
+      : localResolve
+    const edgeKeys = new Set<string>()
+    const result: GraphEdge[] = []
+    let droppedCount = 0
+    let droppedSample = ''
+    for (const e of edges) {
+      if (!e.from || !e.to) continue
+      const fromId = resolve(e.from)
+      const toId = resolve(e.to)
+      if (!fromId || !toId) {
+        droppedCount++
+        if (droppedCount <= 3) droppedSample = `${e.from} -> ${e.to}`
+        continue
+      }
+      const key = `${fromId}->${toId}:${e.type}`
+      if (edgeKeys.has(key)) continue
+      edgeKeys.add(key)
+      result.push({ from: fromId, to: toId, type: e.type })
+    }
+    if (droppedCount > 0) {
+      logForDebugging(`[GrokAssembler] Dropped ${droppedCount} edges with unresolvable endpoints (e.g. ${droppedSample})`)
+    }
+    return result
+  }
+
+  /**
+   * 原子写入图谱文件（委托给共享 atomicSave 工具）
    */
   saveGraph(graphData: GraphData): string {
-    const graphDir = resolve(this.projectRoot, '.understand-anything')
-    mkdirSync(graphDir, { recursive: true })
-    const filePath = resolve(graphDir, 'knowledge-graph.json')
-    const tempPath = filePath + '.tmp'
-
-    // 清理残留的 .tmp 文件（上次崩溃遗留）
-    try { if (existsSync(tempPath)) unlinkSync(tempPath) } catch { /* ignore */ }
-
-    // 备份旧文件（防损坏恢复）
-    const backupPath = filePath + '.backup'
-    try { if (existsSync(filePath)) copyFileSync(filePath, backupPath) } catch { /* ignore */ }
-
-    writeFileSync(tempPath, JSON.stringify(graphData, null, 2), 'utf-8')
-    renameSync(tempPath, filePath)
-    return filePath
+    return saveKnowledgeGraph(this.projectRoot, graphData, 'GrokAssembler')
   }
 
   /**
    * 组装知识图谱
    */
-  assembleGraph(
-    files: string[],
-    scannerResult: Record<string, unknown>,
-    analysisResults: Record<string, unknown>[],
-    architectureResult: Record<string, unknown>,
-    tourResult: Record<string, unknown>,
-    reviewResult: Record<string, unknown>,
-    language: string,
-    errors: GrokError[],
-    existingGraph?: GraphData,
-    changes?: { changed: string[]; added: string[]; removed: string[] }
-  ): GrokGenerateResult {
+  assembleGraph(opts: AssembleGraphOptions): GrokGenerateResult {
+    const {
+      files, scannerResult, analysisResults, architectureResult,
+      tourResult, reviewResult, language, errors,
+      existingGraph, changes, graphStructure, skipSave, store,
+    } = opts
     // Step 1: 初始化节点和边（增量 or 全量）
     let nodes: GraphNode[]
     let edges: GraphEdge[]
@@ -383,17 +466,31 @@ export class GrokAssembler {
       edges = []
     }
 
-    // Step 2: 从分析结果提取新节点
+    // Step 2a: 注入 GraphStore 预构建的图结构（绕过 extractNewNodes 避免 ID 重生成）
     const existingNodeIds = new Set(nodes.map((n: GraphNode) => n.id))
-    const { newNodes, newEdges } = this.extractNewNodes(analysisResults, existingNodeIds)
+    const existingFileKeys = new Set<string>()
+    if (graphStructure) {
+      for (const node of graphStructure.nodes) {
+        if (!existingNodeIds.has(node.id)) {
+          existingNodeIds.add(node.id)
+          nodes.push(node)
+        }
+        existingFileKeys.add(`${node.file}:${node.name}`)
+      }
+      edges.push(...graphStructure.edges)
+      logForDebugging(`[grok] Injected ${graphStructure.nodes.length} nodes, ${graphStructure.edges.length} edges from GraphStore`)
+    }
+
+    // Step 2b: 从 LLM 分析结果提取新节点（跳过 GraphStore 已有的 file:name）
+    const { newNodes, newEdges } = this.extractNewNodes(analysisResults, existingNodeIds, existingFileKeys)
     nodes.push(...newNodes)
     edges.push(...newEdges)
 
     // Step 3: 分配架构层 + 添加依赖边
     const { domains, layers } = this.assignLayersAndDeps(architectureResult, nodes, edges)
 
-    // Step 4: 去重边
-    const uniqueEdges = this.deduplicateEdges(nodes, edges)
+    // Step 4: 去重边（优先使用 GraphStore 的解析器）
+    const uniqueEdges = this.deduplicateEdges(nodes, edges, store)
 
     // Step 5: 计算文件指纹
     const fingerprints: Record<string, { hash: string; size: number }> = {}
@@ -438,6 +535,7 @@ export class GrokAssembler {
         languages: (scannerResult.languages as string[]) || [],
         frameworks: (scannerResult.frameworks as string[]) || [],
         layers: layers.map((l: Record<string, unknown>) => String(l.name || '')),
+        layerModules: layers.map((l: Record<string, unknown>) => ({ name: String(l.name || ''), modules: (l.modules as string[]) || [] })),
         uncovered: uncovered.length,
         tour: (tourResult.tours as unknown[]) || [],
         review: { ...(reviewResult.valid !== undefined ? reviewResult : { valid: true, issues: [], suggestions: [] }), ...review },
@@ -447,8 +545,12 @@ export class GrokAssembler {
       },
     }
 
-    const filePath = this.saveGraph(graphData)
-    logForDebugging(`[grok] Graph saved: ${reviewedNodes.length} nodes, ${reviewedEdges.length} edges → ${filePath}`)
+    const filePath = skipSave
+      ? resolve(this.projectRoot, '.understand-anything', 'knowledge-graph.json')
+      : this.saveGraph(graphData)
+    if (!skipSave) {
+      logForDebugging(`[grok] Graph saved: ${reviewedNodes.length} nodes, ${reviewedEdges.length} edges → ${filePath}`)
+    }
 
     return {
       status: errors.length > 0 ? 'partial' : 'success',
@@ -457,6 +559,7 @@ export class GrokAssembler {
       domainCount: domains.size,
       filePath,
       errors: errors.length > 0 ? errors : undefined,
+      ...(skipSave && { graphData }),
     }
   }
 
@@ -471,28 +574,61 @@ export class GrokAssembler {
     const beforeEdges = edges.length
     let normalizedIds = 0
 
-    // Step 1: ID 规范化 — 去掉 #counter 后缀
+    // Step 1: ID 规范化 — 去掉 #counter 后缀，记录重映射
+    const idRemap = new Map<string, string>()  // oldId → canonicalId
     const normalizedNodes = nodes.map(n => {
       if (n.id.includes('#')) {
         normalizedIds++
-        return { ...n, id: n.id.replace(/#\d+$/, '') }
+        const canonical = n.id.replace(/#\d+$/, '')
+        idRemap.set(n.id, canonical)
+        return { ...n, id: canonical }
       }
       return n
     })
 
-    // Step 2: 去重 — 按 {file, name} 去重，保留最后一个
+    // Step 2: 去重 — 按 {file, name} 去重，优先保留有 layer/domain 的节点
+    // 记录被丢弃节点的 ID → 保留节点的 ID 映射
     const dedupMap = new Map<string, GraphNode>()
+    const dedupRemap = new Map<string, string>()  // removedId → keptId
     for (const node of normalizedNodes) {
       const key = `${node.file}:${node.name}`
-      dedupMap.set(key, node) // 后来的覆盖前面的
+      const existing = dedupMap.get(key)
+      if (!existing) {
+        dedupMap.set(key, node)
+      } else {
+        const existingScore = (existing.layer ? 1 : 0) + (existing.domain ? 1 : 0) + (existing.summary?.length > 30 ? 1 : 0)
+        const newScore = (node.layer ? 1 : 0) + (node.domain ? 1 : 0) + (node.summary?.length > 30 ? 1 : 0)
+        if (newScore > existingScore) {
+          dedupRemap.set(existing.id, node.id)
+          dedupMap.set(key, node)
+        } else {
+          dedupRemap.set(node.id, existing.id)
+        }
+      }
     }
     const dedupedNodes = Array.from(dedupMap.values())
     const duplicatesRemoved = normalizedNodes.length - dedupedNodes.length
 
-    // Step 3: 边完整性 — 移除引用不存在节点的边
+    // Step 3: 重映射边端点 — 将引用被丢弃节点的边指向保留节点
     const nodeIdSet = new Set(dedupedNodes.map(n => n.id))
-    const validEdges = edges.filter(e => nodeIdSet.has(e.from) && nodeIdSet.has(e.to))
-    const danglingEdgesRemoved = edges.length - validEdges.length
+    const remappedEdges = edges.map(e => {
+      let from = idRemap.get(e.from) ?? e.from
+      let to = idRemap.get(e.to) ?? e.to
+      from = dedupRemap.get(from) ?? from
+      to = dedupRemap.get(to) ?? to
+      return (from !== e.from || to !== e.to) ? { from, to, type: e.type } : e
+    })
+
+    // Step 4: 边去重 + 完整性验证
+    const edgeKeys = new Set<string>()
+    const validEdges = remappedEdges.filter(e => {
+      if (!nodeIdSet.has(e.from) || !nodeIdSet.has(e.to)) return false
+      const key = `${e.from}->${e.to}:${e.type}`
+      if (edgeKeys.has(key)) return false
+      edgeKeys.add(key)
+      return true
+    })
+    const danglingEdgesRemoved = remappedEdges.length - validEdges.length
 
     return {
       nodes: dedupedNodes,

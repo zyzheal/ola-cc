@@ -6,6 +6,7 @@
  * are compiled, keeping V8 WASM memory pressure low on large codebases.
  */
 
+import * as fs from 'fs'
 import * as path from 'path'
 import { Parser, Language as WasmLanguage } from 'web-tree-sitter'
 import type { Language } from './types.js'
@@ -131,12 +132,35 @@ const unavailableGrammarErrors = new Map<Language, string>()
 let parserInitialized = false
 
 /**
+ * Resolve the directory containing WASM grammar files.
+ * In dev mode: `<source>/wasm/` (relative to this module).
+ * In compiled binary: `<binary_dir>/wasm/` (copied by build script).
+ */
+function resolveWasmDir(): string {
+  // Try source-relative first (dev mode: bun run)
+  const sourceWasm = path.join(import.meta.dir, 'wasm')
+  if (fs.existsSync(sourceWasm)) return sourceWasm
+  // Fall back to binary-relative (compiled mode)
+  const binWasm = path.join(path.dirname(process.execPath), 'wasm')
+  if (fs.existsSync(binWasm)) return binWasm
+  // Last resort: source-relative (will fail gracefully later)
+  return sourceWasm
+}
+
+/**
  * Initialize the tree-sitter WASM runtime. Must be called before loading grammars.
  * Idempotent -- safe to call multiple times.
  */
 export async function init_grammars(): Promise<void> {
   if (parserInitialized) return
-  await Parser.init()
+  const wasmDir = resolveWasmDir()
+  const parserWasm = path.join(wasmDir, 'tree-sitter.wasm')
+  if (fs.existsSync(parserWasm)) {
+    await Parser.init({ locateFile: () => parserWasm })
+  } else {
+    // Fallback to default resolution (works in dev with node_modules)
+    await Parser.init()
+  }
   parserInitialized = true
 }
 
@@ -158,12 +182,22 @@ export async function load_grammars_for_languages(languages: Language[]): Promis
   )
 
   // Load grammars sequentially to avoid web-tree-sitter WASM race condition on Node 20+
+  const wasmDir = resolveWasmDir()
   for (const lang of toLoad) {
     const wasmFile = WASM_GRAMMAR_FILES[lang]
     try {
-      const wasmPath = (lang === 'pascal' || lang === 'scala' || lang === 'lua' || lang === 'luau')
-        ? path.join(__dirname, 'wasm', wasmFile)
-        : require.resolve(`tree-sitter-wasms/out/${wasmFile}`)
+      const wasmPath = path.join(wasmDir, wasmFile)
+      if (!fs.existsSync(wasmPath)) {
+        // Fallback: try require.resolve for dev mode with node_modules
+        try {
+          const resolved = require.resolve(`tree-sitter-wasms/out/${wasmFile}`)
+          const language = await WasmLanguage.load(resolved)
+          languageCache.set(lang, language)
+          continue
+        } catch {
+          throw new Error(`WASM grammar not found: ${wasmFile}`)
+        }
+      }
       const language = await WasmLanguage.load(wasmPath)
       languageCache.set(lang, language)
     } catch (error) {

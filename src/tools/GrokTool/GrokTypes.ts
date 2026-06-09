@@ -20,6 +20,7 @@ export interface GrokGenerateResult {
   domainCount: number
   filePath: string        // knowledge-graph.json 路径
   errors?: GrokError[]    // 部分失败时的错误列表
+  graphData?: GraphData   // 内存中的图数据（用于 enrichment 后保存）
 }
 
 export interface GrokChatResult {
@@ -63,6 +64,7 @@ export interface GraphData {
     languages: string[]
     frameworks: string[]
     layers: string[]
+    layerModules?: { name: string; modules: string[] }[]
     uncovered: number
     tour: unknown[]
     review: unknown

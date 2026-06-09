@@ -212,6 +212,26 @@ describe('parseAnalysisResult', () => {
     expect(result[0].x).toBe(1)
   })
 
+  it('should strip code fences around a JSON object (not array)', () => {
+    const analyzer = new GrokAnalyzer(TEST_DIR)
+    const input = '```json\n{"name": "main.ts", "kind": "file", "relevance": 0.9}\n```'
+    const result = analyzer.parseAnalysisResult(input)
+
+    expect(result.length).toBe(1)
+    expect(result[0].name).toBe('main.ts')
+    expect(result[0].kind).toBe('file')
+  })
+
+  it('should handle code fence with extra text after closing fence', () => {
+    const analyzer = new GrokAnalyzer(TEST_DIR)
+    const input = '```json\n[{"a":1},{"b":2}]\n```\n\nHere is the analysis.'
+    const result = analyzer.parseAnalysisResult(input)
+
+    expect(result.length).toBe(2)
+    expect(result[0].a).toBe(1)
+    expect(result[1].b).toBe(2)
+  })
+
   it('should return empty array for invalid JSON', () => {
     const analyzer = new GrokAnalyzer(TEST_DIR)
     const result = analyzer.parseAnalysisResult('not json at all')
