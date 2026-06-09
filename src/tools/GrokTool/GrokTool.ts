@@ -18,7 +18,15 @@ import { GraphContextService } from '../../services/graph/GraphContextService.js
 import { GraphUsageTracker } from '../../services/graph/GraphUsageTracker.js'
 
 import { sanitizeQuery, sanitizeSymbolName } from '../../services/graph/SecurityUtil.js'
-import { createTerminalProgress } from '../../services/graph/TerminalProgress.js'
+
+// ============================================================
+// Rate limiting & circuit breaker for graph-heavy operations
+// ============================================================
+
+const GRAPH_OPS = new Set(['grok_architecture', 'grok_hotspots'])
+let lastGraphOpTime = 0
+let circuitBreakerFailures = 0
+let circuitBreakerDisabledUntil = 0
 
 // ============================================================
 // Schema
@@ -114,52 +122,63 @@ export const grokTool = buildTool({
     const { stage, progress, startTime } = last.data;
     const verbose = options?.verbose ?? false;
 
-    // 完成状态
+    // 完成状态 — 不渲染，由 AssistantToolUseMessage 的 isResolved 处理
     if (stage === 'done') {
-      return React.createElement(Text, { dimColor: true }, 'Grok · Done');
+      return null;
     }
 
     const stageLabel = STAGE_LABELS[stage || ''] || (stage ? stage.charAt(0).toUpperCase() + stage.slice(1) : 'Grok');
 
-    // 有百分比时显示进度条（generate 操作）
-    if (progress != null && progress > 0) {
-      const ratio = Math.min(progress / 100, 1);
+    const elapsed = startTime ? Math.round((Date.now() - startTime) / 1000) : 0;
+    const hasProgress = progress != null && progress > 0;
+    const ratio = hasProgress ? Math.min(progress / 100, 1) : 0;
+    const pctText = hasProgress ? `${progress}%` : '';
 
-      // Verbose 模式：显示步骤历史
-      if (verbose && progressMessages.length > 1) {
-        const steps = new Map<string, number>();
-        for (const msg of progressMessages) {
-          if (msg.data?.stage && msg.data?.progress != null) {
-            steps.set(msg.data.stage, msg.data.progress);
-          }
-        }
-        const stepLines = Object.entries(STAGE_LABELS)
-          .filter(([key]) => steps.has(key))
-          .map(([key, label]) => {
-            const pct = steps.get(key) || 0;
-            const marker = pct >= 100 ? '✓' : pct > 0 ? '▸' : '○';
-            return `${marker} ${label} ${pct}%`;
-          });
-
-        return React.createElement(Box, { flexDirection: 'column' },
-          React.createElement(Box, { flexDirection: 'row', gap: 1 },
-            React.createElement(Text, { dimColor: true }, `Grok · ${stageLabel}`),
-            React.createElement(ProgressBar, { ratio, width: 16 }),
-            React.createElement(Text, { dimColor: true }, `${progress}%`),
-          ),
-          ...stepLines.map(line =>
-            React.createElement(Text, { dimColor: true, key: line }, `  ${line}`)
-          ),
+    // 有实际进度时显示进度条，否则显示 spinner + 已用时间
+    const renderBar = () => {
+      if (hasProgress) {
+        return React.createElement(React.Fragment, null,
+          React.createElement(ProgressBar, { ratio, width: 16, fillColor: 'success', emptyColor: 'subtle' }),
+          React.createElement(Text, { color: 'success' }, ` ${progress}%`),
         );
       }
+      // Indeterminate state: dots animation based on elapsed seconds
+      const dots = '.'.repeat((elapsed % 3) + 1).padEnd(3, ' ');
+      const elapsedText = elapsed > 0 ? ` (${elapsed}s)` : '';
+      return React.createElement(Text, { dimColor: true }, ` ${dots}${elapsedText}`);
+    };
 
-      return React.createElement(Box, { flexDirection: 'row', gap: 1 },
-        React.createElement(Text, { dimColor: true }, `Grok · ${stageLabel}`),
-        React.createElement(ProgressBar, { ratio, width: 16 }),
-        React.createElement(Text, { dimColor: true }, `${progress}%`),
+    // Verbose 模式：显示步骤历史
+    if (verbose && progressMessages.length > 1) {
+      const steps = new Map<string, number>();
+      for (const msg of progressMessages) {
+        if (msg.data?.stage && msg.data?.progress != null) {
+          steps.set(msg.data.stage, msg.data.progress);
+        }
+      }
+      const stepLines = Object.entries(STAGE_LABELS)
+        .filter(([key]) => steps.has(key))
+        .map(([key, label]) => {
+          const pct = steps.get(key) || 0;
+          const marker = pct >= 100 ? '✓' : pct > 0 ? '▸' : '○';
+          return `${marker} ${label} ${pct}%`;
+        });
+
+      return React.createElement(Box, { flexDirection: 'column' },
+        React.createElement(Box, { flexDirection: 'row', gap: 0 },
+          React.createElement(Text, { dimColor: true }, `Grok · ${stageLabel}`),
+          renderBar(),
+        ),
+        ...stepLines.map(line =>
+          React.createElement(Text, { dimColor: true, key: line }, `  ${line}`)
+        ),
       );
     }
-    return React.createElement(Text, { dimColor: true }, `Grok · ${stageLabel}…`);
+
+    return React.createElement(Box, { flexDirection: 'row', gap: 0 },
+      React.createElement(Text, { dimColor: true }, `Grok · ${stageLabel}`),
+      renderBar(),
+    );
   },
 
   async description() {
@@ -170,11 +189,22 @@ export const grokTool = buildTool({
   },
 
   async call(input: Input, _context, _canUseTool, _parentMessage, _onProgress) {
+    // Circuit breaker: reject graph ops if too many recent failures
+    if (GRAPH_OPS.has(input.operation) && Date.now() < circuitBreakerDisabledUntil) {
+      return { data: { error: true, message: 'Graph operations temporarily disabled due to repeated failures. Try again in a minute.' } }
+    }
+
+    // Rate limiter: 5s cooldown between graph ops
+    if (GRAPH_OPS.has(input.operation)) {
+      if (Date.now() - lastGraphOpTime < 5000) {
+        return { data: { error: true, message: 'Graph operation rate limited, please wait a few seconds before retrying.' } }
+      }
+      lastGraphOpTime = Date.now()
+    }
+
     const opStart = Date.now();
-    const termProgress = createTerminalProgress('Grok')
-    const sendProgress = (stage: string, progress?: number, message?: string) => {
+    const sendProgress = (stage: string, progress?: number) => {
       _onProgress?.({ toolUseID: '', data: { type: 'grok_progress', stage, progress, startTime: opStart } })
-      termProgress.update({ name: stage, label: message || stage, percent: progress })
     }
 
     try {
@@ -301,9 +331,13 @@ export const grokTool = buildTool({
           return { data: { error: true, message: `未知操作: ${input.operation}` } }
       }
 
+      // Circuit breaker: reset on successful graph op
+      if (GRAPH_OPS.has(input.operation)) {
+        circuitBreakerFailures = 0
+      }
+
       // 所有操作完成时发送完成进度
       sendProgress('done')
-      termProgress.finishPhase('Done')
       // Yield to event loop so React can render the final progress
       // before the tool result arrives and marks the tool as resolved.
       await new Promise(resolve => setTimeout(resolve, 0))
@@ -337,6 +371,15 @@ export const grokTool = buildTool({
 
       return { data: { ok: true, operation: input.operation, result, _graphContext: graphContext } }
     } catch (error) {
+      // Circuit breaker: track failures for graph ops
+      if (GRAPH_OPS.has(input.operation)) {
+        circuitBreakerFailures++
+        if (circuitBreakerFailures >= 3) {
+          circuitBreakerDisabledUntil = Date.now() + 60000
+          circuitBreakerFailures = 0
+        }
+      }
+
       logForDebugging(`[grok] error: ${error}`)
       const isGrokError = error instanceof GrokError
       const code = isGrokError ? error.code : 'UNKNOWN'
@@ -361,13 +404,21 @@ export const grokTool = buildTool({
           ...(suggestion ? { suggestion } : {}),
         },
       }
-    } finally {
-      termProgress.stop()
     }
   },
 
   async prompt() {
-    return 'Grok 代码理解工具 — 知识图谱生成、自然语言问答、业务域分析'
+    return `Grok 代码理解工具 — 离线知识图谱 + 图算法分析。操作说明：
+- grok_generate: 首次使用或刷新图谱。扫描源码→生成 knowledge-graph.json（约3-5分钟，增量模式更快）。参数：path(扫描路径), language(输出语言), scope(子目录范围), incremental(增量更新)
+- grok_chat: 对已生成图谱做自然语言问答。需要 question 参数。例："这个项目的认证流程是怎样的？"
+- grok_explain: 解释指定文件/函数的功能、关系和所属层域。需要 target 参数
+- grok_domain: 分析业务域划分，列出各域的 flow 和文件。无额外参数
+- grok_tour: 生成引导式学习路径。可选 topic 参数聚焦主题
+- grok_diff: 分析变更文件的影响范围。需要 files 参数（文件路径数组）
+- grok_status: 查看图谱是否存在、节点/边数量、是否过期。无额外参数
+- grok_dashboard: 启动浏览器 D3.js 可视化面板（只读，自动关闭）。可选 port 参数（1024-65535）
+- grok_architecture: Louvain 社区检测 + 角色分类 + 特征链追踪。可选 resolution(检测精度, 默认1.0), maxNodes(最大节点数)
+- grok_hotspots: PageRank 热点检测 + 时间耦合分析。可选 damping(阻尼系数, 默认0.85), since(时间窗口), maxNodes(最大节点数)`
   },
 
   isConcurrencySafe(input) {

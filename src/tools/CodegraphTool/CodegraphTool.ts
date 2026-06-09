@@ -17,8 +17,8 @@ import * as CodegraphManager from './CodegraphManager.js';
 import { GraphContextService } from '../../services/graph/GraphContextService.js'
 import { GraphUsageTracker } from '../../services/graph/GraphUsageTracker.js'
 import { sanitizeQuery, sanitizeSymbolName } from '../../services/graph/SecurityUtil.js';
-import { createTerminalProgress } from '../../services/graph/TerminalProgress.js';
 import {
+  type HandlerContext,
   ValidationError,
   handleContext,
   handleSearch,
@@ -43,6 +43,20 @@ import {
   handleUnresolved,
   handleKindMap,
 } from './CodegraphHandlers.js';
+
+// ============================================================
+// Rate Limiter & Circuit Breaker for graph-heavy operations
+// ============================================================
+
+const GRAPH_OPS = new Set([
+  'codegraph_scc', 'codegraph_toposort', 'codegraph_pagerank',
+  'codegraph_roles', 'codegraph_community', 'codegraph_centrality',
+  'codegraph_slice', 'codegraph_coupling', 'codegraph_temporal',
+])
+
+let lastGraphOpTime = 0
+let circuitBreakerFailures = 0
+let circuitBreakerDisabledUntil = 0
 
 // ============================================================
 // Schema
@@ -186,9 +200,9 @@ export const codegraphTool = buildTool({
     const elapsedStr = elapsed != null && elapsed > 1000 ? ` (${Math.round(elapsed / 1000)}s)` : '';
     const verbose = options?.verbose ?? false;
 
-    // 完成状态
+    // 完成状态 — 不渲染，由 AssistantToolUseMessage 的 isResolved 处理
     if (stage === 'done') {
-      return React.createElement(Text, { dimColor: true }, `CodeGraph · Done${elapsedStr}`);
+      return null;
     }
 
     const stageLabel = stage ? stage.charAt(0).toUpperCase() + stage.slice(1) : 'CodeGraph';
@@ -211,8 +225,8 @@ export const codegraphTool = buildTool({
         return React.createElement(Box, { flexDirection: 'column' },
           React.createElement(Box, { flexDirection: 'row', gap: 1 },
             React.createElement(Text, { dimColor: true }, `CodeGraph · ${stageLabel}`),
-            React.createElement(ProgressBar, { ratio, width: 16 }),
-            React.createElement(Text, { dimColor: true }, `${progress}%${elapsedStr}`),
+            React.createElement(ProgressBar, { ratio, width: 16, fillColor: 'professionalBlue', emptyColor: 'subtle' }),
+            React.createElement(Text, { color: 'professionalBlue' }, `${progress}%${elapsedStr}`),
           ),
           ...steps.map(line =>
             React.createElement(Text, { dimColor: true, key: line }, `  ${line}`)
@@ -222,8 +236,8 @@ export const codegraphTool = buildTool({
 
       return React.createElement(Box, { flexDirection: 'row', gap: 1 },
         React.createElement(Text, { dimColor: true }, `CodeGraph · ${stageLabel}`),
-        React.createElement(ProgressBar, { ratio, width: 16 }),
-        React.createElement(Text, { dimColor: true }, `${progress}%${elapsedStr}`),
+        React.createElement(ProgressBar, { ratio, width: 16, fillColor: 'professionalBlue', emptyColor: 'subtle' }),
+        React.createElement(Text, { color: 'professionalBlue' }, `${progress}%${elapsedStr}`),
       );
     }
 
@@ -249,11 +263,8 @@ export const codegraphTool = buildTool({
   async call(input: Input, _context, _canUseTool, _parentMessage, _onProgress) {
     const projectRoot = getCwd();
     const opStart = Date.now();
-    // Terminal progress: direct stderr animation bypassing Ink/React
-    const termProgress = createTerminalProgress('CodeGraph')
     const sendProgress = (stage: string, message?: string, progress?: number) => {
       _onProgress?.({ toolUseID: '', data: { type: 'codegraph_progress', stage, message, elapsed: Date.now() - opStart, progress } })
-      termProgress.update({ name: stage, label: message || stage, percent: progress })
     }
     /** 解析 CodeGraph stderr 并转发为结构化进度 */
     const onStderrProgress = (line: string) => {
@@ -262,24 +273,46 @@ export const codegraphTool = buildTool({
         sendProgress(parsed.stage, undefined, parsed.progress ?? undefined);
       }
     }
+    /** 转发 ExtractionOrchestrator 索引进度 */
+    const onIndexProgress = (progress: { phase: string; current: number; total: number; currentFile?: string }) => {
+      const pct = progress.total > 0 ? Math.round((progress.current / progress.total) * 100) : undefined
+      const detail = progress.currentFile ? ` ${progress.currentFile}` : ''
+      sendProgress(progress.phase, `${progress.phase}${detail}`, pct)
+    }
+
+    // Rate limiting: 5s cooldown between graph-heavy ops
+    if (GRAPH_OPS.has(input.operation)) {
+      const now = Date.now()
+      // Circuit breaker: 3 failures → 60s disable
+      if (now < circuitBreakerDisabledUntil) {
+        return { data: { error: true, message: 'Graph operations temporarily disabled due to repeated failures. Try again in a minute.' } }
+      }
+      if (now - lastGraphOpTime < 5000) {
+        return { data: { error: true, message: 'Graph operation rate limited, please wait a few seconds before retrying.' } }
+      }
+      lastGraphOpTime = now
+    }
 
     try {
       // 自动初始化：如果项目未初始化，自动下载 + init
       if (!CodegraphManager.isCodegraphInitialized(projectRoot)) {
         if (input.operation === 'codegraph_init') {
           sendProgress('init', 'Initializing CodeGraph index…')
-          const initResult = await CodegraphManager.initProject(projectRoot, onStderrProgress);
+          // Yield so React can render the initial progress message
+          await new Promise(resolve => setTimeout(resolve, 0))
+          const initResult = await CodegraphManager.initProject(projectRoot, onIndexProgress);
           if (!initResult.ok) {
             return { data: { error: true, message: `初始化失败: ${initResult.stderr || initResult.stdout}` } };
           }
-          termProgress.finishPhase('Done')
           return { data: { ok: true, operation: input.operation, result: { message: 'CodeGraph 索引已创建', initialized: true } } };
         }
         if (input.operation === 'codegraph_status') {
           return { data: { ok: true, operation: input.operation, result: { initialized: false, message: 'CodeGraph 索引未初始化' } } };
         }
         sendProgress('init', 'Auto-initializing CodeGraph…')
-        await CodegraphManager.ensureReady(projectRoot, onStderrProgress);
+        // Yield so React can render the initial progress message
+        await new Promise(resolve => setTimeout(resolve, 0))
+        await CodegraphManager.ensureReady(projectRoot, onIndexProgress);
       }
 
       // PreToolUse: inject graph context
@@ -289,7 +322,7 @@ export const codegraphTool = buildTool({
       if (input.query) input.query = sanitizeQuery(input.query)
       if (input.symbol) input.symbol = sanitizeSymbolName(input.symbol)
 
-      const handlerCtx = { projectRoot, sendProgress, onStderrProgress };
+      const handlerCtx: HandlerContext = { projectRoot, sendProgress, onStderrProgress, yieldToUI: () => new Promise<void>(resolve => setTimeout(resolve, 0)) };
       let result: unknown;
 
       switch (input.operation) {
@@ -319,9 +352,13 @@ export const codegraphTool = buildTool({
           return { data: { error: true, message: `未知操作: ${input.operation}` } };
       }
 
+      // Reset circuit breaker on successful graph op
+      if (GRAPH_OPS.has(input.operation)) {
+        circuitBreakerFailures = 0
+      }
+
       // 所有操作完成时发送完成进度
       sendProgress('done')
-      termProgress.finishPhase('Done')
       // Yield to event loop so React can render the final progress
       // before the tool result arrives and marks the tool as resolved.
       await new Promise(resolve => setTimeout(resolve, 0))
@@ -362,6 +399,14 @@ export const codegraphTool = buildTool({
         return { data: { error: true, message: e.message } };
       }
       logForDebugging(`[codegraph] error: ${e}`);
+      // Circuit breaker: track failures for graph-heavy ops
+      if (GRAPH_OPS.has(input.operation)) {
+        circuitBreakerFailures++
+        if (circuitBreakerFailures >= 3) {
+          circuitBreakerDisabledUntil = Date.now() + 60000
+          circuitBreakerFailures = 0
+        }
+      }
       // PostToolUse: record failed usage
       GraphUsageTracker.getInstance(projectRoot).recordUsage({
         toolName: 'codegraph',
@@ -378,8 +423,6 @@ export const codegraphTool = buildTool({
           message: e instanceof Error ? e.message : String(e),
         },
       };
-    } finally {
-      termProgress.stop()
     }
   },
 
@@ -483,58 +526,88 @@ const OPERATION_DESCRIPTIONS: Record<string, { core: string; analysis: string; a
     advanced: 'Check CodeGraph initialization status, index freshness (minutes since last sync), node and edge counts. Use before other operations to verify the index is ready and up-to-date.',
   },
   codegraph_community: {
+    core: 'Community detection — find module boundaries',
     analysis: 'Louvain community detection — find natural module boundaries',
     advanced: 'Louvain modularity-based community detection with configurable resolution. Identifies natural clusters/modules in the code graph. Use to understand codebase structure and find refactoring boundaries.',
   },
   codegraph_roles: {
+    core: 'Node role classification',
     analysis: 'Node role classification (hub/bridge/leaf/utility)',
     advanced: 'Classify nodes by structural role: hub (many connections), bridge (connects communities), leaf (terminal), utility (used by many). Use to understand architectural patterns and identify key files.',
   },
   codegraph_impact: {
+    core: 'Impact analysis — what breaks if X changes',
     analysis: 'Impact analysis — what breaks if X changes',
     advanced: 'Forward and backward impact analysis. depth<=2: CLI-based direct callers/callees. depth>2: GraphEngine BFS + backward reachability + role classification. Use to assess change risk before modifying a symbol.',
   },
   codegraph_centrality: {
+    core: 'Centrality — find bridge nodes',
     analysis: 'Katz/betweenness centrality — find bridge nodes',
     advanced: 'Katz and/or betweenness centrality analysis. Katz measures global influence via path sums. Betweenness identifies nodes that bridge different parts of the graph. Use to find critical integration points.',
   },
   codegraph_context: {
+    core: 'Query code context by task',
+    analysis: 'Query code context by task description. Returns relevant symbols, files, and relationships.',
     advanced: 'Query code context by task description. Returns relevant symbols, files, and relationships for a given task or question.',
   },
   codegraph_callers: {
+    core: 'Find callers of a symbol',
+    analysis: 'Find all callers of a symbol (who uses this function/class).',
     advanced: 'Find all callers of a symbol (who uses this function/class). Returns calling symbols with file and line metadata.',
   },
   codegraph_callees: {
+    core: 'Find callees of a symbol',
+    analysis: 'Find all callees of a symbol (what does this function call).',
     advanced: 'Find all callees of a symbol (what does this function call). Returns called symbols with file and line metadata.',
   },
   codegraph_trace: {
+    core: 'Trace call path between symbols',
+    analysis: 'Trace call path between two symbols. Format: "X to Y".',
     advanced: 'Trace call path between two symbols. Format: "X to Y". Uses bidirectional impact analysis to find connecting nodes.',
   },
   codegraph_init: {
+    core: 'Initialize CodeGraph index',
+    analysis: 'Initialize CodeGraph index for the current project.',
     advanced: 'Initialize CodeGraph index for the current project. Downloads CLI (~45MB) on first use and creates the symbol database.',
   },
   codegraph_files: {
+    core: 'List indexed files',
+    analysis: 'List indexed files with directory structure.',
     advanced: 'List indexed files with directory structure. Returns file tree up to specified depth.',
   },
   codegraph_sync: {
+    core: 'Sync CodeGraph index',
+    analysis: 'Sync CodeGraph index with current source code.',
     advanced: 'Sync CodeGraph index with current source code. Re-indexes changed files since last sync.',
   },
   codegraph_delta: {
+    core: 'Compute graph delta',
+    analysis: 'Compute graph delta between two snapshots.',
     advanced: 'Compute graph delta between two snapshots. Returns added/removed nodes and edges with summary.',
   },
   codegraph_slice: {
+    core: 'Backward data slice',
+    analysis: 'Backward data slice for a symbol.',
     advanced: 'Backward data slice for a symbol. Identifies all symbols that influence the target symbol\'s value through data flow analysis.',
   },
   codegraph_coupling: {
+    core: 'Coupling metrics',
+    analysis: 'Coupling metrics: high-coupling pairs and LCOM scores.',
     advanced: 'Coupling metrics: high-coupling pairs and LCOM (Lack of Cohesion of Methods) scores. Use to identify code that should be refactored.',
   },
   codegraph_temporal: {
+    core: 'Temporal coupling analysis',
+    analysis: 'Temporal coupling via git log analysis.',
     advanced: 'Temporal coupling via git log analysis. Finds files that are frequently changed together. Use to discover hidden dependencies not visible in the call graph.',
   },
   codegraph_unresolved: {
+    core: 'Scan for unresolved references',
+    analysis: 'Scan for unresolved references — dangling imports, calls, and type uses.',
     advanced: 'Scan for unresolved references — dangling imports, calls, and type uses that point to symbols not in the graph. Use to find missing dependencies or indexing gaps.',
   },
   codegraph_kind_map: {
+    core: 'Kind mapping diagnostics',
+    analysis: 'Diagnostic: returns edge kind mapping and node kind normalization.',
     advanced: 'Diagnostic: returns edge kind mapping (codegraph→canonical), node kind normalization table, and current graph statistics by kind/type.',
   },
 };

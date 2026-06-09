@@ -1193,8 +1193,36 @@ export async function* runAgent({
         try {
           const projectRoot = getProjectRoot() || process.cwd()
           const AST_TIMEOUT_MS = 15000
+          const MAX_AST_FILES = 50
+
+          // Incremental scanning: only check files modified by the agent
+          let astPaths: string[] = []
+          try {
+            const proc = Bun.spawnSync(
+              ['git', 'diff', '--name-only', 'HEAD', '--', '*.ts', '*.tsx'],
+              { cwd: projectRoot, stdout: 'pipe', stderr: 'null' },
+            )
+            const modifiedFiles = (proc.stdout?.toString() ?? '')
+              .split('\n')
+              .filter(f => /\.(ts|tsx)$/.test(f))
+              .filter(f => !f.includes('node_modules') && !f.includes('.test.') && !f.includes('.spec.'))
+              .map(f => `${projectRoot}/${f}`)
+
+            if (modifiedFiles.length > 0) {
+              astPaths = modifiedFiles.slice(0, MAX_AST_FILES)
+              logForDebugging(`[Agent] AST incremental scan: ${astPaths.length} modified files (of ${modifiedFiles.length})`)
+            }
+          } catch {
+            // git not available — fall through to full scan
+          }
+
+          // Fall back to full scan if no modified files detected
+          if (astPaths.length === 0) {
+            astPaths = [`${projectRoot}/src/**/*.ts`, `${projectRoot}/src/**/*.tsx`]
+          }
+
           const astResults = await Promise.race([
-            runASTCheck([`${projectRoot}/src/**/*.ts`, `${projectRoot}/src/**/*.tsx`]),
+            runASTCheck(astPaths),
             new Promise<ScanResult[]>((resolve) =>
               setTimeout(() => {
                 logForDebugging(`[Agent] AST check timed out after ${AST_TIMEOUT_MS}ms`)
