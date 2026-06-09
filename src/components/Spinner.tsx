@@ -337,8 +337,8 @@ function SpinnerWithVerbInner({
             <Text bold color="cyan">{progress}%</Text>
             <Text dimColor> {message || '压缩中...'}</Text>
           </Box>
-          <Box marginTop={0}>
-            <Text>{renderShimmerBar(progressFrame, progress, Math.min(columns - 4, 30))}</Text>
+          <Box marginTop={1}>
+            <Text>  {renderShimmerBar(progressFrame, progress, Math.min(columns - 4, 30))}</Text>
           </Box>
         </Box>
       ) : (

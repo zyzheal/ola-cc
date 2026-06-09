@@ -2692,10 +2692,15 @@ export function REPL({
             setSpinnerProgress(event.progress);
             break;
           case 'compact_end':
-            setSpinnerMessage(null);
-            setSpinnerColor(null);
-            setSpinnerShimmerColor(null);
-            setSpinnerProgress(null);
+            // Show phase completion marker briefly before clearing
+            setSpinnerMessage('\u25C6 \u538B\u7F29\u5B8C\u6210 \u2014 done');
+            setSpinnerProgress(100);
+            setTimeout(() => {
+              setSpinnerMessage(null);
+              setSpinnerColor(null);
+              setSpinnerShimmerColor(null);
+              setSpinnerProgress(null);
+            }, 1500);
             break;
         }
       },
