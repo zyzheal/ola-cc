@@ -246,7 +246,7 @@ export function SpinnerAnimationRow({
   if (_profRc % 50 === 0) {
     (globalThis as any).__lastSpinnerBodyMs = _rBodyMs;
   }
-  return <Box ref={viewportRef} flexDirection="row" flexWrap="wrap" marginTop={1} width="100%">
+  return <Box ref={viewportRef} flexDirection="row" marginTop={1} width="100%">
       <SpinnerGlyph frame={frame} messageColor={messageColor} stalledIntensity={overrideColor ? 0 : stalledIntensity} reducedMotion={reducedMotion} time={time} />
       <GlimmerMessage message={message} mode={mode} messageColor={messageColor} glimmerIndex={glimmerIndex} flashOpacity={flashOpacity} shimmerColor={shimmerColor} stalledIntensity={overrideColor ? 0 : stalledIntensity} />
       {status}

@@ -21,6 +21,7 @@ type Props = {
   param: TextBlockParam;
   addMargin: boolean;
   shouldShowDot: boolean;
+  shouldAnimate?: boolean;
   verbose: boolean;
   width?: number | string;
   onOpenRateLimitOptions?: () => void;
@@ -45,11 +46,12 @@ function InvalidApiKeyMessage() {
   return t1;
 }
 export function AssistantTextMessage(t0) {
-  const $ = _c(34);
+  const $ = _c(35);
   const {
     param: t1,
     addMargin,
     shouldShowDot,
+    shouldAnimate,
     verbose,
     onOpenRateLimitOptions
   } = t0;
@@ -57,7 +59,7 @@ export function AssistantTextMessage(t0) {
     text
   } = t1;
   const isSelected = useContext(MessageActionsSelectedContext);
-  if (isEmptyMessageText(text)) {
+  if (isEmptyMessageText(text) || text.trim() === '') {
     return null;
   }
   if (isRateLimitErrorMessage(text)) {
@@ -228,10 +230,11 @@ export function AssistantTextMessage(t0) {
         const t2 = addMargin ? 1 : 0;
         const t3 = isSelected ? "messageActionsBackground" : undefined;
         let t4;
-        if ($[22] !== isSelected || $[23] !== shouldShowDot) {
-          t4 = shouldShowDot && <NoSelect fromLeftEdge={true} minWidth={2}><Text color={isSelected ? "suggestion" : "text"}>{BLACK_CIRCLE}</Text></NoSelect>;
+        if ($[22] !== isSelected || $[23] !== shouldShowDot || $[32] !== shouldAnimate) {
+          t4 = shouldShowDot && <NoSelect fromLeftEdge={true} minWidth={2}><Text color={isSelected ? "suggestion" : "text"} dimColor={shouldAnimate}>{BLACK_CIRCLE}</Text></NoSelect>;
           $[22] = isSelected;
           $[23] = shouldShowDot;
+          $[32] = shouldAnimate;
           $[24] = t4;
         } else {
           t4 = $[24];
@@ -254,11 +257,11 @@ export function AssistantTextMessage(t0) {
           t6 = $[29];
         }
         let t7;
-        if ($[30] !== t2 || $[31] !== t3 || $[32] !== t6) {
+        if ($[30] !== t2 || $[31] !== t3 || $[34] !== t6) {
           t7 = <Box alignItems="flex-start" flexDirection="row" justifyContent="space-between" marginTop={t2} width="100%" backgroundColor={t3}>{t6}</Box>;
           $[30] = t2;
           $[31] = t3;
-          $[32] = t6;
+          $[34] = t6;
           $[33] = t7;
         } else {
           t7 = $[33];

@@ -132,8 +132,8 @@ function mapGrokEdgeType(type: string): EdgeMeta['type'] {
 export class GraphStore {
   private static instances = new Map<string, GraphStore>()
 
-  public readonly adjacency = new Map<string, Map<string, EdgeMeta>>()
-  public readonly reverse = new Map<string, Map<string, EdgeMeta>>()
+  public readonly adjacency = new Map<string, Map<string, EdgeMeta[]>>()
+  public readonly reverse = new Map<string, Map<string, EdgeMeta[]>>()
   public readonly nodeMeta = new Map<string, NodeMetadata>()
 
   private loaded = false
@@ -351,17 +351,17 @@ export class GraphStore {
       fromMap = new Map()
       this.adjacency.set(from, fromMap)
     }
-    const existing = fromMap.get(to)
-    if (!existing) {
-      fromMap.set(to, { type, weight })
-    } else if (existing.type === type) {
-      // 同类型边去重，保留最高权重
+    let edges = fromMap.get(to)
+    if (!edges) {
+      edges = []
+      fromMap.set(to, edges)
+    }
+    // 同类型边去重，保留最高权重
+    const existing = edges.find(e => e.type === type)
+    if (existing) {
       existing.weight = Math.max(existing.weight, weight)
     } else {
-      // 不同类型边保留（如 calls + data 同时存在）
-      // 用合并 key 避免覆盖
-      const mergedKey = `${to}::${type}`
-      fromMap.set(mergedKey, { type, weight })
+      edges.push({ type, weight })
     }
 
     // 反向
@@ -370,29 +370,47 @@ export class GraphStore {
       toReverse = new Map()
       this.reverse.set(to, toReverse)
     }
-    const existingRev = toReverse.get(from)
-    if (!existingRev) {
-      toReverse.set(from, { type, weight })
-    } else if (existingRev.type === type) {
+    let revEdges = toReverse.get(from)
+    if (!revEdges) {
+      revEdges = []
+      toReverse.set(from, revEdges)
+    }
+    const existingRev = revEdges.find(e => e.type === type)
+    if (existingRev) {
       existingRev.weight = Math.max(existingRev.weight, weight)
     } else {
-      const mergedKey = `${from}::${type}`
-      toReverse.set(mergedKey, { type, weight })
+      revEdges.push({ type, weight })
     }
   }
 
   /**
-   * 获取节点的出边（忽略合并 key 后缀）
+   * 获取节点的出边（每条目标边返回 EdgeMeta[]）
    */
-  getOutEdges(nodeId: string): Map<string, EdgeMeta> {
+  getOutEdges(nodeId: string): Map<string, EdgeMeta[]> {
     return this.adjacency.get(nodeId) ?? new Map()
   }
 
   /**
    * 获取节点的入边
    */
-  getInEdges(nodeId: string): Map<string, EdgeMeta> {
+  getInEdges(nodeId: string): Map<string, EdgeMeta[]> {
     return this.reverse.get(nodeId) ?? new Map()
+  }
+
+  /**
+   * 获取节点的加权出度（可排除指定边类型）
+   */
+  getWeightedOutDegree(nodeId: string, excludeTypes?: string[]): number {
+    const edgeMap = this.adjacency.get(nodeId)
+    if (!edgeMap) return 0
+    let sum = 0
+    for (const [, edges] of edgeMap) {
+      for (const meta of edges) {
+        if (excludeTypes?.includes(meta.type)) continue
+        sum += meta.weight
+      }
+    }
+    return sum
   }
 
   /**

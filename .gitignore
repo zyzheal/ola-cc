@@ -27,3 +27,4 @@ dist/publish/bin/
 
 # Dev tools
 .superpowers/
+.worktrees/

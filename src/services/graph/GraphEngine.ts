@@ -7,7 +7,10 @@
  */
 
 import type { GraphStore, EdgeMeta, NodeMetadata } from './GraphStore.js'
-import { execFileSync } from 'child_process'
+import { execFile } from 'child_process'
+import { promisify } from 'util'
+
+const execFileAsync = promisify(execFile)
 
 // ============================================================
 // Return types (design doc §2.4)
