@@ -2188,14 +2188,14 @@ describe('SecretScannerImpl.scanForSecrets', () => {
     expect(result.ruleIds).toContain('github-token')
   })
 
-  it('detects Anthropic key sk-ant-api03-REDACTED-abcdefghijklmnopqrstuvwxyz', () => {
-    const result = scanner.scanForSecrets('key: sk-ant-api03-REDACTED-abcdefghijklmnopqrstuvwxyz1234567890abcdefghijklmnopqrstuv')
+  it('detects Anthropic key sk-ant-api03-REDACTED-REDACTED', () => {
+    const result = scanner.scanForSecrets('key: sk-ant-api03-REDACTED-REDACTED')
     expect(result.hasSecrets).toBe(true)
     expect(result.ruleIds).toContain('anthropic-key')
   })
 
   it('detects OpenAI key sk-abcdefghijklmnopqrstuvwxyz0123456789', () => {
-    const result = scanner.scanForSecrets('key: sk-abcdefghijklmnopqrstuvwxyz0123456789ABCDEFGHIJKLMNOP')
+    const result = scanner.scanForSecrets('key: sk-REDACTED_EXAMPLE_KEYMNOP')
     expect(result.hasSecrets).toBe(true)
     expect(result.ruleIds).toContain('openai-key')
   })
@@ -2220,19 +2220,19 @@ describe('SecretScannerImpl.scanForSecrets', () => {
   })
 
   it('detects generic API key pattern', () => {
-    const result = scanner.scanForSecrets('api_key = "sk_live_REDACTED_abcdefghijklmnopqrstuvwxyz1234567890"')
+    const result = scanner.scanForSecrets('api_key = "sk_live_REDACTED_REDACTED"')
     expect(result.hasSecrets).toBe(true)
     expect(result.ruleIds).toContain('generic-api-key')
   })
 
   it('detects Slack token', () => {
-    const result = scanner.scanForSecrets('slack_token: xoxb-REDACTED-123456789012-1234567890123-AbCdEfGhIjKlMnOpQrStUvWx')
+    const result = scanner.scanForSecrets('slack_token: xoxb-REDACTED-REDACTED')
     expect(result.hasSecrets).toBe(true)
     expect(result.ruleIds).toContain('slack-token')
   })
 
   it('detects Stripe key', () => {
-    const result = scanner.scanForSecrets('stripe_key: sk_live_REDACTED_4eC39HqLyjWDarjtT1zdp7dc')
+    const result = scanner.scanForSecrets('stripe_key: sk_live_REDACTED_REDACTED')
     expect(result.hasSecrets).toBe(true)
     expect(result.ruleIds).toContain('stripe-key')
   })
