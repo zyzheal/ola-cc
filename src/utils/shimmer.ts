@@ -10,6 +10,7 @@
 
 const AMBER = { r: 160, g: 100, b: 9 }
 const ORANGE = { r: 251, g: 191, b: 36 }
+const DIM_BASE = { r: 120, g: 120, b: 120 }
 
 /**
  * Compute shimmer color for a given frame.
@@ -56,7 +57,11 @@ export function renderShimmerBar(
     const dist = Math.abs(i - shimmerPos)
     const t = Math.max(0, 1 - dist / shimmerWidth)
     if (t > 0) {
-      bar += `\x1b[38;2;${glowColor.r};${glowColor.g};${glowColor.b}m\x1b[1m█\x1b[0m`
+      // Blend glow color with dim base using t for smooth edge falloff
+      const r = Math.round(DIM_BASE.r + (glowColor.r - DIM_BASE.r) * t)
+      const g = Math.round(DIM_BASE.g + (glowColor.g - DIM_BASE.g) * t)
+      const b = Math.round(DIM_BASE.b + (glowColor.b - DIM_BASE.b) * t)
+      bar += `\x1b[38;2;${r};${g};${b}m\x1b[1m█\x1b[0m`
     } else {
       bar += '█'
     }

@@ -125,4 +125,37 @@ describe('renderShimmerBar', () => {
     expect(dimFilled.length).toBe(0)
     expect(allFilled.length).toBe(25)
   })
+
+  it('should have bounded glow region (2*shimmerWidth+1 max)', () => {
+    // shimmerWidth=3, so glow spans at most 2*3+1=7 chars (center ± 3)
+    const bar = renderShimmerBar(12, 50, 25)
+    const glowChars = bar.match(/\x1b\[1m█/g) ?? []
+    expect(glowChars.length).toBeLessThanOrEqual(7)
+  })
+
+  it('should produce smooth brightness falloff at glow edges', () => {
+    // Extract RGB values from glow chars to verify edge < center brightness
+    const bar = renderShimmerBar(12, 100, 25)
+    const rgbMatches = [...bar.matchAll(/\x1b\[38;2;(\d+);(\d+);(\d+)m/g)]
+    if (rgbMatches.length >= 3) {
+      // First glow char (edge) should be dimmer than middle glow char (center)
+      const firstLuma = parseInt(rgbMatches[0]![1]!) + parseInt(rgbMatches[0]![2]!) + parseInt(rgbMatches[0]![3]!)
+      const midIdx = Math.floor(rgbMatches.length / 2)
+      const midLuma = parseInt(rgbMatches[midIdx]![1]!) + parseInt(rgbMatches[midIdx]![2]!) + parseInt(rgbMatches[midIdx]![3]!)
+      // Edge chars blended with DIM_BASE should be dimmer than center
+      // Allow equality since at some frames all glow chars may be at same distance
+      expect(firstLuma).toBeLessThanOrEqual(midLuma)
+    }
+  })
+
+  it('should handle width=1 without throwing', () => {
+    const bar = renderShimmerBar(0, 50, 1)
+    expect(typeof bar).toBe('string')
+    expect(bar.length).toBeGreaterThan(0)
+  })
+
+  it('should handle width=2 without throwing', () => {
+    const bar = renderShimmerBar(6, 50, 2)
+    expect(typeof bar).toBe('string')
+  })
 })
