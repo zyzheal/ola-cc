@@ -657,11 +657,12 @@ ${snippets.map((s, i) => `[${i}] ${s.kind} ${s.name} (${s.file}):\n${s.code.slic
     // Pre-load GraphStore for graph-first analysis
     // When available, extract structure directly from AST metadata (no LLM needed)
     let graphStoreLoaded = false
+    let graphStore: GraphStore | undefined
     try {
-      const store = GraphStore.getInstance(this.projectRoot)
-      await store.load()
-      graphStoreLoaded = store.nodeMeta.size > 0
-      logForDebugging(`[grok] GraphStore loaded: ${store.nodeMeta.size} nodes, graph-first mode ${graphStoreLoaded ? 'ENABLED' : 'DISABLED (empty)'}`)
+      graphStore = GraphStore.getInstance(this.projectRoot)
+      await graphStore.load()
+      graphStoreLoaded = graphStore.nodeMeta.size > 0
+      logForDebugging(`[grok] GraphStore loaded: ${graphStore.nodeMeta.size} nodes, graph-first mode ${graphStoreLoaded ? 'ENABLED' : 'DISABLED (empty)'}`)
     } catch (err) {
       logForDebugging(`[grok] GraphStore not available (${err instanceof Error ? err.message : String(err)}), falling back to LLM-only analysis`)
     }
@@ -901,7 +902,7 @@ ${snippets.map((s, i) => `[${i}] ${s.kind} ${s.name} (${s.file}):\n${s.code.slic
       changes: isIncrementalRun ? changes : undefined,
       graphStructure: graphStructure ?? undefined,
       skipSave: graphStoreLoaded ? true : undefined,
-      store: graphStoreLoaded ? store : undefined,
+      store: graphStoreLoaded ? graphStore : undefined,
     })
 
     // Step 8: Post-assembly enrichment (optional, non-fatal — errors don't break pipeline)
