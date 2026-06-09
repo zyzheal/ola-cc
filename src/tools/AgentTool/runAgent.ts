@@ -1135,7 +1135,8 @@ export async function* runAgent({
     // (not aborted or budget-exceeded).
     if (
       !agentBudgetExceeded &&
-      !agentAbortController.signal.aborted
+      !agentAbortController.signal.aborted &&
+      process.env.OLA_CC_AST_CHECK !== '0'
     ) {
       const agentClass = classificationRef?.class
       const shouldScan =
@@ -1145,9 +1146,18 @@ export async function* runAgent({
 
       if (shouldScan) {
         try {
-          const scanResults = await runQualityScan({
-            checks: [],
-            paths: [getProjectRoot() ? `src/**/*.{ts,tsx}` : 'src/**/*.{ts,tsx}'],
+          const SCAN_TIMEOUT_MS = 15000
+          const scanResults = await Promise.race([
+            runQualityScan({
+              checks: [],
+              paths: [getProjectRoot() ? `src/**/*.{ts,tsx}` : 'src/**/*.{ts,tsx}'],
+            }),
+            new Promise<never>((_, reject) =>
+              setTimeout(() => reject(new Error('Quality scan timeout')), SCAN_TIMEOUT_MS)
+            ),
+          ]).catch((err) => {
+            logForDebugging(`[Agent] Quality scan ${err.message ?? 'timed out'}`)
+            return [] as ScanResult[]
           })
 
           const errorLevelIssues = scanResults.filter(
@@ -1182,7 +1192,16 @@ export async function* runAgent({
         // Only error-level issues are reported.
         try {
           const projectRoot = getProjectRoot() || process.cwd()
-          const astResults = await runASTCheck([`${projectRoot}/src/**/*.ts`, `${projectRoot}/src/**/*.tsx`])
+          const AST_TIMEOUT_MS = 15000
+          const astResults = await Promise.race([
+            runASTCheck([`${projectRoot}/src/**/*.ts`, `${projectRoot}/src/**/*.tsx`]),
+            new Promise<ScanResult[]>((resolve) =>
+              setTimeout(() => {
+                logForDebugging(`[Agent] AST check timed out after ${AST_TIMEOUT_MS}ms`)
+                resolve([])
+              }, AST_TIMEOUT_MS)
+            ),
+          ])
 
           const errorLevelAST = astResults.filter((r: ScanResult) => r.severity === 'error')
           if (errorLevelAST.length > 0) {
