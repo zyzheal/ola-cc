@@ -1322,9 +1322,8 @@ ${JSON_OUTPUT_INSTRUCTION}`
       try {
         await Promise.race([prevLock, timeout])
       } catch (error) {
-        // 超时：释放自己的锁并向调用方传播错误（不继续执行 pipeline）
-        this.pipelineLock = null
-        releaseLock!()
+        // 超时：不修改 pipelineLock，不释放锁
+        // 原始 pipeline 的锁保持有效，后续调用者继续等待它
         throw error
       } finally {
         if (timer) clearTimeout(timer)

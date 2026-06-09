@@ -9,7 +9,7 @@ import React from 'react'
 import { z } from 'zod/v4'
 import { buildTool } from '../../Tool.js'
 import { Box, Text } from '../../ink.js'
-import { ProgressBar } from '../../components/design-system/ProgressBar.js'
+import { ShimmerProgressBar } from '../../components/design-system/ShimmerProgressBar.js'
 import { getCwd } from '../../utils/cwd.js'
 import { logForDebugging } from '../../utils/debug.js'
 import type { ProgressMessage, ToolProgressData } from '../../types/tools.js'
@@ -150,7 +150,7 @@ export const grokTool = buildTool({
         return React.createElement(Box, { flexDirection: 'column' },
           React.createElement(Box, { flexDirection: 'row', gap: 1 },
             React.createElement(Text, { dimColor: true }, `Grok · ${stageLabel}`),
-            React.createElement(ProgressBar, { ratio, width: 16 }),
+            React.createElement(ShimmerProgressBar, { progress, width: 16 }),
             React.createElement(Text, { dimColor: true }, `${progress}%`),
           ),
           ...stepLines.map(line =>
@@ -161,7 +161,7 @@ export const grokTool = buildTool({
 
       return React.createElement(Box, { flexDirection: 'row', gap: 1 },
         React.createElement(Text, { dimColor: true }, `Grok · ${stageLabel}`),
-        React.createElement(ProgressBar, { ratio, width: 16 }),
+        React.createElement(ShimmerProgressBar, { progress, width: 16 }),
         React.createElement(Text, { dimColor: true }, `${progress}%`),
       );
     }

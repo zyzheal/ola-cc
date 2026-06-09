@@ -9,7 +9,7 @@ import React from 'react';
 import { z } from 'zod/v4';
 import { buildTool } from '../../Tool.js';
 import { Box, Text } from '../../ink.js';
-import { ProgressBar } from '../../components/design-system/ProgressBar.js';
+import { ShimmerProgressBar } from '../../components/design-system/ShimmerProgressBar.js';
 import { getCwd } from '../../utils/cwd.js';
 import { logForDebugging } from '../../utils/debug.js';
 import type { ProgressMessage, ToolProgressData } from '../../types/tools.js';
@@ -254,8 +254,8 @@ export const codegraphTool = buildTool({
         return React.createElement(Box, { flexDirection: 'column' },
           React.createElement(Box, { flexDirection: 'row', gap: 1 },
             React.createElement(Text, { dimColor: true }, `CodeGraph · ${stageLabel}`),
-            React.createElement(ProgressBar, { ratio, width: 16, fillColor: 'professionalBlue', emptyColor: 'subtle' }),
-            React.createElement(Text, { color: 'professionalBlue' }, `${progress}%${elapsedStr}`),
+            React.createElement(ShimmerProgressBar, { progress, width: 16 }),
+            React.createElement(Text, { dimColor: true }, `${progress}%${elapsedStr}`),
           ),
           ...steps.map(line =>
             React.createElement(Text, { dimColor: true, key: line }, `  ${line}`)
@@ -265,8 +265,8 @@ export const codegraphTool = buildTool({
 
       return React.createElement(Box, { flexDirection: 'row', gap: 1 },
         React.createElement(Text, { dimColor: true }, `CodeGraph · ${stageLabel}`),
-        React.createElement(ProgressBar, { ratio, width: 16, fillColor: 'professionalBlue', emptyColor: 'subtle' }),
-        React.createElement(Text, { color: 'professionalBlue' }, `${progress}%${elapsedStr}`),
+        React.createElement(ShimmerProgressBar, { progress, width: 16 }),
+        React.createElement(Text, { dimColor: true }, `${progress}%${elapsedStr}`),
       );
     }
 

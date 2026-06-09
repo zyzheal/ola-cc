@@ -554,6 +554,789 @@ export class GraphEngine {
 
       for (const v of nodes) {
         // 每 5000 节点检查 timeout，避免单次 pass 长时间阻塞 CPU
+        if (++vCount % 5000 === 0 && Date.now() > deadline) break
+        let incomingSum = 0
+        const inEdges = this.store.getInEdges(v)
+        for (const [u, edges] of inEdges) {
+          let edgeWeight = 0
+          for (const e of edges) {
+            if (e.type !== 'contains') edgeWeight += e.weight
+          }
+          if (edgeWeight > 0) {
+            const uDeg = outDeg.get(u) ?? 1
+            incomingSum += (pr.get(u) ?? 0) * edgeWeight / uDeg
+          }
+        }
+
+        const newVal = (1 - damping) / N + damping * (incomingSum + danglingSum / N)
+        l1Norm += Math.abs(newVal - (pr.get(v) ?? 0))
+        newPr.set(v, newVal)
+      }
+
+      // 更新
+      for (const node of nodes) {
+        pr.set(node, newPr.get(node)!)
+      }
+
+      // L1 收敛检查
+      if (l1Norm < 1e-6) break
+    }
+
+    // 归一化到 0-1
+    const maxPr = Math.max(...pr.values())
+    const scores = nodes
+      .map(node => ({ node, score: maxPr > 0 ? pr.get(node)! / maxPr : 0 }))
+      .sort((a, b) => b.score - a.score)
+
+    return { scores }
+  }
+
+  /**
+   * 支配树 — 迭代收敛算法
+   * 注意：非标准 Lengauer-Tarjan 实现，最坏情况 O(V²·E)
+   * 适用于中小规模图，大规模图建议使用 Lengauer-Tarjan
+   */
+  dominatorTree(root: string): Map<string, string | null> {
+    const dominated = new Map<string, string | null>()
+    const reachable = this.bfs(root)
+    const reachableSet = new Set(reachable.nodes)
+
+    // 从 root 开始，计算每个节点的直接支配者
+    dominated.set(root, null)
+
+    // 迭代收敛：对每个可达节点，找其所有前驱的支配者的交集
+    let changed = true
+    let iterations = 0
+    const maxIterations = reachable.nodes.length * 2
+
+    while (changed && iterations < maxIterations) {
+      iterations++
+      changed = false
+
+      for (const node of reachable.nodes) {
+        if (node === root) continue
+
+        const inEdges = this.store.getInEdges(node)
+        const preds = [...inEdges.keys()].filter(p => reachableSet.has(p))
+
+        if (preds.length === 0) continue
+
+        // 找最近公共支配者
+        let idom: string | null = null
+        for (const pred of preds) {
+          if (!dominated.has(pred)) continue
+
+          if (idom === null) {
+            idom = pred
+          } else {
+            // 找 idom 和 pred 的公共支配者
+            idom = this.intersectDominators(idom, pred, dominated)
+          }
+        }
+
+        if (idom !== null && dominated.get(node) !== idom) {
+          dominated.set(node, idom)
+          changed = true
+        }
+      }
+    }
+
+    return dominated
+  }
+
+  /**
+   * 差分图 — 比较两个快照的节点/边增删
+   */
+  deltaGraph(old: GraphSnapshot, curr: GraphSnapshot): DeltaResult {
+    const oldNodes = new Set(old.nodeMeta.keys())
+    const currNodes = new Set(curr.nodeMeta.keys())
+
+    const added = [...currNodes].filter(n => !oldNodes.has(n))
+    const removed = [...oldNodes].filter(n => !currNodes.has(n))
+
+    const edgeAdded: DeltaResult['edgeAdded'] = []
+    const edgeRemoved: DeltaResult['edgeRemoved'] = []
+
+    // 比较边
+    const oldEdges = this.snapshotToEdgeSet(old)
+    const currEdges = this.snapshotToEdgeSet(curr)
+
+    for (const [key, edge] of currEdges) {
+      if (!oldEdges.has(key)) {
+        edgeAdded.push({ from: edge.from, to: edge.to, type: edge.type })
+      }
+    }
+
+    for (const [key, edge] of oldEdges) {
+      if (!currEdges.has(key)) {
+        edgeRemoved.push({ from: edge.from, to: edge.to, type: edge.type })
+      }
+    }
+
+    return {
+      added,
+      removed,
+      edgeAdded,
+      edgeRemoved,
+      summary: {
+        nodesDelta: added.length - removed.length,
+        edgesDelta: edgeAdded.length - edgeRemoved.length,
+      },
+    }
+  }
+
+  // ── Phase 3b: 中复杂度核心场景 ──
+
+  /**
+   * 角色分类 — 按优先级排序，先匹配者胜
+   *
+   * 1. dead:   从所有 entry 点反向 BFS 不可达
+   * 2. entry:  fanIn = 0 且 fanOut > 0
+   * 3. leaf:   fanOut = 0 且 fanIn > 0
+   * 4. adaptor: 跨模块边占比 > 50%
+   * 5. core:   PageRank 排名前 20% 且 fanIn > median
+   * 6. utility: fanIn > P75 且 fanOut < P25
+   */
+  classifyRoles(opts?: RoleOpts): Map<string, RoleType> {
+    // Cache check: return cached result if options match (avoids redundant PageRank ~2.8s)
+    const cacheKey = JSON.stringify(opts ?? {})
+    if (this._rolesCache && this._rolesCacheKey === cacheKey) {
+      return new Map(this._rolesCache)
+    }
+
+    const corePercentile = opts?.corePercentile ?? 0.8
+    const utilityFanInPercentile = opts?.utilityFanInPercentile ?? 0.75
+    const adaptorCrossModuleRatio = opts?.adaptorCrossModuleRatio ?? 0.5
+    const timeoutMs = opts?.timeoutMs ?? 15000
+    const deadline = Date.now() + timeoutMs
+    const skipPageRank = opts?.skipPageRank ?? false
+
+    const nodes = this.getAllNodeIds()
+    const roles = new Map<string, RoleType>()
+
+    // 计算 fanIn/fanOut
+    const fanIn = new Map<string, number>()
+    const fanOut = new Map<string, number>()
+    const crossModuleRatio = new Map<string, number>()
+
+    for (const node of nodes) {
+      const inEdges = this.store.getInEdges(node)
+      const outEdges = this.store.getOutEdges(node)
+      fanIn.set(node, [...inEdges.keys()].length)
+      fanOut.set(node, [...outEdges.keys()].length)
+
+      // 跨模块边比例
+      let cross = 0
+      let total = 0
+      const nodeFile = this.store.getNode(node)?.file ?? ''
+      const nodeModule = nodeFile.split('/').slice(0, -1).join('/')
+      for (const [target] of outEdges) {
+        total++
+        const targetFile = this.store.getNode(target)?.file ?? ''
+        const targetModule = targetFile.split('/').slice(0, -1).join('/')
+        if (nodeModule !== targetModule) cross++
+      }
+      crossModuleRatio.set(node, total > 0 ? cross / total : 0)
+    }
+
+    // Step 1: 找 entry 点
+    const entries = nodes.filter(n => fanIn.get(n) === 0 && fanOut.get(n)! > 0)
+
+    // Step 2: 找 dead 节点（从 entry 不可达）
+    const reachableFromEntries = new Set<string>()
+    for (const entry of entries) {
+      if (Date.now() > deadline) break
+      const result = this.bfs(entry)
+      for (const n of result.nodes) reachableFromEntries.add(n)
+    }
+
+    // 计算 PageRank 用于 core 分类
+    let prMap = new Map<string, number>()
+    let prThreshold = 0
+    if (!skipPageRank) {
+      const remainingMs = Math.max(1000, deadline - Date.now())
+      const pr = this.pageRank(0.85, 100, remainingMs)
+      prMap = new Map(pr.scores.map(s => [s.node, s.score]))
+      const prSorted = [...prMap.values()].sort((a, b) => a - b)
+      prThreshold = prSorted[Math.floor(prSorted.length * corePercentile)] ?? 0
+    }
+
+    // 计算 fanIn 百分位
+    const fanInSorted = [...fanIn.values()].sort((a, b) => a - b)
+    const fanInP75 = fanInSorted[Math.floor(fanInSorted.length * utilityFanInPercentile)] ?? 0
+    const fanOutSorted = [...fanOut.values()].sort((a, b) => a - b)
+    const fanOutP25 = fanOutSorted[Math.floor(fanOutSorted.length * 0.25)] ?? 0
+    const fanInMedian = fanInSorted[Math.floor(fanInSorted.length * 0.5)] ?? 0
+
+    // Directory pattern hints (before priority classification)
+    const dirHints = new Map<string, RoleType>()
+    for (const node of nodes) {
+      const meta = this.store.getNode(node)
+      const filePath = meta?.file ?? ''
+      for (const { pattern, hint } of DIRECTORY_ROLE_PATTERNS) {
+        if (pattern.test(filePath)) {
+          dirHints.set(node, hint)
+          break
+        }
+      }
+    }
+
+    // 按优先级分类
+    for (const node of nodes) {
+      const fi = fanIn.get(node) ?? 0
+      const fo = fanOut.get(node) ?? 0
+      const cmr = crossModuleRatio.get(node) ?? 0
+      const prScore = prMap.get(node) ?? 0
+      const meta = this.store.getNode(node)
+      const isExported = meta?.is_exported === true
+      const isPrivate = meta?.visibility === 'private'
+
+      // 1. dead
+      if (!reachableFromEntries.has(node) && entries.length > 0) {
+        roles.set(node, 'dead')
+        continue
+      }
+
+      // 2. entry — F-66: exported symbols with fanIn=0 get boosted to entry
+      if (fi === 0 && fo > 0) {
+        roles.set(node, 'entry')
+        continue
+      }
+      if (isExported && fi === 0) {
+        roles.set(node, 'entry')
+        continue
+      }
+
+      // 3. leaf
+      if (fo === 0 && fi > 0) {
+        roles.set(node, 'leaf')
+        continue
+      }
+
+      // 4. adaptor — F-66: exported symbols with high fan-in → API boundary adaptor
+      if (isExported && fi > fanInMedian) {
+        roles.set(node, 'adaptor')
+        continue
+      }
+      if (cmr > adaptorCrossModuleRatio) {
+        roles.set(node, 'adaptor')
+        continue
+      }
+
+      // 4.5. Directory pattern hint (fallback between adaptor and core)
+      const dirHint = dirHints.get(node)
+      if (dirHint) {
+        roles.set(node, dirHint)
+        continue
+      }
+
+      // 5. core — F-66: private visibility demotes from core
+      if (!skipPageRank && prScore >= prThreshold && fi > fanInMedian) {
+        if (isPrivate) {
+          // Demote private nodes from core to utility
+          roles.set(node, 'utility')
+          continue
+        }
+        roles.set(node, 'core')
+        continue
+      }
+
+      // 6. utility
+      if (fi > fanInP75 && fo < fanOutP25) {
+        roles.set(node, 'utility')
+        continue
+      }
+
+      // 默认 utility
+      roles.set(node, 'utility')
+    }
+
+    // Cache result for subsequent calls with same options
+    this._rolesCache = new Map(roles)
+    this._rolesCacheKey = JSON.stringify(opts ?? {})
+
+    return roles
+  }
+
+  /**
+   * 功能链路追踪 — 从 entry 点 BFS 追踪调用链，检测是否端到端连通
+   *
+   * 识别 entry → ... → data layer 的完整路径，标记断裂点。
+   * 数据层检测基于文件路径模式和节点 kind。
+   */
+  traceFeatureChains(opts?: { maxDepth?: number; maxChains?: number; roles?: Map<string, RoleType>; timeoutMs?: number }): ChainTraceResult {
+    const maxDepth = opts?.maxDepth ?? 10
+    const maxChains = opts?.maxChains ?? 50
+    const timeoutMs = opts?.timeoutMs ?? 30000
+    const startTime = Date.now()
+    let timedOut = false
+
+    const roles = opts?.roles ?? this.classifyRoles()
+    const nodes = this.getAllNodeIds()
+    const brokenLinks: Array<{ from: string; to: string; fromRole: string }> = []
+
+    // Data layer detection patterns
+    const DATA_LAYER_PATTERNS: RegExp[] = [
+      /\/(database|db|dao|repository|repos?)\//i,
+      /\/(prisma|drizzle|typeorm|sequelize|knex|mongoose)\//i,
+      /\/(redis|memcache|cache)\//i,
+      /\/(storage|filesystem|s3|blob)\//i,
+      /\/(queue|kafka|rabbit|nats|pubsub)\//i,
+      /\/(grpc|fetch|axios)\//i,  // external HTTP clients (not /api/ — that's usually routes)
+      /\/(socket|websocket|ws)\//i,
+    ]
+    const DATA_LAYER_KINDS = new Set(['database', 'repository', 'dao', 'model', 'schema', 'entity'])
+
+    function isDataLayer(nodeId: string, store: GraphStore): boolean {
+      const meta = store.getNode(nodeId)
+      if (!meta) return false
+      // Check kind — model/entity/schema are also data layer even if they're leaf nodes
+      if (DATA_LAYER_KINDS.has(meta.kind)) return true
+      // Check file path
+      const filePath = meta.file ?? ''
+      return DATA_LAYER_PATTERNS.some(p => p.test(filePath))
+    }
+
+    // Collect entry points
+    const entries = nodes.filter(n => roles.get(n) === 'entry')
+
+    const chains: FeatureChain[] = []
+    let completeChains = 0
+    let brokenChains = 0
+    let unreachableEntries = 0
+
+    for (const entry of entries) {
+      if (chains.length >= maxChains) break
+      if (Date.now() - startTime > timeoutMs) { timedOut = true; break }
+
+      const entryMeta = this.store.getNode(entry)
+      const entryFile = entryMeta?.file ?? ''
+
+      // BFS from this entry — track deepest node inline to avoid O(n^2) post-scan
+      const visited = new Set<string>()
+      const parent = new Map<string, string>() // child → parent
+      const queue: Array<{ node: string; depth: number }> = [{ node: entry, depth: 0 }]
+      let head = 0
+      visited.add(entry)
+
+      let dataLayerNode: string | undefined
+      let dataLayerDepth = Infinity
+      let deepestNode = entry
+      let maxBfsDepth = 0
+
+      while (head < queue.length) {
+        const { node, depth } = queue[head++]!
+
+        // Track deepest node during BFS traversal
+        if (depth > maxBfsDepth) {
+          maxBfsDepth = depth
+          deepestNode = node
+        }
+
+        // Check if this node is a data layer node
+        if (depth > 0 && isDataLayer(node, this.store)) {
+          if (depth < dataLayerDepth) {
+            dataLayerNode = node
+            dataLayerDepth = depth
+          }
+        }
+
+        if (depth >= maxDepth) continue
+
+        const outEdges = this.store.getOutEdges(node)
+        for (const [target, edges] of outEdges) {
+          // Only follow semantic edges, skip structural 'contains' edges
+          if (edges.every(e => e.type === 'contains')) continue
+          if (!visited.has(target)) {
+            visited.add(target)
+            parent.set(target, node)
+            queue.push({ node: target, depth: depth + 1 })
+          }
+        }
+      }
+
+      // No reachable nodes from this entry
+      if (visited.size <= 1) {
+        unreachableEntries++
+        continue
+      }
+
+      // Reconstruct path to data layer (or deepest reachable)
+      const terminalNode = dataLayerNode ?? deepestNode
+      const path: string[] = []
+      let current: string | undefined = terminalNode
+      while (current !== undefined) {
+        path.unshift(current)
+        current = parent.get(current)
+      }
+
+      const pathFiles = path.map(id => this.store.getNode(id)?.file ?? '')
+      const pathRoles = path.map(id => roles.get(id) ?? 'unknown')
+
+      // Check for semantic gaps: role transitions that indicate missing layers
+      // e.g., entry → leaf (skipping service/core), entry → data (skipping business logic)
+      let brokenAt: number | undefined
+      // Valid role transitions — missing entries mean "terminal" (no further transitions expected):
+      //   'utility': not a key — utility nodes are terminal sinks (no downstream expectations)
+      //   'leaf':    not a key — leaf nodes are terminal sinks (fanOut=0)
+      //   'dead':    not a key — dead nodes are unreachable, never appear in valid chains
+      const EXPECTED_TRANSITIONS: Record<string, Set<string>> = {
+        'entry': new Set(['adaptor', 'core', 'utility', 'leaf']),  // direct route to model layer is valid
+        'adaptor': new Set(['core', 'utility', 'leaf']),
+        'core': new Set(['core', 'utility', 'leaf']),
+      }
+      for (let i = 0; i < pathRoles.length - 1; i++) {
+        const currentRole = pathRoles[i]
+        const nextRole = pathRoles[i + 1]
+        const expected = EXPECTED_TRANSITIONS[currentRole]
+        if (expected && !expected.has(nextRole) && nextRole !== 'entry') {
+          brokenAt = i
+          brokenLinks.push({ from: path[i], to: path[i + 1], fromRole: currentRole })
+          break
+        }
+      }
+
+      if (dataLayerNode) {
+        completeChains++
+      } else {
+        brokenChains++
+      }
+
+      chains.push({
+        entry,
+        entryFile,
+        path,
+        pathFiles,
+        roles: pathRoles,
+        reachesDataLayer: !!dataLayerNode,
+        dataLayerNode,
+        brokenAt,
+        depth: path.length - 1,
+      })
+    }
+
+    return {
+      chains,
+      stats: {
+        totalEntries: entries.length,
+        completeChains,
+        brokenChains,
+        unreachableEntries,
+      },
+      brokenLinks,
+      timedOut,
+    }
+  }
+
+  /**
+   * 数据依赖切片 — 沿 data 边反向追踪
+   * DDG 来源: codegraph.db 的 references 边（映射为 data）
+   * 降级策略: 若无 data 边，退化为 backwardReachability
+   */
+  backwardDataSlice(nodeId: string): SliceResult {
+    const symbols: string[] = []
+    const dataFlows: Array<{ from: string; to: string; via: string }> = []
+    const visited = new Set<string>()
+    const queue = [nodeId]
+    let head = 0
+    visited.add(nodeId)
+
+    // F-67: Follow data, type_of, returns, and P2/P3 data-flow edges
+    const DATA_SLICE_EDGE_TYPES = new Set([
+      'data', 'type_of', 'returns',
+      'reads', 'writes', 'transforms',
+      'serializes', 'deserializes', 'encrypts', 'decrypts', 'compresses',
+    ])
+
+    let hasDataEdges = false
+
+    while (head < queue.length) {
+      const current = queue[head++]!
+      symbols.push(current)
+
+      const inEdges = this.store.getInEdges(current)
+      for (const [source, edges] of inEdges) {
+        for (const edge of edges) {
+          if (DATA_SLICE_EDGE_TYPES.has(edge.type)) {
+            hasDataEdges = true
+            dataFlows.push({ from: source, to: current, via: edge.type })
+            if (!visited.has(source)) {
+              visited.add(source)
+              queue.push(source)
+            }
+            break // 找到一个 data/type_of/returns 边就够了
+          }
+        }
+      }
+    }
+
+    // 降级：若无 data 边，退化为 backwardReachability
+    if (!hasDataEdges) {
+      const fallback = this.backwardReachability(nodeId)
+      return {
+        symbols: fallback.reachable,
+        dataFlows: fallback.reachable.slice(1).map(n => ({ from: n, to: nodeId, via: 'call-graph-approx' })),
+      }
+    }
+
+    return { symbols, dataFlows }
+  }
+
+  /**
+   * 耦合度量 — 扇入扇出 + Henderson-Sellers LCOM
+   */
+  couplingMetrics(opts?: { timeoutMs?: number }): MetricsResult {
+    const timeoutMs = opts?.timeoutMs ?? 15000
+    const deadline = Date.now() + timeoutMs
+    const nodes = this.getAllNodeIds()
+    const highCoupling: MetricsResult['highCoupling'] = []
+
+    // 扇入扇出 + 不稳定度
+    for (const node of nodes) {
+      const fi = [...this.store.getInEdges(node).keys()].length
+      const fo = [...this.store.getOutEdges(node).keys()].length
+      const instability = fi + fo > 0 ? fo / (fi + fo) : 0
+
+      if (fi > 5 || fo > 5) {
+        highCoupling.push({ node, fanIn: fi, fanOut: fo, instability })
+      }
+    }
+
+    highCoupling.sort((a, b) => (b.fanIn + b.fanOut) - (a.fanIn + a.fanOut))
+
+    // LCOM (Henderson-Sellers) — 对 class 节点计算
+    const lcom: MetricsResult['lcom'] = []
+    const classNodes = nodes.filter(n => {
+      const meta = this.store.getNode(n)
+      return meta?.kind === 'class' || meta?.kind === 'interface'
+    })
+
+    for (const cls of classNodes) {
+      if (Date.now() > deadline) break
+
+      const meta = this.store.getNode(cls)!
+      const outEdges = this.store.getOutEdges(cls)
+      const methods: string[] = []
+      const fields: string[] = []
+
+      for (const [target, edges] of outEdges) {
+        if (edges.some(e => e.type === 'contains')) {
+          const targetMeta = this.store.getNode(target)
+          if (targetMeta?.kind === 'method') methods.push(target)
+          else if (targetMeta?.kind === 'property') fields.push(target)
+        }
+      }
+
+      if (methods.length === 0 || fields.length === 0) continue
+      // Skip classes with too many methods to avoid O(m²) blowup
+      if (methods.length > 200) continue
+
+      // 计算方法间共享字段数
+      let sharedPairs = 0
+      let unsharedPairs = 0
+      for (let i = 0; i < methods.length; i++) {
+        for (let j = i + 1; j < methods.length; j++) {
+          const m1Fields = this.getMethodFields(methods[i])
+          const m2Fields = this.getMethodFields(methods[j])
+          const intersection = m1Fields.filter(f => m2Fields.includes(f))
+          if (intersection.length > 0) sharedPairs++
+          else unsharedPairs++
+        }
+      }
+
+      // LCOM* = max(0, (unshared - shared)) / (pairs)
+      const totalPairs = sharedPairs + unsharedPairs
+      const lcomValue = totalPairs > 0 ? Math.max(0, unsharedPairs - sharedPairs) / totalPairs : 0
+
+      lcom.push({
+        class: meta.name,
+        lcom: Math.round(lcomValue * 100) / 100,
+        methods: methods.length,
+        fields: fields.length,
+      })
+    }
+
+    return { highCoupling, lcom }
+  }
+
+  // ── Phase 3c: 高复杂度 + 增值功能 ──
+
+  /**
+   * Katz 中心性 — 幂迭代
+   * α < 1/λ_max 保证收敛
+   */
+  katzCentrality(opts?: KatzOpts): CentralityResult {
+    const epsilon = opts?.epsilon ?? 1e-6
+    const maxIter = opts?.maxIter ?? 100
+
+    const nodes = this.getAllNodeIds()
+    const N = nodes.length
+    if (N === 0) return { scores: [] }
+
+    // Auto-compute alpha from max in-degree if not specified
+    let maxInDeg = 0
+    if (opts?.alpha === undefined) {
+      for (const node of nodes) {
+        let deg = 0
+        for (const [, edges] of this.store.getInEdges(node)) {
+          for (const _ of edges) deg++
+        }
+        if (deg > maxInDeg) maxInDeg = deg
+      }
+    }
+    // Auto-alpha: 0.9/sqrt(maxInDeg) is a conservative heuristic for α < 1/ρ(A).
+    // For directed graphs ρ(A) ≤ sqrt(maxInDeg * maxOutDeg), so this is safe when
+    // maxInDeg ≈ maxOutDeg. For highly asymmetric graphs (e.g., many sinks with no
+    // out-edges), the true spectral radius may be smaller, making this slightly
+    // over-conservative. Pass an explicit `alpha` to override if convergence is too slow.
+    // Convergence requires alpha < 1/rho(A); use 0.9/maxInDeg as conservative estimate
+    const alpha = opts?.alpha ?? (maxInDeg > 0 ? 0.9 / maxInDeg : 0.1)
+
+    const x = new Map<string, number>()
+    for (const node of nodes) x.set(node, 1)
+
+    for (let iter = 0; iter < maxIter; iter++) {
+      const newX = new Map<string, number>()
+      let l1Norm = 0
+
+      for (const v of nodes) {
+        let sum = 0
+        const inEdges = this.store.getInEdges(v)
+        for (const [u] of inEdges) {
+          sum += x.get(u) ?? 0
+        }
+        const val = 1 + alpha * sum
+        l1Norm += Math.abs(val - (x.get(v) ?? 0))
+        newX.set(v, val)
+      }
+
+      for (const node of nodes) x.set(node, newX.get(node)!)
+
+      if (l1Norm < epsilon) break
+    }
+
+    // 归一化
+    const maxVal = Math.max(...x.values())
+    const scores = nodes
+      .map(node => ({ node, score: maxVal > 0 ? x.get(node)! / maxVal : 0 }))
+      .sort((a, b) => b.score - a.score)
+
+    return { scores }
+  }
+
+  /**
+   * Betweenness Centrality — 采样近似 (Brandes)
+   * sampleSize 控制采样节点数
+   */
+  betweennessCentrality(sampleSize = 200): CentralityResult {
+    const nodes = this.getAllNodeIds()
+    const N = nodes.length
+    if (N === 0) return { scores: [] }
+
+    const bc = new Map<string, number>()
+    for (const node of nodes) bc.set(node, 0)
+
+    // 采样
+    const sampled = this.sampleNodes(nodes, Math.min(sampleSize, N))
+
+    for (const s of sampled) {
+      const stack: string[] = []
+      const predecessors = new Map<string, string[]>()
+      const sigma = new Map<string, number>()
+      const delta = new Map<string, number>()
+      const dist = new Map<string, number>()
+
+      for (const node of nodes) {
+        predecessors.set(node, [])
+        sigma.set(node, 0)
+        delta.set(node, 0)
+        dist.set(node, -1)
+      }
+
+      sigma.set(s, 1)
+      dist.set(s, 0)
+
+      const queue: string[] = [s]
+      let head = 0
+
+      while (head < queue.length) {
+        const v = queue[head++]!
+        stack.push(v)
+
+        const outEdges = this.store.getOutEdges(v)
+        for (const [w] of outEdges) {
+          if (dist.get(w)! < 0) {
+            queue.push(w)
+            dist.set(w, dist.get(v)! + 1)
+          }
+
+          if (dist.get(w)! === dist.get(v)! + 1) {
+            sigma.set(w, sigma.get(w)! + sigma.get(v)!)
+            predecessors.get(w)!.push(v)
+          }
+        }
+      }
+
+      while (stack.length > 0) {
+        const w = stack.pop()!
+        for (const v of predecessors.get(w) ?? []) {
+          delta.set(v, delta.get(v)! + (sigma.get(v)! / sigma.get(w)!) * (1 + delta.get(w)!))
+        }
+        if (w !== s) {
+          bc.set(w, bc.get(w)! + delta.get(w)!)
+        }
+      }
+    }
+
+    // 归一化
+    const maxBc = Math.max(...bc.values())
+    const scores = nodes
+      .map(node => ({ node, score: maxBc > 0 ? bc.get(node)! / maxBc : 0 }))
+      .sort((a, b) => b.score - a.score)
+
+    return { scores }
+  }
+
+  /**
+   * Louvain 社区检测 — 多级聚合 (Phase 1 + Phase 2)
+   *
+   * 外层循环:
+   *   1. Phase 1: 内层迭代，将节点移至最佳社区
+   *   2. 计算 modularity 增益，若 < epsilon 则停止
+   *   3. Phase 2: 将社区聚合为超节点，构建粗化图
+   *   4. 在粗化图上重复，直到收敛或达到 maxLevels
+   */
+  louvainCommunity(opts?: LouvainOpts): CommunityResult {
+    const resolution = opts?.resolution ?? 1.0
+    const epsilon = opts?.epsilon ?? 1e-6
+    const maxPasses = opts?.maxPasses ?? 100
+    const maxLevels = opts?.maxLevels ?? 10
+    const timeoutMs = opts?.timeoutMs ?? 30000
+    const deadline = Date.now() + timeoutMs
+
+    const nodes = this.getAllNodeIds()
+    const N = nodes.length
+    if (N === 0) return { communities: [], modularity: 0, resolution }
+
+    // Build initial undirected graph
+    const { totalWeight, degree, adjMap } = this.buildUndirectedGraph()
+
+    // Track mapping from current nodes back to original nodes
+    let nodeMapping = new Map<string, string[]>()
+    for (const node of nodes) {
+      nodeMapping.set(node, [node])
+    }
+
+    // Initialize: each node its own community
+    let currentNodes = [...nodes]
+    let currentAdjMap = adjMap
+    let currentDegree = degree
+    let currentCommunity = new Map<string, number>()
+    currentNodes.forEach((node, i) => currentCommunity.set(node, i))
+
+    let level = 0
+    while (level < maxLevels) {
+      if (Date.now() > deadline) break
       // Compute modularity before Phase 1
       const prevQ = this.computeModularity(currentNodes, currentCommunity, currentAdjMap, totalWeight, resolution)
 
@@ -624,15 +1407,14 @@ export class GraphEngine {
    * @param projectRoot — 项目根目录（用于 git 命令 cwd）
    * @param opts — 时间窗口、限制等选项
    */
-  temporalCoupling(projectRoot: string, opts?: TemporalOpts): CouplingResult {
+  async temporalCoupling(projectRoot: string, opts?: TemporalOpts): Promise<CouplingResult> {
     const sinceValue = opts?.since ?? '30 days'
     const limit = opts?.limit ?? 30
     const maxCommits = opts?.maxCommits ?? 1000
 
-    // execFileSync avoids shell injection
-    const gitLog = execFileSync(
+    const { stdout: gitLog } = await execFileAsync(
       'git', ['log', '--name-only', `--max-count=${maxCommits}`, '--pretty=format:COMMIT:%H', `--since=${sinceValue}`],
-      { cwd: projectRoot, encoding: 'utf-8', timeout: 30000 }
+      { cwd: projectRoot, timeout: 30000 }
     )
 
     // Parse commits and their changed files

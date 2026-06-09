@@ -189,11 +189,50 @@ export class GraphStore {
 
   /**
    * 强制重新加载（IncrementalSync 检测到 dirty 时调用）
+   * Copy-on-write: 加载到临时结构，成功后原子交换，避免并发算法看到空数据
    */
   async reload(): Promise<GraphData> {
-    this.clear()
-    this.loaded = false
-    return this.load()
+    const tmpAdj = new Map<string, Map<string, EdgeMeta[]>>()
+    const tmpRev = new Map<string, Map<string, EdgeMeta[]>>()
+    const tmpMeta = new Map<string, NodeMetadata>()
+
+    const codegraphDbPath = resolve(this.projectRoot, '.codegraph', 'codegraph.db')
+    const grokJsonPath = resolve(this.projectRoot, '.understand-anything', 'knowledge-graph.json')
+
+    const hasCodegraph = existsSync(codegraphDbPath)
+    const hasGrok = existsSync(grokJsonPath)
+
+    if (!hasCodegraph && !hasGrok) {
+      throw new GraphStoreError(
+        'NO_DATA_SOURCE',
+        '两个数据源都不存在。请先执行 codegraph_init 或 grok_generate。',
+        'codegraph_init / grok_generate',
+      )
+    }
+
+    if (hasCodegraph) {
+      await this.loadCodegraphTo(codegraphDbPath, tmpAdj, tmpRev, tmpMeta)
+    }
+
+    if (hasGrok) {
+      this.loadGrokTo(grokJsonPath, tmpAdj, tmpRev, tmpMeta)
+    }
+
+    // 原子交换：先替换引用，再清除旧数据
+    const oldAdj = this.adjacency
+    const oldRev = this.reverse
+    const oldMeta = this.nodeMeta
+
+    oldAdj.clear()
+    oldRev.clear()
+    oldMeta.clear()
+    for (const [k, v] of tmpAdj) oldAdj.set(k, v)
+    for (const [k, v] of tmpRev) oldRev.set(k, v)
+    for (const [k, v] of tmpMeta) oldMeta.set(k, v)
+
+    this.loaded = true
+    this._cachedSize = null
+    return { adjacency: this.adjacency, reverse: this.reverse, nodeMeta: this.nodeMeta }
   }
 
   /**
@@ -342,6 +381,102 @@ export class GraphStore {
   // ----------------------------------------------------------
   // Adjacency helpers
   // ----------------------------------------------------------
+
+  private addEdgeTo(
+    from: string, to: string, type: EdgeMeta['type'], weight: number,
+    adj: Map<string, Map<string, EdgeMeta[]>>,
+    rev: Map<string, Map<string, EdgeMeta[]>>,
+  ): void {
+    let fromMap = adj.get(from)
+    if (!fromMap) { fromMap = new Map(); adj.set(from, fromMap) }
+    let edges = fromMap.get(to)
+    if (!edges) { edges = []; fromMap.set(to, edges) }
+    const existing = edges.find(e => e.type === type)
+    if (existing) { existing.weight = Math.max(existing.weight, weight) }
+    else { edges.push({ type, weight }) }
+
+    let toReverse = rev.get(to)
+    if (!toReverse) { toReverse = new Map(); rev.set(to, toReverse) }
+    let revEdges = toReverse.get(from)
+    if (!revEdges) { revEdges = []; toReverse.set(from, revEdges) }
+    const existingRev = revEdges.find(e => e.type === type)
+    if (existingRev) { existingRev.weight = Math.max(existingRev.weight, weight) }
+    else { revEdges.push({ type, weight }) }
+  }
+
+  private async loadCodegraphTo(
+    dbPath: string,
+    adj: Map<string, Map<string, EdgeMeta[]>>,
+    rev: Map<string, Map<string, EdgeMeta[]>>,
+    meta: Map<string, NodeMetadata>,
+  ): Promise<void> {
+    let db: Database
+    try {
+      db = new Database(dbPath, { readonly: true })
+    } catch (e) {
+      for (let i = 0; i < 3; i++) {
+        await sleep(100 * Math.pow(2, i))
+        try { db = new Database(dbPath, { readonly: true }); break }
+        catch {
+          if (i === 2) throw new GraphStoreError('SQLITE_BUSY', 'codegraph.db 被锁定（可能正在索引），请稍后重试。', 'codegraph_init')
+        }
+      }
+    }
+    try {
+      const nodes = db!.query('SELECT id, kind, name, qualified_name, file_path, start_line, signature FROM nodes').all() as Array<{
+        id: string; kind: string; name: string; qualified_name: string; file_path: string; start_line: number; signature: string | null
+      }>
+      for (const node of nodes) {
+        meta.set(node.id, {
+          id: node.id, name: node.name, kind: node.kind,
+          file: node.file_path, line: node.start_line,
+          signature: node.signature ?? undefined, qualified_name: node.qualified_name,
+        })
+      }
+      const edges = db!.query('SELECT source, target, kind FROM edges').all() as Array<{
+        source: string; target: string; kind: string
+      }>
+      for (const edge of edges) {
+        this.addEdgeTo(edge.source, edge.target, mapCodegraphEdgeKind(edge.kind), 1, adj, rev)
+      }
+    } finally { db!.close() }
+  }
+
+  private loadGrokTo(
+    jsonPath: string,
+    adj: Map<string, Map<string, EdgeMeta[]>>,
+    rev: Map<string, Map<string, EdgeMeta[]>>,
+    meta: Map<string, NodeMetadata>,
+  ): void {
+    let raw: string
+    try { raw = readFileSync(jsonPath, 'utf-8') }
+    catch (e) { logForDebugging(`[GraphStore] Failed to read ${jsonPath}: ${e}`); return }
+
+    let data: { nodes?: GrokNode[]; edges?: GrokEdge[] }
+    try { data = JSON.parse(raw) }
+    catch (e) {
+      throw new GraphStoreError('JSON_PARSE_ERROR', `知识图谱 JSON 解析失败: ${e instanceof Error ? e.message : String(e)}`, 'grok_generate')
+    }
+    if (!data.nodes || !data.edges) { logForDebugging('[GraphStore] Grok JSON missing nodes or edges'); return }
+
+    for (const node of data.nodes) {
+      const key = `${node.file}:${node.name}`
+      const existing = meta.get(key)
+      if (existing) {
+        existing.layer = node.layer || existing.layer
+        existing.domain = node.domain || existing.domain
+      } else {
+        meta.set(key, {
+          id: key, name: node.name, kind: node.kind,
+          file: node.file, line: node.line,
+          signature: node.signature, layer: node.layer, domain: node.domain,
+        })
+      }
+    }
+    for (const edge of data.edges) {
+      this.addEdgeTo(edge.from, edge.to, mapGrokEdgeType(edge.type), 1, adj, rev)
+    }
+  }
 
   private addEdge(from: string, to: string, type: EdgeMeta['type'], weight: number): void {
     this._cachedSize = null

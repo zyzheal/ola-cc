@@ -324,12 +324,26 @@ interface ShimmerProgress {
 
 | 效果 | codegraph 实现 | ola-cc 移植方案 |
 |------|---------------|----------------|
-| Amber shimmer 渐变 | `lerp(160,251,t)` + `sin` 波 | ✅ 已复用到 shimmer.ts + CompactProgressBar |
-| 进度条光点扫过 | `renderBar` 25-char + 3-char 光晕 | ✅ 已实现 renderShimmerBar |
-| 阶段完成标记 | `◆ phaseName — done` | 可在 compact 完成时显示 |
-| Box Drawing 树 | `├──`/`└──`/`│` | Agent 子任务树（已部分实现） |
+| Amber shimmer 渐变 | `lerp(160,251,t)` + `sin` 波 | ✅ 已复用到 shimmer.ts + ShimmerProgressBar 组件 |
+| 进度条光点扫过 | `renderBar` 25-char + 3-char 光晕 | ✅ 已实现 renderShimmerBar + useAnimationFrame(100ms) |
+| CodeGraph/Grok 统一 shimmer | 静态 ProgressBar | ✅ ShimmerProgressBar 替换两工具的 ProgressBar |
+| 阶段完成标记 | `◆ phaseName — done` | ✅ compact 完成时 `◆ 压缩完成 — done` |
+| Box Drawing 树 | `├──`/`└──`/`│` | ✅ TeammateSpinnerLine `├─`/`└─`/`╘═`/`╞═` |
 
 **统一 shimmer 工具库**（✅ 已实现 `src/utils/shimmer.ts`）：
+
+**ShimmerProgressBar 组件**（✅ 已实现 `src/components/design-system/ShimmerProgressBar.tsx`）：
+
+```typescript
+// CodeGraph 和 Grok 工具统一使用 ShimmerProgressBar 替代静态 ProgressBar
+// ShimmerProgressBar 封装了 useAnimationFrame(100ms) + renderShimmerBar
+// renderToolUseProgressMessage 返回的 React 元素树中，ShimmerProgressBar 作为子组件
+// 其内部 hook 在 React 渲染管线中正常工作
+
+// CodeGraph: React.createElement(ShimmerProgressBar, { progress, width: 16 })
+// Grok:      React.createElement(ShimmerProgressBar, { progress, width: 16 })
+// Compact:   renderShimmerBar(progressFrame, progress, Math.min(columns - 4, 30))
+```
 
 ```typescript
 // src/utils/shimmer.ts

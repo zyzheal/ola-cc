@@ -450,7 +450,7 @@ export async function handleTemporal(ctx: HandlerContext, input: { since?: strin
   ctx.sendProgress('temporal', 'Analyzing temporal coupling…')
   await ctx.yieldToUI()
   const { engine } = await getEngine(ctx.projectRoot)
-  const temporal = engine.temporalCoupling(ctx.projectRoot, {
+  const temporal = await engine.temporalCoupling(ctx.projectRoot, {
     since: input.since || '30 days',
   })
   return {

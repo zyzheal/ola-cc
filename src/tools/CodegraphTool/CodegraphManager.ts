@@ -419,7 +419,7 @@ async function extractTarGz(tarPath: string, dest: string): Promise<void> {
   logInfo('Extracting archive...');
   // --no-absolute-filenames: 防止绝对路径穿越（如 /etc/passwd）
   // --overwrite: 允许覆盖已存在的文件
-  await execFileAsync('tar', ['-xzf', tarPath, '-C', dest, '--no-absolute-filenames', '--overwrite']);
+  await execFileAsync('tar', ['-xzf', tarPath, '-C', dest, '--no-absolute-filenames', '--overwrite'], { timeout: 120000 });
   // Post-extraction validation: ensure no files escaped the destination directory
   validateExtractedPaths(dest);
   logInfo('Extraction complete');
