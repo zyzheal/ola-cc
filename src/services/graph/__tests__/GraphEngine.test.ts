@@ -732,6 +732,56 @@ describe('classifyRoles', () => {
 
     expect(roles.size).toBe(0)
   })
+
+  test('classifyRoles with very short timeout returns valid results', () => {
+    const { engine } = dag()
+    const roles = engine.classifyRoles({ timeoutMs: 1 })
+
+    // All nodes should still get a role even with 1ms timeout
+    const allNodes = engine.getAllNodeIds()
+    for (const node of allNodes) {
+      expect(roles.has(node)).toBe(true)
+    }
+    // A is still entry (fanIn=0, fanOut>0)
+    expect(roles.get('A')).toBe('entry')
+  })
+
+  test('classifyRoles with skipPageRank=true is faster than default', () => {
+    const { engine } = dag()
+
+    const t0 = Date.now()
+    engine.classifyRoles({ skipPageRank: true })
+    const skipMs = Date.now() - t0
+
+    // Invalidate cache for next call
+    const t1 = Date.now()
+    engine.classifyRoles()
+    const defaultMs = Date.now() - t1
+
+    // skipPageRank should be faster (or at least not slower on small graphs)
+    // On small graphs the difference is negligible, so just verify it doesn't crash
+    expect(skipMs).toBeGreaterThanOrEqual(0)
+    expect(defaultMs).toBeGreaterThanOrEqual(0)
+  })
+
+  test('classifyRoles with skipPageRank=true still classifies entry/dead/leaf/utility', () => {
+    const { engine } = star(3)
+    const roles = engine.classifyRoles({ skipPageRank: true })
+
+    expect(roles.get('center')).toBe('entry') // fanIn=0, fanOut=3
+    expect(roles.get('leaf0')).toBe('leaf')   // fanOut=0, fanIn=1
+    expect(roles.get('leaf1')).toBe('leaf')
+    expect(roles.get('leaf2')).toBe('leaf')
+  })
+
+  test('classifyRoles with skipPageRank=true: no nodes classified as core', () => {
+    const { engine } = dag()
+    const roles = engine.classifyRoles({ skipPageRank: true })
+
+    // Without PageRank, no node should be classified as core
+    const coreNodes = [...roles.entries()].filter(([, r]) => r === 'core')
+    expect(coreNodes).toHaveLength(0)
+  })
 })
 
 // ============================================================

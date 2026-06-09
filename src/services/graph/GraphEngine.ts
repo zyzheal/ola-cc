@@ -81,6 +81,10 @@ export interface RoleOpts {
   corePercentile?: number
   utilityFanInPercentile?: number
   adaptorCrossModuleRatio?: number
+  /** Maximum wall-clock time in ms before returning partial results (default: 15000) */
+  timeoutMs?: number
+  /** Skip expensive PageRank computation; nodes that would be 'core' fall through to other categories */
+  skipPageRank?: boolean
 }
 
 export interface KatzOpts {
@@ -694,6 +698,9 @@ export class GraphEngine {
     const corePercentile = opts?.corePercentile ?? 0.8
     const utilityFanInPercentile = opts?.utilityFanInPercentile ?? 0.75
     const adaptorCrossModuleRatio = opts?.adaptorCrossModuleRatio ?? 0.5
+    const timeoutMs = opts?.timeoutMs ?? 15000
+    const deadline = Date.now() + timeoutMs
+    const skipPageRank = opts?.skipPageRank ?? false
 
     const nodes = this.getAllNodeIds()
     const roles = new Map<string, RoleType>()
@@ -729,15 +736,21 @@ export class GraphEngine {
     // Step 2: 找 dead 节点（从 entry 不可达）
     const reachableFromEntries = new Set<string>()
     for (const entry of entries) {
+      if (Date.now() > deadline) break
       const result = this.bfs(entry)
       for (const n of result.nodes) reachableFromEntries.add(n)
     }
 
     // 计算 PageRank 用于 core 分类
-    const pr = this.pageRank()
-    const prMap = new Map(pr.scores.map(s => [s.node, s.score]))
-    const prSorted = [...prMap.values()].sort((a, b) => a - b)
-    const prThreshold = prSorted[Math.floor(prSorted.length * corePercentile)] ?? 0
+    let prMap = new Map<string, number>()
+    let prThreshold = 0
+    if (!skipPageRank) {
+      const remainingMs = Math.max(1000, deadline - Date.now())
+      const pr = this.pageRank(0.85, 100, remainingMs)
+      prMap = new Map(pr.scores.map(s => [s.node, s.score]))
+      const prSorted = [...prMap.values()].sort((a, b) => a - b)
+      prThreshold = prSorted[Math.floor(prSorted.length * corePercentile)] ?? 0
+    }
 
     // 计算 fanIn 百分位
     const fanInSorted = [...fanIn.values()].sort((a, b) => a - b)
@@ -809,7 +822,7 @@ export class GraphEngine {
       }
 
       // 5. core — F-66: private visibility demotes from core
-      if (prScore >= prThreshold && fi > fanInMedian) {
+      if (!skipPageRank && prScore >= prThreshold && fi > fanInMedian) {
         if (isPrivate) {
           // Demote private nodes from core to utility
           roles.set(node, 'utility')
