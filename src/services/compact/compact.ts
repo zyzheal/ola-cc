@@ -853,7 +853,7 @@ export async function compactConversation(
     context.onCompactProgress?.({
       type: 'compact_progress',
       stage: 'post_processing',
-      progress: 80,
+      progress: 92,
       message: '正在处理附件...',
     })
     return {

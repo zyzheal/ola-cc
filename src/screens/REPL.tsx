@@ -2681,7 +2681,7 @@ export function REPL({
             setSpinnerColor('claudeBlue_FOR_SYSTEM_SPINNER');
             setSpinnerShimmerColor('claudeBlueShimmer_FOR_SYSTEM_SPINNER');
             setSpinnerMessage(event.hookType === 'pre_compact' ? 'Running PreCompact hooks\u2026' : event.hookType === 'post_compact' ? 'Running PostCompact hooks\u2026' : 'Running SessionStart hooks\u2026');
-            setSpinnerProgress(null);
+            // Preserve current progress — don't clear the bar during hooks
             break;
           case 'compact_start':
             setSpinnerMessage('正在压缩对话...');
