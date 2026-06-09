@@ -527,6 +527,20 @@ export class GraphStore {
   }
 
   /**
+   * 获取节点的入邻居 ID 列表
+   */
+  getInNeighborIds(nodeId: string): string[] {
+    return [...this.getInEdges(nodeId).keys()]
+  }
+
+  /**
+   * 获取节点的出邻居 ID 列表
+   */
+  getOutNeighborIds(nodeId: string): string[] {
+    return [...this.getOutEdges(nodeId).keys()]
+  }
+
+  /**
    * 获取节点的加权出度（可排除指定边类型）
    */
   getWeightedOutDegree(nodeId: string, excludeTypes?: string[]): number {

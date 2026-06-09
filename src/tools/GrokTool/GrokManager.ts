@@ -8,13 +8,15 @@ import { promisify } from 'util'
 const execFileAsync = promisify(execFile)
 import { createServer } from 'http'
 import { homedir } from 'os'
-import { extname, join, resolve } from 'path'
+import { basename, extname, join, resolve } from 'path'
 import Anthropic from '@anthropic-ai/sdk'
 import { z } from 'zod/v4'
 import { openBrowser } from '../../utils/browser.js'
 import { getCwd } from '../../utils/cwd.js'
 import { logForDebugging } from '../../utils/debug.js'
 import { getAPIProvider } from '../../utils/model/providers.js'
+import { GrokAnalyzer } from './GrokAnalyzer.js'
+import { GrokError, ERROR_SUGGESTIONS } from './GrokTypes.js'
 
 // ============================================================
 // Types
@@ -91,38 +93,8 @@ export interface GraphData {
 // Error Classes
 // ============================================================
 
-export class GrokError extends Error {
-  constructor(
-    public code: string,
-    public stage: string,
-    message: string,
-    public recoverable: boolean,
-    public suggestion?: string
-  ) {
-    super(message)
-    this.name = 'GrokError'
-  }
-}
-
-// 错误类型与建议
-export const ERROR_SUGGESTIONS: Record<string, string> = {
-  'PARSE_TIMEOUT': '文件过大，建议 --exclude 排除或拆分文件',
-  'LLM_RATE_LIMIT': 'API 限流，建议等待 60s 后重试',
-  'LLM_TIMEOUT': 'LLM 调用超时，建议缩小 --scope 范围或检查 API 状态',
-  'LLM_TOKEN_BUDGET': 'Token 预算耗尽，建议 --scope 缩小范围',
-  'GRAPH_INVALID': '图谱数据损坏，建议 /grok --full 重新生成',
-  'GRAPH_NOT_FOUND': '知识图谱未生成，请先执行 grok_generate',
-  'SOURCE_UPDATE_FAILED': '源码更新失败，检查网络连接后重试',
-  'NO_FILES': '未找到源文件，检查 --path 和 --scope 参数',
-  'INVALID_SCOPE': '范围路径无效或超出项目根目录',
-  'NO_AVAILABLE_PORT': '无可用端口，检查 OLA_CC_GROK_PORT_RANGE 配置',
-  // Pipeline 步骤失败的通用建议
-  'SCANNER_FAILED': '文件扫描失败，检查 --path 参数和文件权限',
-  'ANALYZER_FAILED': '文件分析失败，建议缩小 --scope 范围或检查 API 连接',
-  'ARCHITECTURE_FAILED': '架构分析失败，建议重试或缩小范围',
-  'TOUR_FAILED': '学习路径生成失败，建议重试',
-  'REVIEW_FAILED': '图谱审查失败，建议重试',
-}
+// Re-export from canonical source
+export { GrokError, ERROR_SUGGESTIONS }
 
 // ============================================================
 // Constants
@@ -203,6 +175,8 @@ const GrokConfigSchema = z.object({
   portRange: z.string().regex(/^\d{5}-\d{5}$/).default('63000-63100'),
   language: z.string().min(2).max(5).default('en'),
   maxBatch: z.number().int().min(1).max(10).default(5),
+  batchSize: z.number().int().min(1).max(100).default(10),
+  concurrency: z.number().int().min(1).max(20).default(3),
   autoUpdate: z.boolean().default(false),
 })
 
@@ -217,6 +191,8 @@ function loadGrokConfig(): GrokConfig {
     portRange: process.env.OLA_CC_GROK_PORT_RANGE,
     language: process.env.OLA_CC_GROK_LANGUAGE,
     maxBatch: process.env.OLA_CC_GROK_MAX_BATCH ? parseInt(process.env.OLA_CC_GROK_MAX_BATCH) : undefined,
+    batchSize: process.env.OLA_CC_GROK_BATCH_SIZE ? parseInt(process.env.OLA_CC_GROK_BATCH_SIZE) : undefined,
+    concurrency: process.env.OLA_CC_GROK_CONCURRENCY ? parseInt(process.env.OLA_CC_GROK_CONCURRENCY) : undefined,
     autoUpdate: process.env.OLA_CC_GROK_AUTO_UPDATE === 'true',
   }
 
@@ -250,10 +226,19 @@ export class GrokManager {
   private config: GrokConfig
   private dashboardServer: ReturnType<typeof createServer> | null = null
   private dashboardTimer: NodeJS.Timeout | null = null
+  private _analyzer: GrokAnalyzer | null = null
 
   /** 惰性获取 projectRoot，适配 worktree 切换 */
   private get projectRoot(): string {
     return this._projectRoot || getCwd()
+  }
+
+  /** 惰性获取 GrokAnalyzer 实例 */
+  get analyzer(): GrokAnalyzer {
+    if (!this._analyzer) {
+      this._analyzer = new GrokAnalyzer(this.projectRoot)
+    }
+    return this._analyzer
   }
 
   constructor(projectRoot?: string) {
@@ -262,6 +247,54 @@ export class GrokManager {
     this.config = loadGrokConfig()
 
     logForDebugging(`[grok] Config loaded: ${JSON.stringify(this.config)}`)
+  }
+
+  /**
+   * 本地文件系统扫描 — 检测语言、框架、入口文件（替代 LLM scanner）
+   */
+  localScan(files: string[]): { languages: string[]; frameworks: string[]; entryPoints: string[] } {
+    const extToLang: Record<string, string> = {
+      '.ts': 'TypeScript', '.tsx': 'TypeScript',
+      '.js': 'JavaScript', '.jsx': 'JavaScript',
+      '.py': 'Python', '.go': 'Go', '.rs': 'Rust',
+      '.java': 'Java', '.kt': 'Kotlin', '.swift': 'Swift',
+      '.rb': 'Ruby', '.php': 'PHP', '.cs': 'C#',
+      '.vue': 'Vue', '.svelte': 'Svelte',
+    }
+    const entryPatterns = ['index', 'main', 'app', 'server']
+
+    const langSet = new Set<string>()
+    const entryPoints: string[] = []
+
+    for (const f of files) {
+      const ext = extname(f).toLowerCase()
+      const lang = extToLang[ext]
+      if (lang) langSet.add(lang)
+
+      const base = basename(f, ext).toLowerCase()
+      if (entryPatterns.includes(base)) entryPoints.push(f)
+    }
+
+    // Detect frameworks from package.json
+    const frameworks: string[] = []
+    try {
+      const pkgPath = resolve(this.projectRoot, 'package.json')
+      const pkg = JSON.parse(readFileSync(pkgPath, 'utf-8'))
+      const deps = { ...pkg.dependencies, ...pkg.devDependencies }
+      const fwMap: Record<string, string> = {
+        react: 'React', 'react-dom': 'React', 'react-native': 'React Native',
+        vue: 'Vue', svelte: 'Svelte', angular: 'Angular', next: 'Next.js',
+        express: 'Express', fastify: 'Fastify', koa: 'Koa', nest: 'NestJS',
+        '@nestjs/core': 'NestJS', django: 'Django', flask: 'Flask', fastapi: 'FastAPI',
+        rails: 'Rails', laravel: 'Laravel',
+      }
+      for (const dep of Object.keys(deps)) {
+        const fw = fwMap[dep]
+        if (fw && !frameworks.includes(fw)) frameworks.push(fw)
+      }
+    } catch { /* package.json missing or malformed — skip */ }
+
+    return { languages: [...langSet], frameworks, entryPoints }
   }
 
   /**
