@@ -114,16 +114,19 @@ type CodegraphProgressData = ToolProgressData & {
   message?: string;
   elapsed?: number;
   progress?: number; // 0-100 百分比
+  count?: number; // 文件计数（scanning 阶段）
 };
 
 /**
- * 解析 CodeGraph CLI 的 stderr 输出，提取阶段名和百分比
+ * 解析 CodeGraph CLI 的 stderr/stdout 输出，提取阶段名、百分比和文件计数
  * CodeGraph 输出格式（含 ANSI 转义码和 \r）：
+ *   ✶ Scanning files... 1,234 found
+ *   ◆ Scanning files — 1,234 found
  *   ✶ Parsing code  ████████░░░░░░░░░░░░░░░░░  33%
  *   ◆ Parsing code — done
  *   ✢ Resolving refs  ░░░░░░░░░░░░░░░░░░░░░░░░░  0%
  */
-function parseCodegraphStderr(line: string): { stage: string; progress: number | null } | null {
+function parseCodegraphStderr(line: string): { stage: string; progress: number | null; count?: number } | null {
   // 去除所有 ANSI 转义码（SGR、光标移动、DEC 私有模式、波浪号终止序列等）
   const clean = line.replace(/\x1b(?:[@-Z\\-_]|\[[0-9;?]*[a-zA-Z~])/g, '').replace(/\r/g, '').trim();
   if (!clean) return null;
@@ -132,6 +135,26 @@ function parseCodegraphStderr(line: string): { stage: string; progress: number |
   const doneMatch = clean.match(/([\w\s]+?)\s*[—–-]\s*done/i);
   if (doneMatch) {
     return { stage: doneMatch[1].trim(), progress: 100 };
+  }
+
+  // 匹配 "◆ Scanning files — 1,234 found" 完成格式
+  const scanDoneMatch = clean.match(/[◆✶✢]\s*([\w\s]+?)\s*[—–-]\s*([\d,]+)\s*found/i);
+  if (scanDoneMatch) {
+    return {
+      stage: scanDoneMatch[1].trim(),
+      progress: 100,
+      count: parseInt(scanDoneMatch[2].replace(/,/g, ''), 10),
+    };
+  }
+
+  // 匹配 "✶ Scanning files... 1,234 found" 进行中格式
+  const scanMatch = clean.match(/[◆✶✢]\s*([\w\s]+?)\.{3}\s*([\d,]+)\s*found/i);
+  if (scanMatch) {
+    return {
+      stage: scanMatch[1].trim(),
+      progress: null,
+      count: parseInt(scanMatch[2].replace(/,/g, ''), 10),
+    };
   }
 
   // 匹配带百分比的进度行: "Phase name  ████░░░  42%"
@@ -155,7 +178,7 @@ function parseCodegraphStderr(line: string): { stage: string; progress: number |
 
 export const codegraphTool = buildTool({
   name: 'codegraph',
-  searchHint: 'code graph dependency call impact structure',
+  searchHint: 'code graph dependency trace impact callers structure',
   maxResultSizeChars: 50_000,
   inputSchema,
   renderToolUseMessage(input: Record<string, unknown>) {
@@ -196,7 +219,7 @@ export const codegraphTool = buildTool({
     if (!last?.data) {
       return React.createElement(Text, { dimColor: true }, 'CodeGraph…');
     }
-    const { stage, message, elapsed, progress } = last.data;
+    const { stage, message, elapsed, progress, count } = last.data;
     const elapsedStr = elapsed != null && elapsed > 1000 ? ` (${Math.round(elapsed / 1000)}s)` : '';
     const verbose = options?.verbose ?? false;
 
@@ -206,6 +229,12 @@ export const codegraphTool = buildTool({
     }
 
     const stageLabel = stage ? stage.charAt(0).toUpperCase() + stage.slice(1) : 'CodeGraph';
+
+    // scanning 阶段：显示文件计数（无百分比时）
+    if (count != null && (progress == null || progress < 0)) {
+      return React.createElement(Text, { dimColor: true },
+        `CodeGraph · ${stageLabel} ${count.toLocaleString()} found${elapsedStr}`);
+    }
 
     // 有百分比时显示进度条（init/sync 的 indexing 阶段）
     if (progress != null && progress >= 0) {

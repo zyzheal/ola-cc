@@ -14,19 +14,9 @@ import { getCwd } from '../../utils/cwd.js'
 import { logForDebugging } from '../../utils/debug.js'
 import type { ProgressMessage, ToolProgressData } from '../../types/tools.js'
 import { grokManager, GrokError, ERROR_SUGGESTIONS } from './GrokManager.js'
-import { GraphContextService } from '../../services/graph/GraphContextService.js'
-import { GraphUsageTracker } from '../../services/graph/GraphUsageTracker.js'
-
-import { sanitizeQuery, sanitizeSymbolName } from '../../services/graph/SecurityUtil.js'
-
-// ============================================================
-// Rate limiting & circuit breaker for graph-heavy operations
-// ============================================================
-
-const GRAPH_OPS = new Set(['grok_architecture', 'grok_hotspots'])
-let lastGraphOpTime = 0
-let circuitBreakerFailures = 0
-let circuitBreakerDisabledUntil = 0
+import { GraphStore } from '../../services/graph/GraphStore.js'
+import { GraphEngine } from '../../services/graph/GraphEngine.js'
+import { execSync } from 'child_process'
 
 // ============================================================
 // Schema
@@ -122,63 +112,78 @@ export const grokTool = buildTool({
     const { stage, progress, startTime } = last.data;
     const verbose = options?.verbose ?? false;
 
-    // 完成状态 — 不渲染，由 AssistantToolUseMessage 的 isResolved 处理
+    // 完成状态
     if (stage === 'done') {
-      return null;
+      return React.createElement(Text, { dimColor: true }, 'Grok · Done');
     }
 
     const stageLabel = STAGE_LABELS[stage || ''] || (stage ? stage.charAt(0).toUpperCase() + stage.slice(1) : 'Grok');
 
-    const elapsed = startTime ? Math.round((Date.now() - startTime) / 1000) : 0;
-    const hasProgress = progress != null && progress > 0;
-    const ratio = hasProgress ? Math.min(progress / 100, 1) : 0;
-    const pctText = hasProgress ? `${progress}%` : '';
+    // 有百分比时显示进度条（generate 操作）
+    if (progress != null && progress > 0) {
+      const ratio = Math.min(progress / 100, 1);
 
-    // 有实际进度时显示进度条，否则显示 spinner + 已用时间
-    const renderBar = () => {
-      if (hasProgress) {
-        return React.createElement(React.Fragment, null,
-          React.createElement(ProgressBar, { ratio, width: 16, fillColor: 'success', emptyColor: 'subtle' }),
-          React.createElement(Text, { color: 'success' }, ` ${progress}%`),
+      // Verbose 模式：显示步骤历史（包括无百分比的阶段）
+      if (verbose && progressMessages.length > 1) {
+        const steps = new Map<string, number | undefined>();
+        const seenStages = new Set<string>();
+        for (const msg of progressMessages) {
+          if (msg.data?.stage) {
+            seenStages.add(msg.data.stage);
+            if (msg.data.progress != null) {
+              steps.set(msg.data.stage, msg.data.progress);
+            }
+          }
+        }
+        const stepLines = Object.entries(STAGE_LABELS)
+          .filter(([key]) => seenStages.has(key))
+          .map(([key, label]) => {
+            const pct = steps.get(key);
+            if (pct == null) {
+              // 阶段已出现但无百分比（如 prepare、chat 等）
+              return `✓ ${label}`;
+            }
+            const marker = pct >= 100 ? '✓' : pct > 0 ? '▸' : '○';
+            return `${marker} ${label} ${pct}%`;
+          });
+
+        return React.createElement(Box, { flexDirection: 'column' },
+          React.createElement(Box, { flexDirection: 'row', gap: 1 },
+            React.createElement(Text, { dimColor: true }, `Grok · ${stageLabel}`),
+            React.createElement(ProgressBar, { ratio, width: 16 }),
+            React.createElement(Text, { dimColor: true }, `${progress}%`),
+          ),
+          ...stepLines.map(line =>
+            React.createElement(Text, { dimColor: true, key: line }, `  ${line}`)
+          ),
         );
       }
-      // Indeterminate state: dots animation based on elapsed seconds
-      const dots = '.'.repeat((elapsed % 3) + 1).padEnd(3, ' ');
-      const elapsedText = elapsed > 0 ? ` (${elapsed}s)` : '';
-      return React.createElement(Text, { dimColor: true }, ` ${dots}${elapsedText}`);
-    };
 
-    // Verbose 模式：显示步骤历史
-    if (verbose && progressMessages.length > 1) {
-      const steps = new Map<string, number>();
-      for (const msg of progressMessages) {
-        if (msg.data?.stage && msg.data?.progress != null) {
-          steps.set(msg.data.stage, msg.data.progress);
-        }
-      }
-      const stepLines = Object.entries(STAGE_LABELS)
-        .filter(([key]) => steps.has(key))
-        .map(([key, label]) => {
-          const pct = steps.get(key) || 0;
-          const marker = pct >= 100 ? '✓' : pct > 0 ? '▸' : '○';
-          return `${marker} ${label} ${pct}%`;
-        });
-
-      return React.createElement(Box, { flexDirection: 'column' },
-        React.createElement(Box, { flexDirection: 'row', gap: 0 },
-          React.createElement(Text, { dimColor: true }, `Grok · ${stageLabel}`),
-          renderBar(),
-        ),
-        ...stepLines.map(line =>
-          React.createElement(Text, { dimColor: true, key: line }, `  ${line}`)
-        ),
+      return React.createElement(Box, { flexDirection: 'row', gap: 1 },
+        React.createElement(Text, { dimColor: true }, `Grok · ${stageLabel}`),
+        React.createElement(ProgressBar, { ratio, width: 16 }),
+        React.createElement(Text, { dimColor: true }, `${progress}%`),
       );
     }
-
-    return React.createElement(Box, { flexDirection: 'row', gap: 0 },
-      React.createElement(Text, { dimColor: true }, `Grok · ${stageLabel}`),
-      renderBar(),
-    );
+    // Verbose 模式：无百分比阶段也显示历史
+    if (verbose && progressMessages.length > 1) {
+      const seenStages = new Set<string>();
+      for (const msg of progressMessages) {
+        if (msg.data?.stage) seenStages.add(msg.data.stage);
+      }
+      const stepLines = Object.entries(STAGE_LABELS)
+        .filter(([key]) => seenStages.has(key))
+        .map(([key, label]) => `✓ ${label}`);
+      if (stepLines.length > 0) {
+        return React.createElement(Box, { flexDirection: 'column' },
+          React.createElement(Text, { dimColor: true }, `Grok · ${stageLabel}…`),
+          ...stepLines.map(line =>
+            React.createElement(Text, { dimColor: true, key: line }, `  ${line}`)
+          ),
+        );
+      }
+    }
+    return React.createElement(Text, { dimColor: true }, `Grok · ${stageLabel}…`);
   },
 
   async description() {
@@ -189,44 +194,26 @@ export const grokTool = buildTool({
   },
 
   async call(input: Input, _context, _canUseTool, _parentMessage, _onProgress) {
-    // Circuit breaker: reject graph ops if too many recent failures
-    if (GRAPH_OPS.has(input.operation) && Date.now() < circuitBreakerDisabledUntil) {
-      return { data: { error: true, message: 'Graph operations temporarily disabled due to repeated failures. Try again in a minute.' } }
-    }
-
-    // Rate limiter: 5s cooldown between graph ops
-    if (GRAPH_OPS.has(input.operation)) {
-      if (Date.now() - lastGraphOpTime < 5000) {
-        return { data: { error: true, message: 'Graph operation rate limited, please wait a few seconds before retrying.' } }
-      }
-      lastGraphOpTime = Date.now()
-    }
-
-    const opStart = Date.now();
-    const sendProgress = (stage: string, progress?: number) => {
-      _onProgress?.({ toolUseID: '', data: { type: 'grok_progress', stage, progress, startTime: opStart } })
+    const sendProgress = (stage: string) => {
+      _onProgress?.({ toolUseID: '', data: { type: 'grok_progress', stage } })
     }
 
     try {
       sendProgress('prepare')
       await grokManager.ensureGrokSource()
 
-      // PreToolUse: inject graph context
-      const projectRoot = getCwd()
-      const graphContext = GraphContextService.getInstance(projectRoot).getPreToolContext('grok', input as Record<string, unknown>)
-
       let result: unknown
 
       switch (input.operation) {
         case 'grok_generate': {
-          sendProgress('generate', 0)
+          sendProgress('generate')
           const genResult = await grokManager.runAgentPipeline({
             path: input.path || getCwd(),
             language: input.language,
-            scope: input.scope ? sanitizeQuery(input.scope) : undefined,
+            scope: input.scope,
             incremental: input.incremental ?? true,
             onProgress: (stage, progress) => {
-              sendProgress(stage, progress)
+              _onProgress?.({ toolUseID: '', data: { type: 'grok_progress', stage, progress } })
             },
           })
           result = genResult
@@ -238,8 +225,7 @@ export const grokTool = buildTool({
             return { data: { error: true, message: 'grok_chat 需要 question 参数' } }
           }
           sendProgress('chat')
-          const safeQuestion = sanitizeQuery(input.question)
-          const chatResult = await grokManager.queryGraph(safeQuestion)
+          const chatResult = await grokManager.queryGraph(input.question)
           result = chatResult
           break
         }
@@ -249,9 +235,8 @@ export const grokTool = buildTool({
             return { data: { error: true, message: 'grok_explain 需要 target 参数' } }
           }
           sendProgress('explain')
-          const safeTarget = sanitizeSymbolName(input.target)
           const explainResult = await grokManager.queryGraph(
-            `Explain ${safeTarget}: what it does, its relationships, which layer and domain it belongs to`
+            `Explain ${input.target}: what it does, its relationships, which layer and domain it belongs to`
           )
           result = {
             summary: explainResult.answer,
@@ -271,10 +256,9 @@ export const grokTool = buildTool({
 
         case 'grok_tour': {
           sendProgress('tour')
-          const safeTopic = input.topic ? sanitizeQuery(input.topic) : undefined
           const tourResult = await grokManager.queryGraph(
-            safeTopic
-              ? `Create a guided learning tour for: ${safeTopic}`
+            input.topic
+              ? `Create a guided learning tour for: ${input.topic}`
               : 'Create guided learning tours for this codebase'
           )
           result = { tours: tourResult.answer }
@@ -286,9 +270,8 @@ export const grokTool = buildTool({
             return { data: { error: true, message: 'grok_diff 需要 files 参数' } }
           }
           sendProgress('diff')
-          const safeFiles = input.files.map(f => sanitizeSymbolName(f))
           const diffResult = await grokManager.queryGraph(
-            `Analyze the impact of changes to these files: ${safeFiles.join(', ')}`
+            `Analyze the impact of changes to these files: ${input.files.join(', ')}`
           )
           result = { impacted: diffResult.answer }
           break
@@ -310,20 +293,159 @@ export const grokTool = buildTool({
 
         case 'grok_architecture': {
           sendProgress('architecture')
-          result = await grokManager.analyzeArchitecture({
-            resolution: input.resolution,
-            maxNodes: input.maxNodes,
-          })
+          const projectRoot = getCwd()
+          const store = GraphStore.getInstance(projectRoot)
+          await store.load()
+          const engine = new GraphEngine(store)
+
+          // Run Louvain community detection + role classification
+          const community = engine.louvainCommunity({ resolution: input.resolution ?? 1.0 })
+          const roles = engine.classifyRoles()
+          const limit = input.maxNodes ?? 20
+
+          // Build role distribution summary
+          const roleDistribution: Record<string, number> = {}
+          for (const [, role] of roles) {
+            roleDistribution[role] = (roleDistribution[role] ?? 0) + 1
+          }
+
+          // Build community summary for LLM
+          const communitySummary = community.communities
+            .sort((a, b) => b.size - a.size)
+            .slice(0, 10)
+            .map(c => `Community ${c.id}: ${c.size} nodes (sample: ${c.nodes.slice(0, 3).join(', ')})`)
+            .join('\n')
+
+          const llmPrompt = [
+            'Analyze this code architecture based on community detection and role classification:',
+            '',
+            `## Communities (${community.communities.length} total, modularity=${community.modularity})`,
+            communitySummary,
+            '',
+            `## Role Distribution`,
+            ...Object.entries(roleDistribution).map(([r, count]) => `- ${r}: ${count}`),
+            '',
+            'Provide a concise architectural summary: what are the main modules, how they relate, and any structural concerns.',
+          ].join('\n')
+
+          let llmSummary = ''
+          try {
+            const chatResult = await grokManager.queryGraph(llmPrompt)
+            llmSummary = chatResult.answer
+          } catch {
+            // LLM enrichment is optional — graph data is still returned
+            llmSummary = '(LLM enrichment unavailable)'
+          }
+
+          result = {
+            communities: community.communities
+              .sort((a, b) => b.size - a.size)
+              .slice(0, limit)
+              .map(c => ({
+                id: c.id,
+                size: c.size,
+                sample: c.nodes.slice(0, 5),
+              })),
+            modularity: community.modularity,
+            resolution: community.resolution,
+            totalCommunities: community.communities.length,
+            roles: {
+              distribution: roleDistribution,
+              totalNodes: roles.size,
+            },
+            llmSummary,
+          }
           break
         }
 
         case 'grok_hotspots': {
           sendProgress('hotspots')
-          result = await grokManager.detectHotspots({
-            damping: input.damping,
-            since: input.since,
-            maxNodes: input.maxNodes,
-          })
+          const projectRoot = getCwd()
+          const store = GraphStore.getInstance(projectRoot)
+          await store.load()
+          const engine = new GraphEngine(store)
+
+          // PageRank for hotspot detection
+          const pr = engine.pageRank(input.damping ?? 0.85)
+          const topN = input.maxNodes ?? 20
+          const hotspots = pr.scores.slice(0, topN).map(s => ({
+            node: s.node,
+            score: Math.round(s.score * 10000) / 10000,
+            meta: store.getNode(s.node),
+          }))
+
+          // Git-based temporal coupling (same pattern as codegraph_temporal)
+          let temporalPairs: Array<{ a: string; b: string; score: number; coChanges: number }> = []
+          let totalCommits = 0
+          try {
+            const sinceArg = input.since ? `--since="${input.since}"` : '--since="30 days"'
+            const gitLog = execSync(
+              `git log --name-only --pretty=format:"COMMIT:%H" ${sinceArg}`,
+              { cwd: projectRoot, encoding: 'utf-8', timeout: 30000 }
+            )
+            const commits = gitLog.split(/^COMMIT:/m).filter(Boolean)
+            totalCommits = commits.length
+            const coChangeMap = new Map<string, number>()
+            for (const commit of commits) {
+              const lines = commit.trim().split('\n').filter(l => l && !l.startsWith('COMMIT:'))
+              for (let i = 0; i < lines.length; i++) {
+                for (let j = i + 1; j < lines.length; j++) {
+                  const key = [lines[i], lines[j]].sort().join('↔')
+                  coChangeMap.set(key, (coChangeMap.get(key) ?? 0) + 1)
+                }
+              }
+            }
+            temporalPairs = [...coChangeMap.entries()]
+              .map(([key, count]) => {
+                const [a, b] = key.split('↔')
+                return { a, b, score: count, coChanges: count }
+              })
+              .sort((a, b) => b.coChanges - a.coChanges)
+              .slice(0, topN)
+          } catch {
+            // Git not available — skip temporal coupling
+          }
+
+          // Build LLM prompt
+          const hotspotSummary = hotspots
+            .slice(0, 10)
+            .map(h => `- ${h.node} (score: ${h.score})`)
+            .join('\n')
+          const temporalSummary = temporalPairs
+            .slice(0, 10)
+            .map(p => `- ${p.a} <-> ${p.b} (${p.coChanges} co-changes)`)
+            .join('\n')
+
+          const llmPrompt = [
+            'Analyze code hotspots and temporal coupling patterns:',
+            '',
+            `## Top Hotspots (by PageRank)`,
+            hotspotSummary || '(none)',
+            '',
+            `## Temporal Coupling (top co-changed pairs, last 30 days, ${totalCommits} commits)`,
+            temporalSummary || '(none)',
+            '',
+            'Identify: which files are architectural hotspots that need refactoring, which file pairs have high coupling risk, and any recommended actions.',
+          ].join('\n')
+
+          let llmSummary = ''
+          try {
+            const chatResult = await grokManager.queryGraph(llmPrompt)
+            llmSummary = chatResult.answer
+          } catch {
+            llmSummary = '(LLM enrichment unavailable)'
+          }
+
+          result = {
+            hotspots,
+            totalScored: pr.scores.length,
+            temporalCoupling: {
+              pairs: temporalPairs,
+              totalCommits,
+              window: { since: input.since ?? '30 days', until: 'now' },
+            },
+            llmSummary,
+          }
           break
         }
 
@@ -331,16 +453,8 @@ export const grokTool = buildTool({
           return { data: { error: true, message: `未知操作: ${input.operation}` } }
       }
 
-      // Circuit breaker: reset on successful graph op
-      if (GRAPH_OPS.has(input.operation)) {
-        circuitBreakerFailures = 0
-      }
-
       // 所有操作完成时发送完成进度
       sendProgress('done')
-      // Yield to event loop so React can render the final progress
-      // before the tool result arrives and marks the tool as resolved.
-      await new Promise(resolve => setTimeout(resolve, 0))
 
       // 查询操作追加过期提示
       const isQueryOp = ['grok_chat', 'grok_explain', 'grok_domain', 'grok_tour', 'grok_diff'].includes(input.operation)
@@ -359,41 +473,14 @@ export const grokTool = buildTool({
         }
       }
 
-      // PostToolUse: record usage
-      GraphUsageTracker.getInstance(projectRoot).recordUsage({
-        toolName: 'grok',
-        operation: input.operation,
-        timestamp: Date.now(),
-        success: true,
-        duration: Date.now() - opStart,
-        query: (input.question || input.target || input.topic) as string | undefined,
-      })
-
-      return { data: { ok: true, operation: input.operation, result, _graphContext: graphContext } }
+      return { data: { ok: true, operation: input.operation, result } }
     } catch (error) {
-      // Circuit breaker: track failures for graph ops
-      if (GRAPH_OPS.has(input.operation)) {
-        circuitBreakerFailures++
-        if (circuitBreakerFailures >= 3) {
-          circuitBreakerDisabledUntil = Date.now() + 60000
-          circuitBreakerFailures = 0
-        }
-      }
-
       logForDebugging(`[grok] error: ${error}`)
       const isGrokError = error instanceof GrokError
       const code = isGrokError ? error.code : 'UNKNOWN'
       const suggestion = isGrokError
         ? error.suggestion
         : ERROR_SUGGESTIONS[code]
-      // PostToolUse: record failed usage
-      GraphUsageTracker.getInstance(getCwd()).recordUsage({
-        toolName: 'grok',
-        operation: input.operation,
-        timestamp: Date.now(),
-        success: false,
-        duration: Date.now() - opStart,
-      })
       return {
         data: {
           error: true,
@@ -408,17 +495,7 @@ export const grokTool = buildTool({
   },
 
   async prompt() {
-    return `Grok 代码理解工具 — 离线知识图谱 + 图算法分析。操作说明：
-- grok_generate: 首次使用或刷新图谱。扫描源码→生成 knowledge-graph.json（约3-5分钟，增量模式更快）。参数：path(扫描路径), language(输出语言), scope(子目录范围), incremental(增量更新)
-- grok_chat: 对已生成图谱做自然语言问答。需要 question 参数。例："这个项目的认证流程是怎样的？"
-- grok_explain: 解释指定文件/函数的功能、关系和所属层域。需要 target 参数
-- grok_domain: 分析业务域划分，列出各域的 flow 和文件。无额外参数
-- grok_tour: 生成引导式学习路径。可选 topic 参数聚焦主题
-- grok_diff: 分析变更文件的影响范围。需要 files 参数（文件路径数组）
-- grok_status: 查看图谱是否存在、节点/边数量、是否过期。无额外参数
-- grok_dashboard: 启动浏览器 D3.js 可视化面板（只读，自动关闭）。可选 port 参数（1024-65535）
-- grok_architecture: Louvain 社区检测 + 角色分类 + 特征链追踪。可选 resolution(检测精度, 默认1.0), maxNodes(最大节点数)
-- grok_hotspots: PageRank 热点检测 + 时间耦合分析。可选 damping(阻尼系数, 默认0.85), since(时间窗口), maxNodes(最大节点数)`
+    return 'Grok 代码理解工具 — 知识图谱生成、自然语言问答、业务域分析'
   },
 
   isConcurrencySafe(input) {
