@@ -189,6 +189,16 @@ describe('queryGraph', () => {
     expect(tokens).toContain('用户认证流程')
   })
 
+  it('should handle mixed Chinese/English input', () => {
+    const mockAnalyzer = createMockAnalyzer()
+    const builder = new GrokTourBuilder(mockAnalyzer)
+    const tokens = (builder as any).tokenizeChinese('用户login认证') as string[]
+    expect(tokens).toContain('用户')
+    expect(tokens).toContain('认证')
+    // 'login' is not CJK, should not appear in CJK tokens
+    expect(tokens).not.toContain('login')
+  })
+
   it('should match Chinese keywords in node summaries', async () => {
     const mockAnalyzer = createMockAnalyzer()
     const builder = new GrokTourBuilder(mockAnalyzer)

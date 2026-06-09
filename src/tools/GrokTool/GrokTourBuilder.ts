@@ -46,11 +46,10 @@ export class GrokTourBuilder {
   }
 
   /**
-   * 中文文本分词：bigram 切分 + 去标点
+   * 中文文本分词：bigram 切分
+   * 注意：单个 CJK 字符不产生 token（bigram 方案的固有局限）
    */
   private tokenizeChinese(text: string): string[] {
-    // CJK 标点和常见符号
-    const CJK_PUNCT = /[\u3000-\u303F\uFF00-\uFFEF\u2000-\u206F.,;:!?()[\]{}'"`~@#$%^&*+=|\\/<>—–·…「」『』【】《》（）、，。；：！？\-]/
     const CJK_RANGE = /[\u4E00-\u9FFF\u3400-\u4DBF]/
     const tokens: string[] = []
 
